@@ -1,36 +1,59 @@
 ﻿using Playnite.SDK;
 using Playnite.SDK.Data;
-using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace StremioVideoCenter
 {
+    // =========================================================
+    // STORED PLUGIN SETTINGS
+    // =========================================================
+    //
+    // These values are saved by Playnite's plugin settings system.
+    // No real API credentials are included in the source code.
+    //
     public class StremioVideoCenterSettings : ObservableObject
     {
-        private string option1 = string.Empty;
-        private bool option2 = false;
-        private bool optionThatWontBeSaved = false;
+        private string tmdbApiKey = string.Empty;
+        private string omdbApiKey = string.Empty;
 
-        public string Option1 { get => option1; set => SetValue(ref option1, value); }
-        public bool Option2 { get => option2; set => SetValue(ref option2, value); }
-        // Playnite serializes settings object to a JSON object and saves it as text file.
-        // If you want to exclude some property from being saved then use `JsonDontSerialize` ignore attribute.
-        [DontSerialize]
-        public bool OptionThatWontBeSaved { get => optionThatWontBeSaved; set => SetValue(ref optionThatWontBeSaved, value); }
+        // =========================================================
+        // TMDB API CREDENTIAL
+        // =========================================================
+
+        public string TmdbApiKey
+        {
+            get => tmdbApiKey;
+            set => SetValue(ref tmdbApiKey, value);
+        }
+
+        // =========================================================
+        // OMDB API CREDENTIAL
+        // =========================================================
+
+        public string OmdbApiKey
+        {
+            get => omdbApiKey;
+            set => SetValue(ref omdbApiKey, value);
+        }
     }
 
-    public class StremioVideoCenterSettingsViewModel : ObservableObject, ISettings
+    // =========================================================
+    // SETTINGS VIEW MODEL
+    // =========================================================
+
+    public class StremioVideoCenterSettingsViewModel
+        : ObservableObject, ISettings
     {
         private readonly StremioVideoCenter plugin;
+
         private StremioVideoCenterSettings editingClone { get; set; }
 
         private StremioVideoCenterSettings settings;
+
         public StremioVideoCenterSettings Settings
         {
             get => settings;
+
             set
             {
                 settings = value;
@@ -38,51 +61,77 @@ namespace StremioVideoCenter
             }
         }
 
-        public StremioVideoCenterSettingsViewModel(StremioVideoCenter plugin)
+        // =========================================================
+        // CONSTRUCTOR
+        // =========================================================
+
+        public StremioVideoCenterSettingsViewModel(
+            StremioVideoCenter plugin)
         {
-            // Injecting your plugin instance is required for Save/Load method because Playnite saves data to a location based on what plugin requested the operation.
+            // Playnite requires the plugin instance so that
+            // settings are saved to this plugin's storage location.
             this.plugin = plugin;
 
-            // Load saved settings.
-            var savedSettings = plugin.LoadPluginSettings<StremioVideoCenterSettings>();
+            // Load previously saved settings.
+            var savedSettings =
+                plugin.LoadPluginSettings<StremioVideoCenterSettings>();
 
-            // LoadPluginSettings returns null if no saved data is available.
             if (savedSettings != null)
             {
                 Settings = savedSettings;
             }
             else
             {
+                // First launch - create default settings.
                 Settings = new StremioVideoCenterSettings();
             }
         }
 
+        // =========================================================
+        // BEGIN EDIT
+        // =========================================================
+
         public void BeginEdit()
         {
-            // Code executed when settings view is opened and user starts editing values.
-            editingClone = Serialization.GetClone(Settings);
+            // Create a clone so Cancel can restore the
+            // settings that existed before editing began.
+            editingClone =
+                Serialization.GetClone(Settings);
         }
+
+        // =========================================================
+        // CANCEL EDIT
+        // =========================================================
 
         public void CancelEdit()
         {
-            // Code executed when user decides to cancel any changes made since BeginEdit was called.
-            // This method should revert any changes made to Option1 and Option2.
+            // Restore the settings from before editing started.
             Settings = editingClone;
         }
 
+        // =========================================================
+        // SAVE SETTINGS
+        // =========================================================
+
         public void EndEdit()
         {
-            // Code executed when user decides to confirm changes made since BeginEdit was called.
-            // This method should save settings made to Option1 and Option2.
+            // Save the current settings using Playnite's
+            // standard plugin settings system.
             plugin.SavePluginSettings(Settings);
         }
 
+        // =========================================================
+        // VALIDATE SETTINGS
+        // =========================================================
+
         public bool VerifySettings(out List<string> errors)
         {
-            // Code execute when user decides to confirm changes made since BeginEdit was called.
-            // Executed before EndEdit is called and EndEdit is not called if false is returned.
-            // List of errors is presented to user if verification fails.
             errors = new List<string>();
+
+            // API credentials are optional at this stage.
+            //
+            // This allows the plugin to open even before the
+            // user has configured TMDB or OMDb.
             return true;
         }
     }

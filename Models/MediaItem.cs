@@ -26,6 +26,14 @@ namespace StremioVideoCenter.Models
 
         public double Progress { get; set; }
 
+        // =========================================================
+        // HERO MEDIA
+        // =========================================================
+
+        public string BackdropUrl { get; set; }
+
+        public string TrailerUrl { get; set; }
+
         public BitmapImage PosterImage
         {
             get => _posterImage;

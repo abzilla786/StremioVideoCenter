@@ -4,18 +4,116 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <Grid>
+
+        <!-- ========================================================= -->
+        <!-- MAIN SETTINGS PANEL                                       -->
+        <!-- ========================================================= -->
+
         <StackPanel Margin="10">
+
+            <!-- ========================================================= -->
+            <!-- TITLE                                                     -->
+            <!-- ========================================================= -->
 
             <TextBlock
                 Text="Stremio Video Center"
                 FontWeight="Bold"
-                Margin="0,0,0,10"/>
+                FontSize="16"
+                Margin="0,0,0,20"/>
+
+
+            <!-- ========================================================= -->
+            <!-- TMDB SETTINGS                                              -->
+            <!-- ========================================================= -->
 
             <TextBlock
-                Text="Extension settings will be added here."
-                Margin="0,0,0,10"/>
+                Text="TMDB"
+                FontWeight="Bold"
+                FontSize="14"
+                Margin="0,0,0,8"/>
+
+            <TextBlock
+                Text="TMDB API Key / Read Access Token"
+                Margin="0,0,0,5"/>
+
+            <PasswordBox
+                x:Name="TmdbApiKeyBox"
+                Height="28"
+                Margin="0,0,0,5"
+                PasswordChanged="TmdbApiKeyBox_PasswordChanged"/>
+
+            <StackPanel
+                Margin="0,0,0,20">
+
+                <TextBlock
+                    Text="Your TMDB credential is stored with the plugin settings."
+                    Opacity="0.65"
+                    FontSize="11"
+                    Margin="0,0,0,8"/>
+
+                <Button
+                    x:Name="TestTmdbConnectionButton"
+                    Content="Test TMDB Connection"
+                    Width="180"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Click="TestTmdbConnection_Click"/>
+
+                <TextBlock
+                    x:Name="TmdbConnectionStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
+            </StackPanel>
+
+
+            <!-- ========================================================= -->
+            <!-- OMDB SETTINGS                                              -->
+            <!-- ========================================================= -->
+
+            <TextBlock
+                Text="OMDb"
+                FontWeight="Bold"
+                FontSize="14"
+                Margin="0,0,0,8"/>
+
+            <TextBlock
+                Text="OMDb API Key"
+                Margin="0,0,0,5"/>
+
+            <PasswordBox
+                x:Name="OmdbApiKeyBox"
+                Height="28"
+                Margin="0,0,0,5"
+                PasswordChanged="OmdbApiKeyBox_PasswordChanged"/>
+
+            <StackPanel>
+
+                <TextBlock
+                    Text="Used for additional movie and TV metadata."
+                    Opacity="0.65"
+                    FontSize="11"
+                    Margin="0,0,0,8"/>
+
+                <Button
+                    x:Name="TestOmdbConnectionButton"
+                    Content="Test OMDb Connection"
+                    Width="180"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Click="TestOmdbConnection_Click"/>
+
+                <TextBlock
+                    x:Name="OmdbConnectionStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
+            </StackPanel>
 
         </StackPanel>
+
     </Grid>
 
 </UserControl>
