@@ -65,6 +65,26 @@
                     FontSize="11"
                     TextWrapping="Wrap"/>
 
+
+                <!-- ========================================================= -->
+                <!-- TMDB DISCOVERY TEST                                        -->
+                <!-- ========================================================= -->
+
+                <Button
+                    x:Name="TestTmdbDiscoveryButton"
+                    Content="Test TMDB Discovery"
+                    Width="180"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Margin="0,8,0,0"
+                    Click="TestTmdbDiscovery_Click"/>
+
+                <TextBlock
+                    x:Name="TmdbDiscoveryStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
             </StackPanel>
 
 

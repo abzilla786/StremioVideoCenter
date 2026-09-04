@@ -173,6 +173,74 @@ namespace StremioVideoCenter
                 TestTmdbConnectionButton.IsEnabled = true;
             }
         }
+        // =========================================================
+        // TEST TMDB DISCOVERY
+        // =========================================================
+
+        private async void TestTmdbDiscovery_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            string accessToken =
+                viewModel.Settings.TmdbApiKey;
+
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                TmdbDiscoveryStatus.Text =
+                    "Please enter your TMDB API Read Access Token first.";
+
+                return;
+            }
+
+            TmdbDiscoveryStatus.Text =
+                "Testing TMDB discovery...";
+
+            TestTmdbDiscoveryButton.IsEnabled = false;
+
+            try
+            {
+                var tmdbService =
+                    new TmdbService(accessToken);
+
+                var movies =
+                    await tmdbService
+                        .GetMovieCandidatesAsync();
+
+                var tvShows =
+                    await tmdbService
+                        .GetTvCandidatesAsync();
+
+                var anime =
+                    await tmdbService
+                        .GetAnimeCandidatesAsync();
+
+                TmdbDiscoveryStatus.Text =
+                    "TMDB discovery successful. " +
+                    "Movies: " +
+                    movies.Count +
+                    " | TV Shows: " +
+                    tvShows.Count +
+                    " | Anime: " +
+                    anime.Count;
+            }
+            catch
+            {
+                TmdbDiscoveryStatus.Text =
+                    "TMDB discovery failed. Please check your credential and internet connection.";
+            }
+            finally
+            {
+                TestTmdbDiscoveryButton.IsEnabled = true;
+            }
+        }
 
         // =========================================================
         // TEST OMDB CONNECTION
