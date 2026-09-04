@@ -2,47 +2,74 @@
 using StremioVideoCenterControls;
 using StremioVideoCenter.ViewModels;
 using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using StremioVideoCenter.Controls;
 
 namespace StremioVideoCenter
 {
     public partial class StremioVideoCenterView : PluginUserControl
     {
+        // =========================================================
+        // MEDIA SECTIONS
+        // =========================================================
+
         private readonly MediaSection[] sections;
+
+
+        // =========================================================
+        // LIBVLC PLAYER
+        // =========================================================
+
         private LibVlcTestPlayer _libVlcTestPlayer;
 
-        // ---------------------------------------------------------
+
+        // =========================================================
+        // STARTUP STATE
+        // =========================================================
+
+        // Prevents the startup sequence from being triggered more
+        // than once if the Loaded event fires multiple times.
+        private bool _startupSequenceStarted;
+
+
+        // =========================================================
         // INITIALISE VIEW
-        // ---------------------------------------------------------
+        // =========================================================
 
         public StremioVideoCenterView()
         {
             InitializeComponent();
 
-            // ---------------------------------------------------------
-            // INITIALISE LIBVLC TEST PLAYER
-            // ---------------------------------------------------------
 
-            _libVlcTestPlayer = new LibVlcTestPlayer();
+            // =========================================================
+            // INITIALISE LIBVLC PLAYER
+            // =========================================================
+
+            _libVlcTestPlayer =
+                new LibVlcTestPlayer();
+
 
             HeroMediaFrame.Children.Clear();
-            HeroMediaFrame.Children.Add(_libVlcTestPlayer);
 
-            _libVlcTestPlayer.PlayTestVideo(
-                "https://streams.videolan.org/misc/unity-samples/BigBuckBunny.avi");
+            HeroMediaFrame.Children.Add(
+                _libVlcTestPlayer);
 
-            // ---------------------------------------------------------
+
+            // =========================================================
             // INITIALISE VIEW MODEL
-            // ---------------------------------------------------------
+            // =========================================================
 
-            DataContext = new HomeViewModel();
+            DataContext =
+                new HomeViewModel();
 
-            // ---------------------------------------------------------
+
+            // =========================================================
             // MEDIA SECTIONS
-            // ---------------------------------------------------------
+            // =========================================================
 
             sections = new[]
             {
@@ -54,17 +81,20 @@ namespace StremioVideoCenter
                 TopAnimeSection
             };
 
-            // ---------------------------------------------------------
+
+            // =========================================================
             // EVENT HANDLERS
-            // ---------------------------------------------------------
+            // =========================================================
 
-            Loaded += StremioVideoCenterView_Loaded;
+            Loaded +=
+                StremioVideoCenterView_Loaded;
 
-            PreviewKeyDown += StremioVideoCenterView_PreviewKeyDown;
+            PreviewKeyDown +=
+                StremioVideoCenterView_PreviewKeyDown;
 
-            PreviewMouseWheel += StremioVideoCenterView_PreviewMouseWheel;
+            PreviewMouseWheel +=
+                StremioVideoCenterView_PreviewMouseWheel;
         }
-
 
 
         // =========================================================
@@ -75,9 +105,21 @@ namespace StremioVideoCenter
             object sender,
             RoutedEventArgs e)
         {
-            // ---------------------------------------------------------
+            // =========================================================
+            // PREVENT DUPLICATE STARTUP SEQUENCES
+            // =========================================================
+
+            if (_startupSequenceStarted)
+            {
+                return;
+            }
+
+            _startupSequenceStarted = true;
+
+
+            // =========================================================
             // LOAD HERO BACKDROP
-            // ---------------------------------------------------------
+            // =========================================================
 
             if (DataContext is HomeViewModel vm &&
                 vm.CurrentHeroItem != null)
@@ -85,9 +127,10 @@ namespace StremioVideoCenter
                 await vm.CurrentHeroItem.LoadBackdropAsync();
             }
 
-            // ---------------------------------------------------------
+
+            // =========================================================
             // INITIAL FOCUS
-            // ---------------------------------------------------------
+            // =========================================================
 
             await Dispatcher.BeginInvoke(
                 new Action(() =>
@@ -95,7 +138,135 @@ namespace StremioVideoCenter
                     FocusFirstAvailableSection();
                 }),
                 System.Windows.Threading.DispatcherPriority.Loaded);
+
+
+            // =========================================================
+            // START HERO MEDIA SEQUENCE
+            // =========================================================
+
+            await StartHeroMediaSequence();
         }
+
+
+        // =========================================================
+        // HERO MEDIA STARTUP SEQUENCE
+        // =========================================================
+        //
+        // Timeline:
+        //
+        // 0.00s
+        // Backdrop visible.
+        //
+        // 0.00s - 0.80s
+        // Backdrop remains fully visible.
+        //
+        // 0.80s
+        // Trailer begins playback.
+        //
+        // 0.80s - 1.50s
+        // Trailer/video surface fades into view.
+        //
+        // 1.50s
+        // Trailer fully visible.
+        //
+        // =========================================================
+
+        private async Task StartHeroMediaSequence()
+        {
+            // =========================================================
+            // ENSURE VIDEO SURFACE STARTS INVISIBLE
+            // =========================================================
+
+            _libVlcTestPlayer.Opacity = 0;
+
+
+            // =========================================================
+            // BACKDROP DISPLAY PERIOD
+            //
+            // The backdrop gets approximately 800ms of uninterrupted
+            // visibility before trailer playback begins.
+            // =========================================================
+
+            await Task.Delay(800);
+
+
+            // =========================================================
+            // START TRAILER
+            // =========================================================
+
+            _libVlcTestPlayer.PlayTestVideo(
+                "https://streams.videolan.org/misc/unity-samples/BigBuckBunny.avi");
+
+
+            // =========================================================
+            // ALLOW LIBVLC TO INITIALISE
+            //
+            // Give LibVLC a short moment to create its video output
+            // before starting the visual transition.
+            // =========================================================
+
+            await Task.Delay(100);
+
+
+            // =========================================================
+            // FADE VIDEO INTO VIEW
+            //
+            // Target duration:
+            // approximately 600ms.
+            //
+            // Combined with the 800ms backdrop period and the small
+            // LibVLC startup allowance, this keeps the transition
+            // around our 1.5 second target.
+            // =========================================================
+
+            DoubleAnimation fadeIn =
+                new DoubleAnimation
+                {
+                    From = 0,
+                    To = 1,
+                    Duration =
+                        new Duration(
+                            TimeSpan.FromMilliseconds(600)),
+                    EasingFunction =
+                        new QuadraticEase
+                        {
+                            EasingMode =
+                                EasingMode.EaseInOut
+                        }
+                };
+
+
+            // =========================================================
+            // START VIDEO SURFACE FADE
+            // =========================================================
+
+            _libVlcTestPlayer.BeginAnimation(
+                UIElement.OpacityProperty,
+                fadeIn);
+
+
+            // =========================================================
+            // WAIT FOR TRANSITION TO COMPLETE
+            // =========================================================
+
+            await Task.Delay(600);
+
+
+            // =========================================================
+            // ENSURE FINAL OPACITY
+            // =========================================================
+
+            _libVlcTestPlayer.BeginAnimation(
+                UIElement.OpacityProperty,
+                null);
+
+            _libVlcTestPlayer.Opacity = 1;
+        }
+
+
+        // =========================================================
+        // FOCUS FIRST AVAILABLE SECTION
+        // =========================================================
 
         private void FocusFirstAvailableSection()
         {
@@ -111,17 +282,24 @@ namespace StremioVideoCenter
                     continue;
                 }
 
-                // Focus the first card without scrolling the page down.
+
+                // =====================================================
+                // FOCUS FIRST CARD
+                // =====================================================
+
                 section.FocusFirstCard();
 
-                // Keep the extension positioned at the top on startup.
+
+                // =====================================================
+                // KEEP PAGE AT TOP
+                // =====================================================
+
                 MainScrollViewer.ScrollToVerticalOffset(0);
 
                 return;
             }
         }
 
-        
 
         // =========================================================
         // KEYBOARD / CONTROLLER NAVIGATION
@@ -138,15 +316,16 @@ namespace StremioVideoCenter
             if (HeroWatchNowButton.IsKeyboardFocusWithin ||
                 HeroMyListButton.IsKeyboardFocusWithin)
             {
-                // -------------------------------------------------
+                // =================================================
                 // LEFT
-                // -------------------------------------------------
+                // =================================================
 
                 if (e.Key == Key.Left)
                 {
                     if (HeroMyListButton.IsKeyboardFocusWithin)
                     {
                         // HERO MY LIST -> WATCH NOW
+
                         HeroWatchNowButton.Focus();
 
                         e.Handled = true;
@@ -154,6 +333,7 @@ namespace StremioVideoCenter
                     else if (HeroWatchNowButton.IsKeyboardFocusWithin)
                     {
                         // WATCH NOW -> SEARCH
+
                         SearchButton.Focus();
 
                         e.Handled = true;
@@ -162,40 +342,47 @@ namespace StremioVideoCenter
                     return;
                 }
 
-                // -------------------------------------------------
+
+                // =================================================
                 // RIGHT
-                // -------------------------------------------------
+                // =================================================
 
                 if (e.Key == Key.Right)
                 {
                     if (HeroWatchNowButton.IsKeyboardFocusWithin)
                     {
                         // WATCH NOW -> HERO MY LIST
+
                         HeroMyListButton.Focus();
+
                         e.Handled = true;
                     }
                     else if (HeroMyListButton.IsKeyboardFocusWithin)
                     {
                         // HERO MY LIST -> HOME
+
                         HomeButton.Focus();
+
                         e.Handled = true;
                     }
 
                     return;
                 }
 
-                // -------------------------------------------------
+
+                // =================================================
                 // DOWN
                 // HERO -> FIRST MEDIA SECTION
-                // -------------------------------------------------
+                // =================================================
 
                 if (e.Key == Key.Down)
                 {
                     if (sections.Length > 0 &&
                         sections[0] != null)
                     {
-                        // Focus the first card without moving
+                        // Focus first card without moving
                         // the main page vertically.
+
                         sections[0].FocusFirstCard();
 
                         e.Handled = true;
@@ -204,10 +391,11 @@ namespace StremioVideoCenter
                     return;
                 }
 
-                // -------------------------------------------------
+
+                // =================================================
                 // UP
                 // HERO -> HOME
-                // -------------------------------------------------
+                // =================================================
 
                 if (e.Key == Key.Up)
                 {
@@ -220,6 +408,7 @@ namespace StremioVideoCenter
 
                 return;
             }
+
 
             // =====================================================
             // TOP NAVIGATION -> HERO
@@ -236,6 +425,7 @@ namespace StremioVideoCenter
                     SearchButton.IsKeyboardFocusWithin)
                 {
                     // ANY TOP NAV BUTTON -> HERO WATCH NOW
+
                     HeroWatchNowButton.Focus();
 
                     e.Handled = true;
@@ -243,6 +433,7 @@ namespace StremioVideoCenter
                     return;
                 }
             }
+
 
             // =====================================================
             // SEARCH -> HERO
@@ -258,17 +449,21 @@ namespace StremioVideoCenter
                 return;
             }
 
-            // =========================================================
+
+            // =====================================================
             // HOME LEFT -> HERO MY LIST
-            // =========================================================
+            // =====================================================
 
             if (HomeButton.IsKeyboardFocusWithin &&
                 e.Key == Key.Left)
             {
                 HeroMyListButton.Focus();
+
                 e.Handled = true;
+
                 return;
             }
+
 
             // =====================================================
             // MEDIA NAVIGATION
@@ -277,9 +472,10 @@ namespace StremioVideoCenter
             MediaSection currentSection =
                 GetFocusedSection();
 
-            // -----------------------------------------------------
+
+            // =====================================================
             // LEFT / RIGHT
-            // -----------------------------------------------------
+            // =====================================================
 
             if (e.Key == Key.Left ||
                 e.Key == Key.Right)
@@ -289,21 +485,25 @@ namespace StremioVideoCenter
                     return;
                 }
 
+
                 int direction =
                     e.Key == Key.Left
                         ? -1
                         : 1;
 
-                currentSection.MoveHorizontal(direction);
+
+                currentSection.MoveHorizontal(
+                    direction);
 
                 e.Handled = true;
 
                 return;
             }
 
-            // -----------------------------------------------------
+
+            // =====================================================
             // UP / DOWN
-            // -----------------------------------------------------
+            // =====================================================
 
             if (e.Key == Key.Up ||
                 e.Key == Key.Down)
@@ -312,6 +512,7 @@ namespace StremioVideoCenter
                 {
                     return;
                 }
+
 
                 MoveVertical(
                     currentSection,
@@ -322,6 +523,7 @@ namespace StremioVideoCenter
                 return;
             }
         }
+
 
         // =========================================================
         // VERTICAL NAVIGATION
@@ -336,15 +538,18 @@ namespace StremioVideoCenter
                     sections,
                     currentSection);
 
+
             if (currentIndex < 0)
             {
                 return;
             }
 
+
             int direction =
                 key == Key.Up
                     ? -1
                     : 1;
+
 
             // =====================================================
             // FIRST MEDIA SECTION -> HERO
@@ -358,8 +563,10 @@ namespace StremioVideoCenter
                 return;
             }
 
+
             int targetIndex =
                 currentIndex + direction;
+
 
             if (targetIndex < 0 ||
                 targetIndex >= sections.Length)
@@ -367,27 +574,35 @@ namespace StremioVideoCenter
                 return;
             }
 
+
             MediaSection targetSection =
                 sections[targetIndex];
+
 
             if (targetSection == null)
             {
                 return;
             }
 
+
             if (targetSection.Items == null)
             {
                 return;
             }
 
+
             targetSection.FocusFirstCard();
 
-            if (!targetSection.IsFirstCardVisible(MainScrollViewer))
+
+            if (!targetSection.IsFirstCardVisible(
+                    MainScrollViewer))
             {
                 MainScrollViewer.ScrollToVerticalOffset(
-                    GetSectionOffset(targetSection));
+                    GetSectionOffset(
+                        targetSection));
             }
         }
+
 
         // =========================================================
         // FIND CURRENT SECTION
@@ -404,8 +619,10 @@ namespace StremioVideoCenter
                 }
             }
 
+
             return null;
         }
+
 
         // =========================================================
         // MOUSE WHEEL
@@ -420,17 +637,22 @@ namespace StremioVideoCenter
                 return;
             }
 
+
             double amount =
                 e.Delta * 0.8;
 
+
             double targetOffset =
-                MainScrollViewer.VerticalOffset - amount;
+                MainScrollViewer.VerticalOffset
+                - amount;
+
 
             double maxOffset =
                 Math.Max(
                     0,
-                    MainScrollViewer.ExtentHeight -
-                    MainScrollViewer.ViewportHeight);
+                    MainScrollViewer.ExtentHeight
+                    - MainScrollViewer.ViewportHeight);
+
 
             targetOffset =
                 Math.Max(
@@ -439,11 +661,14 @@ namespace StremioVideoCenter
                         targetOffset,
                         maxOffset));
 
+
             MainScrollViewer.ScrollToVerticalOffset(
                 targetOffset);
 
+
             e.Handled = true;
         }
+
 
         // =========================================================
         // SECTION SCROLL POSITION
@@ -458,20 +683,24 @@ namespace StremioVideoCenter
                     section.TransformToAncestor(
                         MainScrollViewer);
 
+
                 Point point =
                     transform.Transform(
                         new Point(0, 0));
+
 
                 double targetOffset =
                     MainScrollViewer.VerticalOffset
                     + point.Y
                     - 30;
 
+
                 double maxOffset =
                     Math.Max(
                         0,
-                        MainScrollViewer.ExtentHeight -
-                        MainScrollViewer.ViewportHeight);
+                        MainScrollViewer.ExtentHeight
+                        - MainScrollViewer.ViewportHeight);
+
 
                 return Math.Max(
                     0,
