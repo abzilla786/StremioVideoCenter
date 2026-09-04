@@ -1,0 +1,691 @@
+﻿<PluginUserControl x:Class="StremioVideoCenter.StremioVideoCenterView"
+                   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                   xmlns:controls="clr-namespace:StremioVideoCenterControls"
+                   Focusable="True"
+                   Background="#0D0D0F">
+
+    <!-- ========================================================= -->
+    <!-- RESOURCES                                                   -->
+    <!-- ========================================================= -->
+
+    <PluginUserControl.Resources>
+
+        <!-- ========================================================= -->
+        <!-- NAVIGATION BUTTON                                         -->
+        <!-- ========================================================= -->
+
+        <Style x:Key="NavigationButtonStyle"
+               TargetType="{x:Type Button}">
+
+            <Setter Property="Background"
+                    Value="Transparent"/>
+
+            <Setter Property="Foreground"
+                    Value="#E5E5E5"/>
+
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+
+            <Setter Property="Padding"
+                    Value="18,10"/>
+
+            <Setter Property="Margin"
+                    Value="4,0"/>
+
+            <Setter Property="FontSize"
+                    Value="14"/>
+
+            <Setter Property="FontWeight"
+                    Value="SemiBold"/>
+
+            <Setter Property="Cursor"
+                    Value="Hand"/>
+
+            <Setter Property="FocusVisualStyle"
+                    Value="{x:Null}"/>
+
+
+            <Style.Triggers>
+
+                <!-- ================================================= -->
+                <!-- MOUSE OVER                                         -->
+                <!-- ================================================= -->
+
+                <Trigger Property="IsMouseOver"
+                         Value="True">
+
+                    <Setter Property="Foreground"
+                            Value="White"/>
+
+                    <Setter Property="Background"
+                            Value="#24242A"/>
+
+                </Trigger>
+
+
+                <!-- ================================================= -->
+                <!-- KEYBOARD FOCUS                                     -->
+                <!-- ================================================= -->
+
+                <Trigger Property="IsKeyboardFocused"
+                         Value="True">
+
+                    <Setter Property="Foreground"
+                            Value="White"/>
+
+                    <Setter Property="Background"
+                            Value="#2A1825"/>
+
+                </Trigger>
+
+            </Style.Triggers>
+
+        </Style>
+
+
+        <!-- ========================================================= -->
+        <!-- PRIMARY BUTTON                                             -->
+        <!-- ========================================================= -->
+
+        <Style x:Key="PrimaryButtonStyle"
+               TargetType="{x:Type Button}">
+
+            <Setter Property="Background"
+                    Value="#E91E63"/>
+
+            <Setter Property="Foreground"
+                    Value="White"/>
+
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+
+            <Setter Property="Padding"
+                    Value="22,12"/>
+
+            <Setter Property="FontSize"
+                    Value="14"/>
+
+            <Setter Property="FontWeight"
+                    Value="Bold"/>
+
+            <Setter Property="Cursor"
+                    Value="Hand"/>
+
+            <Setter Property="FocusVisualStyle"
+                    Value="{x:Null}"/>
+
+
+            <Style.Triggers>
+
+                <!-- ================================================= -->
+                <!-- MOUSE OVER                                         -->
+                <!-- ================================================= -->
+
+                <Trigger Property="IsMouseOver"
+                         Value="True">
+
+                    <Setter Property="Background"
+                            Value="#FF3D7A"/>
+
+                </Trigger>
+
+
+                <!-- ================================================= -->
+                <!-- KEYBOARD FOCUS                                     -->
+                <!-- ================================================= -->
+
+                <Trigger Property="IsKeyboardFocused"
+                         Value="True">
+
+                    <Setter Property="Background"
+                            Value="#FF3D7A"/>
+
+                    <Setter Property="BorderThickness"
+                            Value="2"/>
+
+                    <Setter Property="BorderBrush"
+                            Value="White"/>
+
+                </Trigger>
+
+            </Style.Triggers>
+
+        </Style>
+
+
+        <!-- ========================================================= -->
+        <!-- SECONDARY BUTTON                                           -->
+        <!-- ========================================================= -->
+
+        <Style x:Key="SecondaryButtonStyle"
+               TargetType="{x:Type Button}">
+
+            <Setter Property="Background"
+                    Value="#25252B"/>
+
+            <Setter Property="Foreground"
+                    Value="White"/>
+
+            <Setter Property="BorderBrush"
+                    Value="#55555F"/>
+
+            <Setter Property="BorderThickness"
+                    Value="1"/>
+
+            <Setter Property="Padding"
+                    Value="22,12"/>
+
+            <Setter Property="FontSize"
+                    Value="14"/>
+
+            <Setter Property="FontWeight"
+                    Value="SemiBold"/>
+
+            <Setter Property="Cursor"
+                    Value="Hand"/>
+
+            <Setter Property="FocusVisualStyle"
+                    Value="{x:Null}"/>
+
+
+            <Style.Triggers>
+
+                <!-- ================================================= -->
+                <!-- MOUSE OVER                                         -->
+                <!-- ================================================= -->
+
+                <Trigger Property="IsMouseOver"
+                         Value="True">
+
+                    <Setter Property="Background"
+                            Value="#35353D"/>
+
+                    <Setter Property="BorderBrush"
+                            Value="#E91E63"/>
+
+                </Trigger>
+
+
+                <!-- ================================================= -->
+                <!-- KEYBOARD FOCUS                                     -->
+                <!-- ================================================= -->
+
+                <Trigger Property="IsKeyboardFocused"
+                         Value="True">
+
+                    <Setter Property="Background"
+                            Value="#35353D"/>
+
+                    <Setter Property="BorderBrush"
+                            Value="#E91E63"/>
+
+                    <Setter Property="BorderThickness"
+                            Value="2"/>
+
+                </Trigger>
+
+            </Style.Triggers>
+
+        </Style>
+
+    </PluginUserControl.Resources>
+
+
+    <!-- ========================================================= -->
+    <!-- MAIN WINDOW                                                 -->
+    <!-- ========================================================= -->
+
+    <Grid>
+
+        <!-- ========================================================= -->
+        <!-- MAIN CONTENT                                               -->
+        <!--                                                             -->
+        <!-- Navigation, Hero and Media Sections remain inside the      -->
+        <!-- same ScrollViewer.                                         -->
+        <!-- ========================================================= -->
+
+        <ScrollViewer x:Name="MainScrollViewer"
+                      VerticalScrollBarVisibility="Hidden"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Focusable="False">
+
+            <StackPanel>
+
+
+                <!-- ===================================================== -->
+                <!-- TOP NAVIGATION                                         -->
+                <!-- ===================================================== -->
+
+                <Border Background="#111114"
+                        Padding="32,20">
+
+                    <Grid>
+
+                        <Grid.ColumnDefinitions>
+
+                            <ColumnDefinition Width="Auto"/>
+
+                            <ColumnDefinition Width="*"/>
+
+                        </Grid.ColumnDefinitions>
+
+
+                        <!-- ================================================= -->
+                        <!-- LOGO                                               -->
+                        <!-- ================================================= -->
+
+                        <StackPanel Grid.Column="0"
+                                    VerticalAlignment="Center">
+
+                            <TextBlock Text="STREMIO"
+                                       FontSize="26"
+                                       FontWeight="Bold"
+                                       Foreground="White"/>
+
+                            <TextBlock Text="VIDEO CENTER"
+                                       FontSize="11"
+                                       FontWeight="SemiBold"
+                                       Foreground="#AAAAAA"
+                                       Margin="1,-2,0,0"/>
+
+                        </StackPanel>
+
+
+                        <!-- ================================================= -->
+                        <!-- NAVIGATION                                          -->
+                        <!-- ================================================= -->
+
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center">
+
+                            <Button x:Name="HomeButton"
+                                    Content="HOME"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"/>
+
+                            <Button x:Name="MoviesButton"
+                                    Content="MOVIES"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"/>
+
+                            <Button x:Name="TvShowsButton"
+                                    Content="TV SHOWS"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"/>
+
+                            <Button x:Name="AnimeButton"
+                                    Content="ANIME"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"/>
+
+                            <Button x:Name="NavigationMyListButton"
+                                    Content="MY LIST"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"/>
+
+                            <Button x:Name="HistoryButton"
+                                    Content="HISTORY"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"/>
+
+                            <Button x:Name="SearchButton"
+                                    Content="SEARCH"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"/>
+
+                        </StackPanel>
+
+                    </Grid>
+
+                </Border>
+
+
+                <!-- ===================================================== -->
+                <!-- HERO                                                    -->
+                <!-- ===================================================== -->
+
+                <Grid x:Name="HeroContainer"
+                      Height="925"
+                      MinHeight="750"
+                      MaxHeight="1000"
+                      Margin="0,0,0,25"
+                      Background="#0D0D0F">
+
+
+                    <!-- ================================================= -->
+                    <!-- HERO VIDEO                                         -->
+                    <!-- ================================================= -->
+
+                    <Grid x:Name="HeroCanvas"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Top">
+
+                        <Grid x:Name="HeroMediaFrame"
+                              Width="1240"
+                              Height="698"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Top"
+                              Background="Black"
+                              ClipToBounds="True">
+
+                            <!-- ================================================= -->
+                            <!-- HERO BACKDROP                                      -->
+                            <!--                                                         -->
+                            <!-- This remains underneath the LibVLC player.          -->
+                            <!-- Stretch Uniform ensures artwork is never cropped.   -->
+                            <!-- ================================================= -->
+
+                            <Image x:Name="HeroBackdropImage"
+                                   Source="{Binding CurrentHeroItem.BackdropUrl}"
+                                   Stretch="Uniform"
+                                   HorizontalAlignment="Stretch"
+                                   VerticalAlignment="Stretch"/>
+
+                        </Grid>
+
+                    </Grid>
+
+
+                    <!-- ===================================================== -->
+                    <!-- HERO INFORMATION PANEL                                -->
+                    <!--                                                             -->
+                    <!-- IMPORTANT:                                              -->
+                    <!-- The panel is deliberately SOLID.                      -->
+                    <!-- No gradient is used here.                             -->
+                    <!-- This avoids the visible horizontal colour bands        -->
+                    <!-- we were seeing previously.                             -->
+                    <!-- ===================================================== -->
+
+                    <Grid x:Name="HeroContentPanel"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Top"
+                          Height="227"
+                          Margin="0,698,0,0"
+                          Background="#151225">
+
+
+                        <!-- ================================================= -->
+                        <!-- INFORMATION CONTENT                                -->
+                        <!-- ================================================= -->
+
+                        <Grid Width="1240"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Stretch"
+                              Margin="0">
+
+                            <Grid.RowDefinitions>
+
+                                <!-- Main information -->
+                                <RowDefinition Height="*"/>
+
+                                <!-- Carousel indicators -->
+                                <RowDefinition Height="Auto"/>
+
+                            </Grid.RowDefinitions>
+
+
+                            <!-- ================================================= -->
+                            <!-- MAIN HERO INFORMATION                              -->
+                            <!-- ================================================= -->
+
+                            <Grid Grid.Row="0"
+                                  Margin="0,20,0,0">
+
+                                <Grid.ColumnDefinitions>
+
+                                    <!-- ================================================= -->
+                                    <!-- TITLE / METADATA                                  -->
+                                    <!-- ================================================= -->
+
+                                    <ColumnDefinition Width="1.15*"/>
+
+
+                                    <!-- ================================================= -->
+                                    <!-- SYNOPSIS                                         -->
+                                    <!-- ================================================= -->
+
+                                    <ColumnDefinition Width="1.55*"/>
+
+
+                                    <!-- ================================================= -->
+                                    <!-- BUTTONS                                          -->
+                                    <!-- ================================================= -->
+
+                                    <ColumnDefinition Width="1.30*"/>
+
+                                </Grid.ColumnDefinitions>
+
+
+                                <!-- ================================================= -->
+                                <!-- LEFT: TITLE + METADATA                            -->
+                                <!-- ================================================= -->
+
+                                <StackPanel Grid.Column="0"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Center"
+                                            Margin="0,0,35,0">
+
+
+                                    <!-- ================================================= -->
+                                    <!-- TYPE                                               -->
+                                    <!-- ================================================= -->
+
+                                    <TextBlock Text="{Binding CurrentHeroItem.Type}"
+                                               FontSize="15"
+                                               FontWeight="Bold"
+                                               Foreground="#FF2A78"
+                                               Margin="0,0,0,5"/>
+
+
+                                    <!-- ================================================= -->
+                                    <!-- TITLE                                              -->
+                                    <!-- ================================================= -->
+
+                                    <TextBlock Text="{Binding CurrentHeroItem.Title}"
+                                               FontSize="38"
+                                               FontWeight="Bold"
+                                               Foreground="White"
+                                               TextWrapping="Wrap"/>
+
+
+                                    <!-- ================================================= -->
+                                    <!-- METADATA                                           -->
+                                    <!-- ================================================= -->
+
+                                    <TextBlock Text="2025    •    8.8    •    Drama    •    Adventure"
+                                               FontSize="16"
+                                               Foreground="#BEBEC8"
+                                               Margin="0,8,0,0"/>
+
+                                </StackPanel>
+
+
+                                <!-- ================================================= -->
+                                <!-- CENTRE: SYNOPSIS                                   -->
+                                <!-- ================================================= -->
+
+                                <StackPanel Grid.Column="1"
+                                            HorizontalAlignment="Left"
+                                            VerticalAlignment="Center"
+                                            Margin="20,0,35,0">
+
+                                    <TextBlock Text="{Binding CurrentHeroItem.Synopsis}"
+                                               FontSize="17"
+                                               Foreground="#D0D0D0"
+                                               TextWrapping="Wrap"
+                                               MaxWidth="500"/>
+
+                                </StackPanel>
+
+
+                                <!-- ================================================= -->
+                                <!-- RIGHT: HERO BUTTONS                                -->
+                                <!-- ================================================= -->
+
+                                <StackPanel Grid.Column="2"
+                                            Orientation="Horizontal"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center"
+                                            Margin="20,0,0,0">
+
+
+                                    <!-- ================================================= -->
+                                    <!-- WATCH NOW                                          -->
+                                    <!-- ================================================= -->
+
+                                    <Button x:Name="HeroWatchNowButton"
+                                            Content="▶  WATCH NOW"
+                                            Style="{DynamicResource PrimaryButtonStyle}"
+                                            Focusable="True"
+                                            IsTabStop="True"
+                                            MinWidth="175"
+                                            MinHeight="52"
+                                            FontSize="15"/>
+
+
+                                    <!-- ================================================= -->
+                                    <!-- MY LIST                                            -->
+                                    <!-- ================================================= -->
+
+                                    <Button x:Name="HeroMyListButton"
+                                            Content="＋  MY LIST"
+                                            Style="{DynamicResource SecondaryButtonStyle}"
+                                            Focusable="True"
+                                            IsTabStop="True"
+                                            Margin="14,0,0,0"
+                                            MinWidth="150"
+                                            MinHeight="52"
+                                            FontSize="15"/>
+
+                                </StackPanel>
+
+                            </Grid>
+
+
+                            <!-- ================================================= -->
+                            <!-- HERO CAROUSEL INDICATORS                          -->
+                            <!-- ================================================= -->
+
+                            <StackPanel Grid.Row="1"
+                                        Orientation="Horizontal"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Bottom"
+                                        Margin="0,0,0,18">
+
+
+                                <!-- ================================================= -->
+                                <!-- TEMPORARY CAROUSEL INDICATORS                     -->
+                                <!-- ================================================= -->
+
+                                <Ellipse Width="9"
+                                         Height="9"
+                                         Fill="#FF2A78"
+                                         Margin="5,0"/>
+
+                                <Ellipse Width="9"
+                                         Height="9"
+                                         Fill="#77777F"
+                                         Margin="5,0"/>
+
+                                <Ellipse Width="9"
+                                         Height="9"
+                                         Fill="#77777F"
+                                         Margin="5,0"/>
+
+                                <Ellipse Width="9"
+                                         Height="9"
+                                         Fill="#77777F"
+                                         Margin="5,0"/>
+
+                                <Ellipse Width="9"
+                                         Height="9"
+                                         Fill="#77777F"
+                                         Margin="5,0"/>
+
+                            </StackPanel>
+
+                        </Grid>
+
+                    </Grid>
+
+                </Grid>
+
+
+                <!-- ===================================================== -->
+                <!-- MEDIA CONTENT                                           -->
+                <!-- ===================================================== -->
+
+                <StackPanel Margin="45,0,45,60">
+
+
+                    <!-- ================================================= -->
+                    <!-- CONTINUE WATCHING                                  -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="ContinueWatchingSection"
+                        Title="CONTINUE WATCHING"
+                        Items="{Binding ContinueWatching}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- MY LIST                                             -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="MyListSection"
+                        Title="MY LIST"
+                        Items="{Binding MyList}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- RECENTLY ADDED                                      -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="RecentlyAddedSection"
+                        Title="RECENTLY ADDED"
+                        Items="{Binding RecentlyAdded}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- TOP MOVIES                                          -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="TopMoviesSection"
+                        Title="TOP 10 MOVIES"
+                        Items="{Binding TopMovies}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- TOP TV SHOWS                                        -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="TopShowsSection"
+                        Title="TOP 10 TV SHOWS"
+                        Items="{Binding TopShows}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- TOP ANIME                                           -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="TopAnimeSection"
+                        Title="TOP 10 ANIME"
+                        Items="{Binding TopAnime}"/>
+
+                </StackPanel>
+
+            </StackPanel>
+
+        </ScrollViewer>
+
+    </Grid>
+
+</PluginUserControl>

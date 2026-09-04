@@ -1,0 +1,73 @@
+﻿<UserControl x:Class="StremioVideoCenterControls.MediaSection"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:StremioVideoCenterControls"
+             Focusable="False">
+
+    <StackPanel Margin="0,0,0,35">
+
+        <!-- ===================================================== -->
+        <!-- SECTION TITLE                                         -->
+        <!-- ===================================================== -->
+
+        <TextBlock Text="{Binding Title, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                   FontSize="22"
+                   FontWeight="Bold"
+                   Foreground="White"
+                   Margin="8,0,0,12"/>
+
+
+        <!-- ===================================================== -->
+        <!-- MEDIA ROW                                             -->
+        <!-- ===================================================== -->
+
+        <ScrollViewer x:Name="MediaScrollViewer"
+                      HorizontalScrollBarVisibility="Hidden"
+                      VerticalScrollBarVisibility="Disabled"
+                      Focusable="False"
+                      CanContentScroll="False">
+
+            <ItemsControl x:Name="MediaItemsControl"
+                          ItemsSource="{Binding Items, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                          Focusable="False">
+
+                <!-- ================================================= -->
+                <!-- HORIZONTAL CARD LAYOUT                            -->
+                <!-- ================================================= -->
+
+                <ItemsControl.ItemsPanel>
+
+                    <ItemsPanelTemplate>
+
+                        <StackPanel Orientation="Horizontal"/>
+
+                    </ItemsPanelTemplate>
+
+                </ItemsControl.ItemsPanel>
+
+
+                <!-- ================================================= -->
+                <!-- CARD TEMPLATE                                     -->
+                <!-- ================================================= -->
+
+                <ItemsControl.ItemTemplate>
+
+                    <DataTemplate>
+
+                        <controls:MediaCard
+                            Focusable="True"
+                            IsTabStop="False"
+                            FocusVisualStyle="{x:Null}"
+                            DataContext="{Binding}"/>
+
+                    </DataTemplate>
+
+                </ItemsControl.ItemTemplate>
+
+            </ItemsControl>
+
+        </ScrollViewer>
+
+    </StackPanel>
+
+</UserControl>
