@@ -9,24 +9,12 @@ using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
 {
-    // =========================================================
-    // TMDB SERVICE
-    // =========================================================
-    //
-    // Handles authenticated communication with TMDB.
-    //
-    // This service currently provides:
-    //
-    // 1. Connection testing
-    // 2. Movie discovery
-    // 3. TV discovery
-    // 4. Anime discovery
-    //
-    // The recommendation engine will be built separately
-    // on top of these candidate pools.
-    //
     public class TmdbService
     {
+        // =========================================================
+        // TMDB API
+        // =========================================================
+
         private const string BaseUrl =
             "https://api.themoviedb.org/3/";
 
@@ -66,18 +54,12 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
-        // DISCOVER MOVIES
+        // MOVIE DISCOVERY
         // =========================================================
-        //
-        // Retrieves popular movie candidates.
-        //
-        // Adult content is excluded.
-        // Videos are excluded from the discovery response because
-        // trailer data will be retrieved later when we validate
-        // individual candidates.
-        //
+
         public async Task<List<TmdbDiscoveryItem>>
-            GetMovieCandidatesAsync(int page = 1)
+            GetMovieCandidatesAsync(
+                int page = 1)
         {
             string endpoint =
                 "discover/movie" +
@@ -90,24 +72,20 @@ namespace StremioVideoCenter.Services
                 "&vote_count.gte=50";
 
             TmdbDiscoveryResponse response =
-                await GetDiscoveryResponseAsync(endpoint);
+                await GetDiscoveryResponseAsync(
+                    endpoint);
 
             return response?.Results ??
                    new List<TmdbDiscoveryItem>();
         }
 
         // =========================================================
-        // DISCOVER TV SHOWS
+        // TV DISCOVERY
         // =========================================================
-        //
-        // Retrieves popular TV show candidates.
-        //
-        // Adult content is excluded and a minimum vote count
-        // is used to prevent extremely obscure results from
-        // dominating the candidate pool.
-        //
+
         public async Task<List<TmdbDiscoveryItem>>
-            GetTvCandidatesAsync(int page = 1)
+            GetTvCandidatesAsync(
+                int page = 1)
         {
             string endpoint =
                 "discover/tv" +
@@ -119,27 +97,20 @@ namespace StremioVideoCenter.Services
                 "&vote_count.gte=50";
 
             TmdbDiscoveryResponse response =
-                await GetDiscoveryResponseAsync(endpoint);
+                await GetDiscoveryResponseAsync(
+                    endpoint);
 
             return response?.Results ??
                    new List<TmdbDiscoveryItem>();
         }
 
         // =========================================================
-        // DISCOVER ANIME
+        // ANIME DISCOVERY
         // =========================================================
-        //
-        // TMDB does not provide a separate "anime" endpoint.
-        //
-        // We therefore use TMDB's TV discovery system and combine:
-        //
-        // Animation genre
-        // Japanese origin country
-        //
-        // This gives us a strong initial anime candidate pool.
-        //
+
         public async Task<List<TmdbDiscoveryItem>>
-            GetAnimeCandidatesAsync(int page = 1)
+            GetAnimeCandidatesAsync(
+                int page = 1)
         {
             string endpoint =
                 "discover/tv" +
@@ -153,18 +124,255 @@ namespace StremioVideoCenter.Services
                 "&with_origin_country=JP";
 
             TmdbDiscoveryResponse response =
-                await GetDiscoveryResponseAsync(endpoint);
+                await GetDiscoveryResponseAsync(
+                    endpoint);
 
             return response?.Results ??
                    new List<TmdbDiscoveryItem>();
         }
 
         // =========================================================
-        // GET DISCOVERY RESPONSE
+        // MOVIE DETAILS + VIDEOS
+        // =========================================================
+
+        public async Task<TmdbDetailsItem>
+            GetMovieDetailsAsync(
+                int movieId)
+        {
+            string endpoint =
+                "movie/" +
+                movieId +
+                "?language=en-US" +
+                "&append_to_response=videos";
+
+            string json =
+                await GetAsync(endpoint);
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            return Deserialize<TmdbDetailsItem>(
+                json);
+        }
+
+        // =========================================================
+        // TV DETAILS + VIDEOS
+        // =========================================================
+
+        public async Task<TmdbDetailsItem>
+            GetTvDetailsAsync(
+                int tvId)
+        {
+            string endpoint =
+                "tv/" +
+                tvId +
+                "?language=en-US" +
+                "&append_to_response=videos";
+
+            string json =
+                await GetAsync(endpoint);
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            return Deserialize<TmdbDetailsItem>(
+                json);
+        }
+
+        // =========================================================
+        // BEST TRAILER / TEASER
+        // =========================================================
+
+        public async Task<TmdbVideoItem>
+            GetBestTrailerOrTeaserAsync(
+                int id,
+                bool isTv)
+        {
+            TmdbDetailsItem details;
+
+            if (isTv)
+            {
+                details =
+                    await GetTvDetailsAsync(id);
+            }
+            else
+            {
+                details =
+                    await GetMovieDetailsAsync(id);
+            }
+
+            if (details == null ||
+                details.Videos == null ||
+                details.Videos.Results == null)
+            {
+                return null;
+            }
+
+            var videos =
+                details.Videos.Results;
+
+            // =========================================================
+            // PREFER OFFICIAL ENGLISH TRAILER
+            // =========================================================
+
+            var video =
+                FindBestVideo(
+                    videos,
+                    "Trailer",
+                    true,
+                    true);
+
+            if (video != null)
+            {
+                return video;
+            }
+
+            // =========================================================
+            // PREFER OFFICIAL ENGLISH TEASER
+            // =========================================================
+
+            video =
+                FindBestVideo(
+                    videos,
+                    "Teaser",
+                    true,
+                    true);
+
+            if (video != null)
+            {
+                return video;
+            }
+
+            // =========================================================
+            // ANY ENGLISH TRAILER
+            // =========================================================
+
+            video =
+                FindBestVideo(
+                    videos,
+                    "Trailer",
+                    false,
+                    true);
+
+            if (video != null)
+            {
+                return video;
+            }
+
+            // =========================================================
+            // ANY ENGLISH TEASER
+            // =========================================================
+
+            video =
+                FindBestVideo(
+                    videos,
+                    "Teaser",
+                    false,
+                    true);
+
+            if (video != null)
+            {
+                return video;
+            }
+
+            // =========================================================
+            // FALLBACK TO ANY TRAILER
+            // =========================================================
+
+            video =
+                FindBestVideo(
+                    videos,
+                    "Trailer",
+                    false,
+                    false);
+
+            if (video != null)
+            {
+                return video;
+            }
+
+            // =========================================================
+            // FALLBACK TO ANY TEASER
+            // =========================================================
+
+            return FindBestVideo(
+                videos,
+                "Teaser",
+                false,
+                false);
+        }
+
+        // =========================================================
+        // FIND BEST VIDEO
+        // =========================================================
+
+        private TmdbVideoItem FindBestVideo(
+            List<TmdbVideoItem> videos,
+            string type,
+            bool officialOnly,
+            bool englishOnly)
+        {
+            foreach (var video in videos)
+            {
+                if (video == null)
+                {
+                    continue;
+                }
+
+                if (!string.Equals(
+                        video.Site,
+                        "YouTube",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(
+                        video.Type,
+                        type,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(
+                        video.Key))
+                {
+                    continue;
+                }
+
+                if (officialOnly &&
+                    !video.Official)
+                {
+                    continue;
+                }
+
+                if (englishOnly &&
+                    !string.Equals(
+                        video.Iso6391,
+                        "en",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return video;
+            }
+
+            return null;
+        }
+
+        // =========================================================
+        // DISCOVERY RESPONSE
         // =========================================================
 
         private async Task<TmdbDiscoveryResponse>
-            GetDiscoveryResponseAsync(string endpoint)
+            GetDiscoveryResponseAsync(
+                string endpoint)
         {
             string json =
                 await GetAsync(endpoint);
@@ -174,27 +382,26 @@ namespace StremioVideoCenter.Services
                 return null;
             }
 
-            return Deserialize<TmdbDiscoveryResponse>(json);
+            return Deserialize<TmdbDiscoveryResponse>(
+                json);
         }
 
         // =========================================================
-        // AUTHENTICATED GET REQUEST
+        // HTTP REQUEST
         // =========================================================
-        //
-        // All TMDB requests pass through this method.
-        //
-        // This guarantees that the configured user's
-        // Authorization Bearer token is applied consistently.
-        //
-        private async Task<string> GetAsync(string endpoint)
+
+        private async Task<string> GetAsync(
+            string endpoint)
         {
-            if (string.IsNullOrWhiteSpace(accessToken))
+            if (string.IsNullOrWhiteSpace(
+                    accessToken))
             {
                 throw new InvalidOperationException(
                     "TMDB API credential has not been configured.");
             }
 
-            using (var client = new HttpClient())
+            using (var client =
+                new HttpClient())
             {
                 client.BaseAddress =
                     new Uri(BaseUrl);
@@ -228,7 +435,8 @@ namespace StremioVideoCenter.Services
         // JSON DESERIALIZATION
         // =========================================================
 
-        private T Deserialize<T>(string json)
+        private T Deserialize<T>(
+            string json)
         {
             var serializer =
                 new DataContractJsonSerializer(
@@ -236,17 +444,18 @@ namespace StremioVideoCenter.Services
 
             using (var stream =
                 new MemoryStream(
-                    System.Text.Encoding.UTF8.GetBytes(json)))
+                    System.Text.Encoding.UTF8
+                        .GetBytes(json)))
             {
-                return (T)serializer.ReadObject(stream);
+                return (T)serializer.ReadObject(
+                    stream);
             }
         }
     }
 
-
-    // =========================================================
-    // TMDB DISCOVERY RESPONSE
-    // =========================================================
+    // =============================================================
+    // DISCOVERY RESPONSE
+    // =============================================================
 
     [DataContract]
     public class TmdbDiscoveryResponse
@@ -264,17 +473,10 @@ namespace StremioVideoCenter.Services
         public List<TmdbDiscoveryItem> Results { get; set; }
     }
 
+    // =============================================================
+    // DISCOVERY ITEM
+    // =============================================================
 
-    // =========================================================
-    // TMDB DISCOVERY ITEM
-    // =========================================================
-    //
-    // Unified representation of a TMDB movie or TV result.
-    //
-    // We will later convert this into our application's
-    // HeroItem model after the recommendation system has
-    // finished validating the candidate.
-    //
     [DataContract]
     public class TmdbDiscoveryItem
     {
@@ -326,15 +528,12 @@ namespace StremioVideoCenter.Services
         [DataMember(Name = "genre_ids")]
         public List<int> GenreIds { get; set; }
 
-        // =========================================================
-        // DISPLAY TITLE
-        // =========================================================
-
         public string DisplayTitle
         {
             get
             {
-                if (!string.IsNullOrWhiteSpace(Title))
+                if (!string.IsNullOrWhiteSpace(
+                        Title))
                 {
                     return Title;
                 }
@@ -343,39 +542,36 @@ namespace StremioVideoCenter.Services
             }
         }
 
-        // =========================================================
-        // DISPLAY YEAR
-        // =========================================================
-
         public string DisplayYear
         {
             get
             {
                 string date =
-                    !string.IsNullOrWhiteSpace(ReleaseDate)
+                    !string.IsNullOrWhiteSpace(
+                        ReleaseDate)
                         ? ReleaseDate
                         : FirstAirDate;
 
-                if (string.IsNullOrWhiteSpace(date) ||
+                if (string.IsNullOrWhiteSpace(
+                        date) ||
                     date.Length < 4)
                 {
                     return string.Empty;
                 }
 
-                return date.Substring(0, 4);
+                return date.Substring(
+                    0,
+                    4);
             }
         }
-
-        // =========================================================
-        // ARTWORK AVAILABILITY
-        // =========================================================
 
         public bool HasPoster
         {
             get
             {
-                return !string.IsNullOrWhiteSpace(
-                    PosterPath);
+                return
+                    !string.IsNullOrWhiteSpace(
+                        PosterPath);
             }
         }
 
@@ -383,9 +579,79 @@ namespace StremioVideoCenter.Services
         {
             get
             {
-                return !string.IsNullOrWhiteSpace(
-                    BackdropPath);
+                return
+                    !string.IsNullOrWhiteSpace(
+                        BackdropPath);
             }
         }
+    }
+
+    // =============================================================
+    // DETAILS ITEM
+    // =============================================================
+
+    [DataContract]
+    public class TmdbDetailsItem
+    {
+        [DataMember(Name = "id")]
+        public int Id { get; set; }
+
+        [DataMember(Name = "title")]
+        public string Title { get; set; }
+
+        [DataMember(Name = "name")]
+        public string Name { get; set; }
+
+        [DataMember(Name = "overview")]
+        public string Overview { get; set; }
+
+        [DataMember(Name = "videos")]
+        public TmdbVideoResponse Videos { get; set; }
+    }
+
+    // =============================================================
+    // VIDEO RESPONSE
+    // =============================================================
+
+    [DataContract]
+    public class TmdbVideoResponse
+    {
+        [DataMember(Name = "results")]
+        public List<TmdbVideoItem> Results { get; set; }
+    }
+
+    // =============================================================
+    // VIDEO ITEM
+    // =============================================================
+
+    [DataContract]
+    public class TmdbVideoItem
+    {
+        [DataMember(Name = "iso_639_1")]
+        public string Iso6391 { get; set; }
+
+        [DataMember(Name = "iso_3166_1")]
+        public string Iso31661 { get; set; }
+
+        [DataMember(Name = "name")]
+        public string Name { get; set; }
+
+        [DataMember(Name = "key")]
+        public string Key { get; set; }
+
+        [DataMember(Name = "site")]
+        public string Site { get; set; }
+
+        [DataMember(Name = "size")]
+        public int Size { get; set; }
+
+        [DataMember(Name = "type")]
+        public string Type { get; set; }
+
+        [DataMember(Name = "official")]
+        public bool Official { get; set; }
+
+        [DataMember(Name = "published_at")]
+        public string PublishedAt { get; set; }
     }
 }

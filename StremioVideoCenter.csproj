@@ -81,6 +81,7 @@
     </Compile>
     <Compile Include="Models\HeroItem.cs" />
     <Compile Include="Models\MediaItem.cs" />
+    <Compile Include="Services\HeroRecommendationService.cs" />
     <Compile Include="Services\OmdbService.cs" />
     <Compile Include="Services\TmdbService.cs" />
     <Compile Include="StremioVideoCenter.cs" />

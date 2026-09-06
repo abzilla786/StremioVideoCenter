@@ -12,12 +12,15 @@ namespace StremioVideoCenter.Models
         private BitmapImage _backdropImage;
         private bool _backdropLoading;
 
+        // =========================================================
+        // TMDB IDENTIFICATION
+        // =========================================================
+
+        public int TmdbId { get; set; }
+
         public string Title { get; set; }
-
         public string Type { get; set; }
-
         public string Year { get; set; }
-
         public string Rating { get; set; }
 
         public string Synopsis { get; set; }

@@ -174,7 +174,7 @@ namespace StremioVideoCenter
             }
         }
         // =========================================================
-        // TEST TMDB DISCOVERY
+        // TEST TMDB VIDEO DISCOVERY
         // =========================================================
 
         private async void TestTmdbDiscovery_Click(
@@ -201,40 +201,103 @@ namespace StremioVideoCenter
             }
 
             TmdbDiscoveryStatus.Text =
-                "Testing TMDB discovery...";
+                "Testing TMDB video discovery...";
 
             TestTmdbDiscoveryButton.IsEnabled = false;
 
             try
             {
+                // =========================================================
+                // CREATE TMDB SERVICES
+                // =========================================================
+
                 var tmdbService =
                     new TmdbService(accessToken);
 
-                var movies =
-                    await tmdbService
-                        .GetMovieCandidatesAsync();
+                var recommendationService =
+                    new HeroRecommendationService(
+                        tmdbService);
 
-                var tvShows =
-                    await tmdbService
-                        .GetTvCandidatesAsync();
+                // =========================================================
+                // GET FIVE HERO RECOMMENDATIONS
+                // =========================================================
 
-                var anime =
-                    await tmdbService
-                        .GetAnimeCandidatesAsync();
+                var recommendations =
+                    await recommendationService
+                        .GetRecommendationsAsync();
+
+                if (recommendations == null ||
+                    recommendations.Count == 0)
+                {
+                    TmdbDiscoveryStatus.Text =
+                        "No usable Hero recommendations were returned.";
+
+                    return;
+                }
+
+                // =========================================================
+                // CHECK VIDEO INFORMATION
+                // =========================================================
+
+                var results =
+                    new System.Collections.Generic.List<string>();
+
+                foreach (var hero in recommendations)
+                {
+                    bool isTv =
+                        string.Equals(
+                            hero.Type,
+                            "TV",
+                            System.StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(
+                            hero.Type,
+                            "Anime",
+                            System.StringComparison.OrdinalIgnoreCase);
+
+                    var video =
+                        await tmdbService
+                            .GetBestTrailerOrTeaserAsync(
+                                hero.TmdbId,
+                                isTv);
+
+                    if (video == null)
+                    {
+                        results.Add(
+                            hero.Title +
+                            " → No suitable trailer/teaser");
+                    }
+                    else
+                    {
+                        string officialText =
+                            video.Official
+                                ? "Official "
+                                : string.Empty;
+
+                        results.Add(
+                            hero.Title +
+                            " → " +
+                            officialText +
+                            video.Type +
+                            " (" +
+                            video.Site +
+                            ")");
+                    }
+                }
+
+                // =========================================================
+                // DISPLAY RESULTS
+                // =========================================================
 
                 TmdbDiscoveryStatus.Text =
-                    "TMDB discovery successful. " +
-                    "Movies: " +
-                    movies.Count +
-                    " | TV Shows: " +
-                    tvShows.Count +
-                    " | Anime: " +
-                    anime.Count;
+                    "TMDB video discovery successful:\n\n" +
+                    string.Join(
+                        "\n",
+                        results);
             }
             catch
             {
                 TmdbDiscoveryStatus.Text =
-                    "TMDB discovery failed. Please check your credential and internet connection.";
+                    "TMDB video discovery failed. Please check your credential and internet connection.";
             }
             finally
             {
