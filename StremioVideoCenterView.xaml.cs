@@ -1,12 +1,13 @@
 ﻿using Playnite.SDK.Controls;
 using StremioVideoCenterControls;
 using StremioVideoCenter.ViewModels;
+using StremioVideoCenter.Services;
+using StremioVideoCenter.Models;
 using System;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using StremioVideoCenter.Controls;
 
 namespace StremioVideoCenter
@@ -19,48 +20,45 @@ namespace StremioVideoCenter
 
         private readonly MediaSection[] sections;
 
-
         // =========================================================
-        // LIBVLC PLAYER
+        // STREMIO PLAYBACK TEST
         // =========================================================
 
-        private LibVlcTestPlayer _libVlcTestPlayer;
-
+        private LibVlcPlayer _stremioPlayer;
 
         // =========================================================
         // STARTUP STATE
         // =========================================================
 
-        // Prevents the startup sequence from being triggered more
-        // than once if the Loaded event fires multiple times.
         private bool _startupSequenceStarted;
 
 
         // =========================================================
-        // INITIALISE VIEW
+        // TMDB CREDENTIAL
         // =========================================================
 
-        public StremioVideoCenterView()
+        private readonly string _tmdbAccessToken;
+
+
+        // =========================================================
+        // CONSTRUCTOR
+        // =========================================================
+
+        public StremioVideoCenterView(
+            string tmdbAccessToken = null)
         {
             InitializeComponent();
 
-
             // =========================================================
-            // INITIALISE LIBVLC PLAYER
+            // STORE TMDB CREDENTIAL
             // =========================================================
 
-            _libVlcTestPlayer =
-                new LibVlcTestPlayer();
-
-
-            HeroMediaFrame.Children.Clear();
-
-            HeroMediaFrame.Children.Add(
-                _libVlcTestPlayer);
+            _tmdbAccessToken =
+                tmdbAccessToken;
 
 
             // =========================================================
-            // INITIALISE VIEW MODEL
+            // CREATE HOME VIEW MODEL
             // =========================================================
 
             DataContext =
@@ -68,22 +66,23 @@ namespace StremioVideoCenter
 
 
             // =========================================================
-            // MEDIA SECTIONS
+            // REGISTER MEDIA SECTIONS
             // =========================================================
 
-            sections = new[]
-            {
-                ContinueWatchingSection,
-                MyListSection,
-                RecentlyAddedSection,
-                TopMoviesSection,
-                TopShowsSection,
-                TopAnimeSection
-            };
+            sections =
+                new[]
+                {
+                    ContinueWatchingSection,
+                    MyListSection,
+                    RecentlyAddedSection,
+                    TopMoviesSection,
+                    TopShowsSection,
+                    TopAnimeSection
+                };
 
 
             // =========================================================
-            // EVENT HANDLERS
+            // REGISTER VIEW EVENTS
             // =========================================================
 
             Loaded +=
@@ -118,14 +117,38 @@ namespace StremioVideoCenter
 
 
             // =========================================================
-            // LOAD HERO BACKDROP
+            // LOAD TMDB HERO RECOMMENDATIONS
             // =========================================================
 
-            if (DataContext is HomeViewModel vm &&
-                vm.CurrentHeroItem != null)
+            if (!string.IsNullOrWhiteSpace(
+                    _tmdbAccessToken) &&
+                DataContext is HomeViewModel vm)
             {
-                await vm.CurrentHeroItem.LoadBackdropAsync();
+                try
+                {
+                    TmdbService tmdbService =
+                        new TmdbService(
+                            _tmdbAccessToken);
+
+                    HeroRecommendationService recommendationService =
+                        new HeroRecommendationService(
+                            tmdbService);
+
+                    await vm.LoadHeroRecommendationsAsync(
+                        recommendationService);
+                }
+                catch
+                {
+                    // HomeViewModel retains its fallback Hero data.
+                }
             }
+
+
+            // =========================================================
+            // UPDATE CAROUSEL INDICATORS
+            // =========================================================
+
+            UpdateHeroIndicators();
 
 
             // =========================================================
@@ -139,128 +162,364 @@ namespace StremioVideoCenter
                 }),
                 System.Windows.Threading.DispatcherPriority.Loaded);
 
-
             // =========================================================
-            // START HERO MEDIA SEQUENCE
+            // TEMPORARY STREMIO CONNECTION TEST
             // =========================================================
 
-            await StartHeroMediaSequence();
+            await PlayStremioTestStreamAsync();
+            // =========================================================
+            // START BACKDROP ROTATION
+            // =========================================================
+
+            await StartHeroBackdropRotationAsync();
+
+
+            
         }
 
 
         // =========================================================
-        // HERO MEDIA STARTUP SEQUENCE
-        // =========================================================
-        //
-        // Timeline:
-        //
-        // 0.00s
-        // Backdrop visible.
-        //
-        // 0.00s - 0.80s
-        // Backdrop remains fully visible.
-        //
-        // 0.80s
-        // Trailer begins playback.
-        //
-        // 0.80s - 1.50s
-        // Trailer/video surface fades into view.
-        //
-        // 1.50s
-        // Trailer fully visible.
-        //
+        // LOAD HERO BACKDROP
         // =========================================================
 
-        private async Task StartHeroMediaSequence()
+        private async Task LoadCurrentHeroBackdropAsync(
+            HeroItem heroItem)
         {
-            // =========================================================
-            // ENSURE VIDEO SURFACE STARTS INVISIBLE
-            // =========================================================
+            if (heroItem == null)
+            {
+                return;
+            }
 
-            _libVlcTestPlayer.Opacity = 0;
-
-
-            // =========================================================
-            // BACKDROP DISPLAY PERIOD
-            //
-            // The backdrop gets approximately 800ms of uninterrupted
-            // visibility before trailer playback begins.
-            // =========================================================
-
-            await Task.Delay(800);
-
-
-            // =========================================================
-            // START TRAILER
-            // =========================================================
-
-            _libVlcTestPlayer.PlayTestVideo(
-                "https://streams.videolan.org/misc/unity-samples/BigBuckBunny.avi");
+            try
+            {
+                await heroItem.LoadBackdropAsync();
+            }
+            catch
+            {
+                // The bound BackdropUrl remains the fallback source.
+            }
+        }
 
 
-            // =========================================================
-            // ALLOW LIBVLC TO INITIALISE
-            //
-            // Give LibVLC a short moment to create its video output
-            // before starting the visual transition.
-            // =========================================================
+        // =========================================================
+        // HERO BACKDROP ROTATION
+        // =========================================================
+        //
+        // Backdrop-only Hero mode.
+        //
+        // Each recommendation remains visible for 15 seconds.
+        // Manual navigation starts a fresh 15-second display period.
+        // =========================================================
 
-            await Task.Delay(100);
+        private async Task StartHeroBackdropRotationAsync()
+        {
+            HomeViewModel vm =
+                DataContext as HomeViewModel;
 
+            if (vm == null ||
+                vm.CurrentHeroItem == null)
+            {
+                return;
+            }
 
-            // =========================================================
-            // FADE VIDEO INTO VIEW
-            //
-            // Target duration:
-            // approximately 600ms.
-            //
-            // Combined with the 800ms backdrop period and the small
-            // LibVLC startup allowance, this keeps the transition
-            // around our 1.5 second target.
-            // =========================================================
-
-            DoubleAnimation fadeIn =
-                new DoubleAnimation
-                {
-                    From = 0,
-                    To = 1,
-                    Duration =
-                        new Duration(
-                            TimeSpan.FromMilliseconds(600)),
-                    EasingFunction =
-                        new QuadraticEase
-                        {
-                            EasingMode =
-                                EasingMode.EaseInOut
-                        }
-                };
+            HeroItem heroItem =
+                vm.CurrentHeroItem;
 
 
             // =========================================================
-            // START VIDEO SURFACE FADE
+            // HERO DISPLAY PERIOD
             // =========================================================
 
-            _libVlcTestPlayer.BeginAnimation(
-                UIElement.OpacityProperty,
-                fadeIn);
-
-
-            // =========================================================
-            // WAIT FOR TRANSITION TO COMPLETE
-            // =========================================================
-
-            await Task.Delay(600);
+            await Task.Delay(
+                TimeSpan.FromSeconds(15));
 
 
             // =========================================================
-            // ENSURE FINAL OPACITY
+            // ONLY ADVANCE IF THIS HERO IS STILL ACTIVE
             // =========================================================
 
-            _libVlcTestPlayer.BeginAnimation(
-                UIElement.OpacityProperty,
-                null);
+            if (ReferenceEquals(
+                    vm.CurrentHeroItem,
+                    heroItem))
+            {
+                ChangeHero(1);
+            }
+        }
 
-            _libVlcTestPlayer.Opacity = 1;
+
+        // =========================================================
+        // LOAD HERO AND RESTART ROTATION
+        // =========================================================
+
+        private async Task LoadHeroAndRestartRotationAsync(
+            HeroItem heroItem)
+        {
+            await LoadCurrentHeroBackdropAsync(
+                heroItem);
+
+            await StartHeroBackdropRotationAsync();
+        }
+
+
+        // =========================================================
+        // CHANGE HERO
+        // =========================================================
+
+        private void ChangeHero(
+            int direction)
+        {
+            HomeViewModel vm =
+                DataContext as HomeViewModel;
+
+            if (vm == null)
+            {
+                return;
+            }
+
+            if (vm.HeroItems == null ||
+                vm.HeroItems.Count == 0)
+            {
+                return;
+            }
+
+            int nextIndex =
+                vm.CurrentHeroIndex +
+                direction;
+
+            if (nextIndex < 0)
+            {
+                nextIndex =
+                    vm.HeroItems.Count - 1;
+            }
+
+            if (nextIndex >= vm.HeroItems.Count)
+            {
+                nextIndex = 0;
+            }
+
+            vm.CurrentHeroIndex =
+                nextIndex;
+
+            UpdateHeroIndicators();
+
+            if (vm.CurrentHeroItem != null)
+            {
+                _ =
+                    LoadHeroAndRestartRotationAsync(
+                        vm.CurrentHeroItem);
+            }
+        }
+
+
+        // =========================================================
+        // SET HERO INDEX
+        // =========================================================
+
+        private void SetHeroIndex(
+            int index)
+        {
+            HomeViewModel vm =
+                DataContext as HomeViewModel;
+
+            if (vm == null)
+            {
+                return;
+            }
+
+            if (vm.HeroItems == null ||
+                index < 0 ||
+                index >= vm.HeroItems.Count)
+            {
+                return;
+            }
+
+            vm.CurrentHeroIndex =
+                index;
+
+            UpdateHeroIndicators();
+
+            if (vm.CurrentHeroItem != null)
+            {
+                _ =
+                    LoadHeroAndRestartRotationAsync(
+                        vm.CurrentHeroItem);
+            }
+        }
+
+
+        // =========================================================
+        // HERO INDICATORS
+        // =========================================================
+
+        private void UpdateHeroIndicators()
+        {
+            HomeViewModel vm =
+                DataContext as HomeViewModel;
+
+            if (vm == null)
+            {
+                return;
+            }
+
+            int count =
+                vm.HeroItems != null
+                    ? vm.HeroItems.Count
+                    : 0;
+
+            int currentIndex =
+                vm.CurrentHeroIndex;
+
+            UpdateHeroIndicator(
+                HeroIndicator1,
+                HeroIndicatorEllipse1,
+                0,
+                count,
+                currentIndex);
+
+            UpdateHeroIndicator(
+                HeroIndicator2,
+                HeroIndicatorEllipse2,
+                1,
+                count,
+                currentIndex);
+
+            UpdateHeroIndicator(
+                HeroIndicator3,
+                HeroIndicatorEllipse3,
+                2,
+                count,
+                currentIndex);
+
+            UpdateHeroIndicator(
+                HeroIndicator4,
+                HeroIndicatorEllipse4,
+                3,
+                count,
+                currentIndex);
+
+            UpdateHeroIndicator(
+                HeroIndicator5,
+                HeroIndicatorEllipse5,
+                4,
+                count,
+                currentIndex);
+        }
+
+
+        // =========================================================
+        // UPDATE INDIVIDUAL INDICATOR
+        // =========================================================
+
+        private void UpdateHeroIndicator(
+            System.Windows.Controls.Button button,
+            System.Windows.Shapes.Ellipse ellipse,
+            int index,
+            int heroCount,
+            int currentIndex)
+        {
+            if (index >= heroCount)
+            {
+                button.Visibility =
+                    Visibility.Collapsed;
+
+                return;
+            }
+
+            button.Visibility =
+                Visibility.Visible;
+
+            if (index == currentIndex)
+            {
+                ellipse.Fill =
+                    new SolidColorBrush(
+                        Color.FromRgb(
+                            255,
+                            42,
+                            120));
+
+                ellipse.Width = 11;
+                ellipse.Height = 11;
+            }
+            else
+            {
+                ellipse.Fill =
+                    new SolidColorBrush(
+                        Color.FromRgb(
+                            119,
+                            119,
+                            127));
+
+                ellipse.Width = 9;
+                ellipse.Height = 9;
+            }
+        }
+
+
+        // =========================================================
+        // HERO ARROW BUTTONS
+        // =========================================================
+
+        private void HeroPreviousButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            ChangeHero(-1);
+
+            HeroPreviousButton.Focus();
+        }
+
+
+        private void HeroNextButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            ChangeHero(1);
+
+            HeroNextButton.Focus();
+        }
+
+
+        // =========================================================
+        // HERO INDICATOR BUTTONS
+        // =========================================================
+
+        private void HeroIndicator1_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            SetHeroIndex(0);
+        }
+
+
+        private void HeroIndicator2_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            SetHeroIndex(1);
+        }
+
+
+        private void HeroIndicator3_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            SetHeroIndex(2);
+        }
+
+
+        private void HeroIndicator4_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            SetHeroIndex(3);
+        }
+
+
+        private void HeroIndicator5_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            SetHeroIndex(4);
         }
 
 
@@ -282,17 +541,7 @@ namespace StremioVideoCenter
                     continue;
                 }
 
-
-                // =====================================================
-                // FOCUS FIRST CARD
-                // =====================================================
-
                 section.FocusFirstCard();
-
-
-                // =====================================================
-                // KEEP PAGE AT TOP
-                // =====================================================
 
                 MainScrollViewer.ScrollToVerticalOffset(0);
 
@@ -310,92 +559,42 @@ namespace StremioVideoCenter
             KeyEventArgs e)
         {
             // =====================================================
-            // HERO NAVIGATION
+            // HERO CAROUSEL BUTTONS
             // =====================================================
 
-            if (HeroWatchNowButton.IsKeyboardFocusWithin ||
-                HeroMyListButton.IsKeyboardFocusWithin)
+            if (HeroPreviousButton.IsKeyboardFocusWithin ||
+                HeroNextButton.IsKeyboardFocusWithin)
             {
-                // =================================================
-                // LEFT
-                // =================================================
-
                 if (e.Key == Key.Left)
                 {
-                    if (HeroMyListButton.IsKeyboardFocusWithin)
-                    {
-                        // HERO MY LIST -> WATCH NOW
+                    ChangeHero(-1);
 
-                        HeroWatchNowButton.Focus();
+                    HeroPreviousButton.Focus();
 
-                        e.Handled = true;
-                    }
-                    else if (HeroWatchNowButton.IsKeyboardFocusWithin)
-                    {
-                        // WATCH NOW -> SEARCH
-
-                        SearchButton.Focus();
-
-                        e.Handled = true;
-                    }
+                    e.Handled = true;
 
                     return;
                 }
-
-
-                // =================================================
-                // RIGHT
-                // =================================================
 
                 if (e.Key == Key.Right)
                 {
-                    if (HeroWatchNowButton.IsKeyboardFocusWithin)
-                    {
-                        // WATCH NOW -> HERO MY LIST
+                    ChangeHero(1);
 
-                        HeroMyListButton.Focus();
+                    HeroNextButton.Focus();
 
-                        e.Handled = true;
-                    }
-                    else if (HeroMyListButton.IsKeyboardFocusWithin)
-                    {
-                        // HERO MY LIST -> HOME
-
-                        HomeButton.Focus();
-
-                        e.Handled = true;
-                    }
+                    e.Handled = true;
 
                     return;
                 }
-
-
-                // =================================================
-                // DOWN
-                // HERO -> FIRST MEDIA SECTION
-                // =================================================
 
                 if (e.Key == Key.Down)
                 {
-                    if (sections.Length > 0 &&
-                        sections[0] != null)
-                    {
-                        // Focus first card without moving
-                        // the main page vertically.
+                    HeroWatchNowButton.Focus();
 
-                        sections[0].FocusFirstCard();
-
-                        e.Handled = true;
-                    }
+                    e.Handled = true;
 
                     return;
                 }
-
-
-                // =================================================
-                // UP
-                // HERO -> HOME
-                // =================================================
 
                 if (e.Key == Key.Up)
                 {
@@ -405,8 +604,73 @@ namespace StremioVideoCenter
 
                     return;
                 }
+            }
 
-                return;
+
+            // =====================================================
+            // HERO INFORMATION BUTTONS
+            // =====================================================
+
+            if (HeroWatchNowButton.IsKeyboardFocusWithin ||
+                HeroMyListButton.IsKeyboardFocusWithin)
+            {
+                if (e.Key == Key.Left)
+                {
+                    if (HeroMyListButton.IsKeyboardFocusWithin)
+                    {
+                        HeroWatchNowButton.Focus();
+
+                        e.Handled = true;
+                    }
+                    else if (HeroWatchNowButton.IsKeyboardFocusWithin)
+                    {
+                        SearchButton.Focus();
+
+                        e.Handled = true;
+                    }
+
+                    return;
+                }
+
+                if (e.Key == Key.Right)
+                {
+                    if (HeroWatchNowButton.IsKeyboardFocusWithin)
+                    {
+                        HeroMyListButton.Focus();
+
+                        e.Handled = true;
+                    }
+                    else if (HeroMyListButton.IsKeyboardFocusWithin)
+                    {
+                        HomeButton.Focus();
+
+                        e.Handled = true;
+                    }
+
+                    return;
+                }
+
+                if (e.Key == Key.Up)
+                {
+                    HeroPreviousButton.Focus();
+
+                    e.Handled = true;
+
+                    return;
+                }
+
+                if (e.Key == Key.Down)
+                {
+                    if (sections.Length > 0 &&
+                        sections[0] != null)
+                    {
+                        sections[0].FocusFirstCard();
+
+                        e.Handled = true;
+                    }
+
+                    return;
+                }
             }
 
 
@@ -424,8 +688,6 @@ namespace StremioVideoCenter
                     HistoryButton.IsKeyboardFocusWithin ||
                     SearchButton.IsKeyboardFocusWithin)
                 {
-                    // ANY TOP NAV BUTTON -> HERO WATCH NOW
-
                     HeroWatchNowButton.Focus();
 
                     e.Handled = true;
@@ -472,11 +734,6 @@ namespace StremioVideoCenter
             MediaSection currentSection =
                 GetFocusedSection();
 
-
-            // =====================================================
-            // LEFT / RIGHT
-            // =====================================================
-
             if (e.Key == Key.Left ||
                 e.Key == Key.Right)
             {
@@ -485,12 +742,10 @@ namespace StremioVideoCenter
                     return;
                 }
 
-
                 int direction =
                     e.Key == Key.Left
                         ? -1
                         : 1;
-
 
                 currentSection.MoveHorizontal(
                     direction);
@@ -500,11 +755,6 @@ namespace StremioVideoCenter
                 return;
             }
 
-
-            // =====================================================
-            // UP / DOWN
-            // =====================================================
-
             if (e.Key == Key.Up ||
                 e.Key == Key.Down)
             {
@@ -512,7 +762,6 @@ namespace StremioVideoCenter
                 {
                     return;
                 }
-
 
                 MoveVertical(
                     currentSection,
@@ -538,22 +787,15 @@ namespace StremioVideoCenter
                     sections,
                     currentSection);
 
-
             if (currentIndex < 0)
             {
                 return;
             }
 
-
             int direction =
                 key == Key.Up
                     ? -1
                     : 1;
-
-
-            // =====================================================
-            // FIRST MEDIA SECTION -> HERO
-            // =====================================================
 
             if (key == Key.Up &&
                 currentIndex == 0)
@@ -563,10 +805,8 @@ namespace StremioVideoCenter
                 return;
             }
 
-
             int targetIndex =
                 currentIndex + direction;
-
 
             if (targetIndex < 0 ||
                 targetIndex >= sections.Length)
@@ -574,25 +814,16 @@ namespace StremioVideoCenter
                 return;
             }
 
-
             MediaSection targetSection =
                 sections[targetIndex];
 
-
-            if (targetSection == null)
+            if (targetSection == null ||
+                targetSection.Items == null)
             {
                 return;
             }
-
-
-            if (targetSection.Items == null)
-            {
-                return;
-            }
-
 
             targetSection.FocusFirstCard();
-
 
             if (!targetSection.IsFirstCardVisible(
                     MainScrollViewer))
@@ -619,7 +850,6 @@ namespace StremioVideoCenter
                 }
             }
 
-
             return null;
         }
 
@@ -637,22 +867,18 @@ namespace StremioVideoCenter
                 return;
             }
 
-
             double amount =
                 e.Delta * 0.8;
-
 
             double targetOffset =
                 MainScrollViewer.VerticalOffset
                 - amount;
-
 
             double maxOffset =
                 Math.Max(
                     0,
                     MainScrollViewer.ExtentHeight
                     - MainScrollViewer.ViewportHeight);
-
 
             targetOffset =
                 Math.Max(
@@ -661,10 +887,8 @@ namespace StremioVideoCenter
                         targetOffset,
                         maxOffset));
 
-
             MainScrollViewer.ScrollToVerticalOffset(
                 targetOffset);
-
 
             e.Handled = true;
         }
@@ -683,24 +907,20 @@ namespace StremioVideoCenter
                     section.TransformToAncestor(
                         MainScrollViewer);
 
-
                 Point point =
                     transform.Transform(
                         new Point(0, 0));
-
 
                 double targetOffset =
                     MainScrollViewer.VerticalOffset
                     + point.Y
                     - 30;
 
-
                 double maxOffset =
                     Math.Max(
                         0,
                         MainScrollViewer.ExtentHeight
                         - MainScrollViewer.ViewportHeight);
-
 
                 return Math.Max(
                     0,
@@ -713,5 +933,55 @@ namespace StremioVideoCenter
                 return MainScrollViewer.VerticalOffset;
             }
         }
+
+
+        // =========================================================
+        // TEMPORARY STREMIO PLAYBACK TEST
+        // =========================================================
+
+        private async Task PlayStremioTestStreamAsync()
+        {
+            try
+            {
+                var addon =
+                    new StremioAddonService(
+                        "http://127.0.0.1:7000");
+
+                string streamUrl =
+                    await addon.GetFirstPlayableUrlAsync(
+                        "movie",
+                        "tt1254207");
+
+                if (string.IsNullOrWhiteSpace(streamUrl))
+                {
+                    MessageBox.Show(
+                        "Stremio returned no playable URL.");
+
+                    return;
+                }
+
+                if (_stremioPlayer == null)
+                {
+                    _stremioPlayer =
+                        new LibVlcPlayer();
+
+                    PlaybackTestHost.Children.Add(
+                        _stremioPlayer);
+                }
+
+                PlaybackTestHost.Visibility =
+                    Visibility.Visible;
+
+                _stremioPlayer.PlayVideo(
+                    streamUrl);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "Stremio playback test failed:\n\n" +
+                    ex.Message);
+            }
+        }
     }
+    
 }

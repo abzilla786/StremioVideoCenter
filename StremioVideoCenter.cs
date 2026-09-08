@@ -95,7 +95,8 @@ namespace StremioVideoCenter
 
             try
             {
-                videoCenterWindow.Content = new StremioVideoCenterView();
+                videoCenterWindow.Content = new StremioVideoCenterView(
+                                                settings?.Settings?.TmdbApiKey);
             }
             catch (Exception ex)
             {
@@ -162,7 +163,8 @@ namespace StremioVideoCenter
         {
             if (args.Name == "VideoCenter")
             {
-                return new StremioVideoCenterView();
+                return new StremioVideoCenterView(
+                           settings?.Settings?.TmdbApiKey);
             }
 
             return null;

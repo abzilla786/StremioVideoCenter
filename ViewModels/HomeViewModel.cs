@@ -1,9 +1,13 @@
-﻿using System.Collections.ObjectModel;
+﻿using System;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Threading.Tasks;
 using StremioVideoCenter.Models;
+using StremioVideoCenter.Services;
 
 namespace StremioVideoCenter.ViewModels
 {
-    public class HomeViewModel
+    public class HomeViewModel : INotifyPropertyChanged
     {
         // =========================================================
         // HERO CAROUSEL
@@ -12,7 +16,55 @@ namespace StremioVideoCenter.ViewModels
         public ObservableCollection<HeroItem> HeroItems { get; }
             = new ObservableCollection<HeroItem>();
 
-        public int CurrentHeroIndex { get; set; }
+
+        // =========================================================
+        // CURRENT HERO INDEX
+        // =========================================================
+
+        private int _currentHeroIndex;
+
+        public int CurrentHeroIndex
+        {
+            get
+            {
+                return _currentHeroIndex;
+            }
+
+            set
+            {
+                if (_currentHeroIndex == value)
+                {
+                    return;
+                }
+
+                _currentHeroIndex = value;
+
+                // =================================================
+                // NOTIFY CURRENT INDEX CHANGE
+                // =================================================
+
+                OnPropertyChanged(
+                    nameof(CurrentHeroIndex));
+
+
+                // =================================================
+                // NOTIFY CURRENT HERO CHANGE
+                // =================================================
+                //
+                // CurrentHeroItem is calculated from
+                // CurrentHeroIndex, so WPF must be told that
+                // CurrentHeroItem has changed as well.
+                // =================================================
+
+                OnPropertyChanged(
+                    nameof(CurrentHeroItem));
+            }
+        }
+
+
+        // =========================================================
+        // CURRENT HERO ITEM
+        // =========================================================
 
         public HeroItem CurrentHeroItem
         {
@@ -33,6 +85,11 @@ namespace StremioVideoCenter.ViewModels
             }
         }
 
+
+        // =========================================================
+        // MEDIA SECTIONS
+        // =========================================================
+
         public ObservableCollection<MediaItem> ContinueWatching { get; }
             = new ObservableCollection<MediaItem>();
 
@@ -52,16 +109,115 @@ namespace StremioVideoCenter.ViewModels
             = new ObservableCollection<MediaItem>();
 
 
+        // =========================================================
+        // PROPERTY CHANGED EVENT
+        // =========================================================
+
+        public event PropertyChangedEventHandler PropertyChanged;
+
+
+        // =========================================================
+        // PROPERTY CHANGE HELPER
+        // =========================================================
+
+        protected virtual void OnPropertyChanged(
+            string propertyName)
+        {
+            PropertyChanged?.Invoke(
+                this,
+                new PropertyChangedEventArgs(
+                    propertyName));
+        }
+
+
+        // =========================================================
+        // CONSTRUCTOR
+        // =========================================================
+
         public HomeViewModel()
         {
             LoadTestData();
         }
 
 
+        // =========================================================
+        // LOAD HERO RECOMMENDATIONS
+        // =========================================================
+
+        public async Task LoadHeroRecommendationsAsync(
+            HeroRecommendationService recommendationService)
+        {
+            if (recommendationService == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var recommendations =
+                    await recommendationService
+                        .GetRecommendationsAsync();
+
+
+                // =================================================
+                // REQUIRE A VALID RESULT
+                // =================================================
+
+                if (recommendations == null ||
+                    recommendations.Count == 0)
+                {
+                    return;
+                }
+
+
+                // =================================================
+                // ONLY REPLACE THE HERO COLLECTION AFTER A
+                // SUCCESSFUL RESULT
+                // =================================================
+
+                HeroItems.Clear();
+
+                foreach (HeroItem heroItem in recommendations)
+                {
+                    HeroItems.Add(heroItem);
+                }
+
+
+                // =================================================
+                // START FROM THE FIRST HERO
+                // =================================================
+
+                CurrentHeroIndex = 0;
+
+
+                // =================================================
+                // NOTIFY THAT THE CURRENT HERO COLLECTION HAS
+                // BEEN UPDATED
+                // =================================================
+
+                OnPropertyChanged(
+                    nameof(CurrentHeroItem));
+            }
+            catch
+            {
+                // =================================================
+                // KEEP EXISTING HERO DATA IF TMDB FAILS
+                // =================================================
+                //
+                // The existing test HeroItems remain available.
+                // =================================================
+            }
+        }
+
+
+        // =========================================================
+        // TEST / FALLBACK DATA
+        // =========================================================
+
         private void LoadTestData()
         {
             // =========================================================
-            // HERO CAROUSEL
+            // HERO CAROUSEL FALLBACK
             // =========================================================
 
             HeroItems.Add(new HeroItem
@@ -78,6 +234,7 @@ namespace StremioVideoCenter.ViewModels
                     "https://image.tmdb.org/t/p/w1280/9l1eZiJHmhr5jIlthMdJN5WYoff.jpg"
             });
 
+
             HeroItems.Add(new HeroItem
             {
                 Title = "Interstellar",
@@ -91,6 +248,7 @@ namespace StremioVideoCenter.ViewModels
                 BackdropUrl =
                     "https://image.tmdb.org/t/p/w1280/xJHokMbljvjADYdit5fK4wFro0c.jpg"
             });
+
 
             HeroItems.Add(new HeroItem
             {
@@ -106,7 +264,6 @@ namespace StremioVideoCenter.ViewModels
                     "https://image.tmdb.org/t/p/w1280/5s7fX4VhT0X9yQn5XQW6J7VY9bC.jpg"
             });
 
-            
 
             // =========================================================
             // CONTINUE WATCHING

@@ -70,8 +70,8 @@
     <Reference Include="WindowsBase" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Controls\LibVLCTestPlayer.xaml.cs">
-      <DependentUpon>LibVLCTestPlayer.xaml</DependentUpon>
+    <Compile Include="Controls\LibVLCPlayer.xaml.cs">
+      <DependentUpon>LibVLCPlayer.xaml</DependentUpon>
     </Compile>
     <Compile Include="Controls\MediaCard.xaml.cs">
       <DependentUpon>MediaCard.xaml</DependentUpon>
@@ -81,8 +81,10 @@
     </Compile>
     <Compile Include="Models\HeroItem.cs" />
     <Compile Include="Models\MediaItem.cs" />
+    <Compile Include="Models\StremioStream.cs" />
     <Compile Include="Services\HeroRecommendationService.cs" />
     <Compile Include="Services\OmdbService.cs" />
+    <Compile Include="Services\StremioAddonService.cs" />
     <Compile Include="Services\TmdbService.cs" />
     <Compile Include="StremioVideoCenter.cs" />
     <Compile Include="StremioVideoCenterSettings.cs" />
@@ -111,7 +113,7 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
-    <Page Include="Controls\LibVLCTestPlayer.xaml">
+    <Page Include="Controls\LibVLCPlayer.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

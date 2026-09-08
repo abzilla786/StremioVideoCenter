@@ -45,12 +45,7 @@
             <Setter Property="FocusVisualStyle"
                     Value="{x:Null}"/>
 
-
             <Style.Triggers>
-
-                <!-- ================================================= -->
-                <!-- MOUSE OVER                                         -->
-                <!-- ================================================= -->
 
                 <Trigger Property="IsMouseOver"
                          Value="True">
@@ -62,11 +57,6 @@
                             Value="#24242A"/>
 
                 </Trigger>
-
-
-                <!-- ================================================= -->
-                <!-- KEYBOARD FOCUS                                     -->
-                <!-- ================================================= -->
 
                 <Trigger Property="IsKeyboardFocused"
                          Value="True">
@@ -115,12 +105,7 @@
             <Setter Property="FocusVisualStyle"
                     Value="{x:Null}"/>
 
-
             <Style.Triggers>
-
-                <!-- ================================================= -->
-                <!-- MOUSE OVER                                         -->
-                <!-- ================================================= -->
 
                 <Trigger Property="IsMouseOver"
                          Value="True">
@@ -129,11 +114,6 @@
                             Value="#FF3D7A"/>
 
                 </Trigger>
-
-
-                <!-- ================================================= -->
-                <!-- KEYBOARD FOCUS                                     -->
-                <!-- ================================================= -->
 
                 <Trigger Property="IsKeyboardFocused"
                          Value="True">
@@ -188,12 +168,7 @@
             <Setter Property="FocusVisualStyle"
                     Value="{x:Null}"/>
 
-
             <Style.Triggers>
-
-                <!-- ================================================= -->
-                <!-- MOUSE OVER                                         -->
-                <!-- ================================================= -->
 
                 <Trigger Property="IsMouseOver"
                          Value="True">
@@ -205,11 +180,6 @@
                             Value="#E91E63"/>
 
                 </Trigger>
-
-
-                <!-- ================================================= -->
-                <!-- KEYBOARD FOCUS                                     -->
-                <!-- ================================================= -->
 
                 <Trigger Property="IsKeyboardFocused"
                          Value="True">
@@ -229,6 +199,106 @@
 
         </Style>
 
+
+        <!-- ========================================================= -->
+        <!-- HERO CAROUSEL ARROW                                        -->
+        <!-- ========================================================= -->
+
+        <Style x:Key="HeroCarouselArrowStyle"
+               TargetType="{x:Type Button}">
+
+            <Setter Property="Width"
+                    Value="68"/>
+
+            <Setter Property="Height"
+                    Value="110"/>
+
+            <Setter Property="Background"
+                    Value="#66000000"/>
+
+            <Setter Property="Foreground"
+                    Value="White"/>
+
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+
+            <Setter Property="FontSize"
+                    Value="52"/>
+
+            <Setter Property="FontWeight"
+                    Value="Light"/>
+
+            <Setter Property="Opacity"
+                    Value="0.35"/>
+
+            <Setter Property="Cursor"
+                    Value="Hand"/>
+
+            <Setter Property="Focusable"
+                    Value="True"/>
+
+            <Setter Property="IsTabStop"
+                    Value="True"/>
+
+            <Setter Property="FocusVisualStyle"
+                    Value="{x:Null}"/>
+
+            <Style.Triggers>
+
+                <Trigger Property="IsMouseOver"
+                         Value="True">
+
+                    <Setter Property="Opacity"
+                            Value="1"/>
+
+                    <Setter Property="Background"
+                            Value="#99000000"/>
+
+                </Trigger>
+
+                <Trigger Property="IsKeyboardFocused"
+                         Value="True">
+
+                    <Setter Property="Opacity"
+                            Value="1"/>
+
+                    <Setter Property="Background"
+                            Value="#99000000"/>
+
+                </Trigger>
+
+            </Style.Triggers>
+
+        </Style>
+
+
+        <!-- ========================================================= -->
+        <!-- HERO CAROUSEL INDICATOR                                   -->
+        <!-- ========================================================= -->
+
+        <Style x:Key="HeroIndicatorButtonStyle"
+               TargetType="{x:Type Button}">
+
+            <Setter Property="Background"
+                    Value="Transparent"/>
+
+            <Setter Property="BorderThickness"
+                    Value="0"/>
+
+            <Setter Property="Padding"
+                    Value="4"/>
+
+            <Setter Property="Margin"
+                    Value="1,0"/>
+
+            <Setter Property="Cursor"
+                    Value="Hand"/>
+
+            <Setter Property="FocusVisualStyle"
+                    Value="{x:Null}"/>
+
+        </Style>
+
     </PluginUserControl.Resources>
 
 
@@ -237,13 +307,6 @@
     <!-- ========================================================= -->
 
     <Grid>
-
-        <!-- ========================================================= -->
-        <!-- MAIN CONTENT                                               -->
-        <!--                                                             -->
-        <!-- Navigation, Hero and Media Sections remain inside the      -->
-        <!-- same ScrollViewer.                                         -->
-        <!-- ========================================================= -->
 
         <ScrollViewer x:Name="MainScrollViewer"
                       VerticalScrollBarVisibility="Hidden"
@@ -356,12 +419,13 @@
 
 
                     <!-- ================================================= -->
-                    <!-- HERO VIDEO                                         -->
+                    <!-- HERO MEDIA                                          -->
                     <!-- ================================================= -->
 
                     <Grid x:Name="HeroCanvas"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Top">
+
 
                         <Grid x:Name="HeroMediaFrame"
                               Width="1240"
@@ -374,8 +438,7 @@
                             <!-- ================================================= -->
                             <!-- HERO BACKDROP                                      -->
                             <!--                                                         -->
-                            <!-- This remains underneath the LibVLC player.          -->
-                            <!-- Stretch Uniform ensures artwork is never cropped.   -->
+                            <!-- Stretch Uniform prevents artwork cropping.        -->
                             <!-- ================================================= -->
 
                             <Image x:Name="HeroBackdropImage"
@@ -386,17 +449,55 @@
 
                         </Grid>
 
+
+                        <!-- ================================================= -->
+                        <!-- HERO CAROUSEL CONTROLS                            -->
+                        <!--                                                     -->
+                        <!-- These sit above the media frame so they remain     -->
+                        <!-- clickable even when the future LibVLC player      -->
+                        <!-- occupies the media area.                          -->
+                        <!-- ================================================= -->
+
+                        <Grid x:Name="HeroCarouselControls"
+                              Width="1240"
+                              Height="698"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Top"
+                              IsHitTestVisible="True">
+
+
+                            <!-- ================================================= -->
+                            <!-- PREVIOUS                                           -->
+                            <!-- ================================================= -->
+
+                            <Button x:Name="HeroPreviousButton"
+                                    Content="‹"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Style="{DynamicResource HeroCarouselArrowStyle}"
+                                    Click="HeroPreviousButton_Click"
+                                    ToolTip="Previous"/>
+
+
+                            <!-- ================================================= -->
+                            <!-- NEXT                                               -->
+                            <!-- ================================================= -->
+
+                            <Button x:Name="HeroNextButton"
+                                    Content="›"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Style="{DynamicResource HeroCarouselArrowStyle}"
+                                    Click="HeroNextButton_Click"
+                                    ToolTip="Next"/>
+
+                        </Grid>
+
                     </Grid>
 
 
                     <!-- ===================================================== -->
                     <!-- HERO INFORMATION PANEL                                -->
-                    <!--                                                             -->
-                    <!-- IMPORTANT:                                              -->
-                    <!-- The panel is deliberately SOLID.                      -->
-                    <!-- No gradient is used here.                             -->
-                    <!-- This avoids the visible horizontal colour bands        -->
-                    <!-- we were seeing previously.                             -->
                     <!-- ===================================================== -->
 
                     <Grid x:Name="HeroContentPanel"
@@ -407,21 +508,14 @@
                           Background="#151225">
 
 
-                        <!-- ================================================= -->
-                        <!-- INFORMATION CONTENT                                -->
-                        <!-- ================================================= -->
-
                         <Grid Width="1240"
                               HorizontalAlignment="Center"
-                              VerticalAlignment="Stretch"
-                              Margin="0">
+                              VerticalAlignment="Stretch">
 
                             <Grid.RowDefinitions>
 
-                                <!-- Main information -->
                                 <RowDefinition Height="*"/>
 
-                                <!-- Carousel indicators -->
                                 <RowDefinition Height="Auto"/>
 
                             </Grid.RowDefinitions>
@@ -436,23 +530,9 @@
 
                                 <Grid.ColumnDefinitions>
 
-                                    <!-- ================================================= -->
-                                    <!-- TITLE / METADATA                                  -->
-                                    <!-- ================================================= -->
-
                                     <ColumnDefinition Width="1.15*"/>
 
-
-                                    <!-- ================================================= -->
-                                    <!-- SYNOPSIS                                         -->
-                                    <!-- ================================================= -->
-
                                     <ColumnDefinition Width="1.55*"/>
-
-
-                                    <!-- ================================================= -->
-                                    <!-- BUTTONS                                          -->
-                                    <!-- ================================================= -->
 
                                     <ColumnDefinition Width="1.30*"/>
 
@@ -492,13 +572,25 @@
 
 
                                     <!-- ================================================= -->
-                                    <!-- METADATA                                           -->
+                                    <!-- DYNAMIC METADATA                                   -->
                                     <!-- ================================================= -->
 
-                                    <TextBlock Text="2025    •    8.8    •    Drama    •    Adventure"
-                                               FontSize="16"
-                                               Foreground="#BEBEC8"
-                                               Margin="0,8,0,0"/>
+                                    <StackPanel Orientation="Horizontal"
+                                                Margin="0,8,0,0">
+
+                                        <TextBlock Text="{Binding CurrentHeroItem.Year}"
+                                                   FontSize="16"
+                                                   Foreground="#BEBEC8"/>
+
+                                        <TextBlock Text="    •    "
+                                                   FontSize="16"
+                                                   Foreground="#777780"/>
+
+                                        <TextBlock Text="{Binding CurrentHeroItem.Rating}"
+                                                   FontSize="16"
+                                                   Foreground="#BEBEC8"/>
+
+                                    </StackPanel>
 
                                 </StackPanel>
 
@@ -576,37 +668,67 @@
                                         Margin="0,0,0,18">
 
 
-                                <!-- ================================================= -->
-                                <!-- TEMPORARY CAROUSEL INDICATORS                     -->
-                                <!-- ================================================= -->
+                                <Button x:Name="HeroIndicator1"
+                                        Style="{DynamicResource HeroIndicatorButtonStyle}"
+                                        Click="HeroIndicator1_Click">
 
-                                <Ellipse Width="9"
-                                         Height="9"
-                                         Fill="#FF2A78"
-                                         Margin="5,0"/>
+                                    <Ellipse x:Name="HeroIndicatorEllipse1"
+                                             Width="9"
+                                             Height="9"
+                                             Fill="#FF2A78"/>
 
-                                <Ellipse Width="9"
-                                         Height="9"
-                                         Fill="#77777F"
-                                         Margin="5,0"/>
+                                </Button>
 
-                                <Ellipse Width="9"
-                                         Height="9"
-                                         Fill="#77777F"
-                                         Margin="5,0"/>
 
-                                <Ellipse Width="9"
-                                         Height="9"
-                                         Fill="#77777F"
-                                         Margin="5,0"/>
+                                <Button x:Name="HeroIndicator2"
+                                        Style="{DynamicResource HeroIndicatorButtonStyle}"
+                                        Click="HeroIndicator2_Click">
 
-                                <Ellipse Width="9"
-                                         Height="9"
-                                         Fill="#77777F"
-                                         Margin="5,0"/>
+                                    <Ellipse x:Name="HeroIndicatorEllipse2"
+                                             Width="9"
+                                             Height="9"
+                                             Fill="#77777F"/>
+
+                                </Button>
+
+
+                                <Button x:Name="HeroIndicator3"
+                                        Style="{DynamicResource HeroIndicatorButtonStyle}"
+                                        Click="HeroIndicator3_Click">
+
+                                    <Ellipse x:Name="HeroIndicatorEllipse3"
+                                             Width="9"
+                                             Height="9"
+                                             Fill="#77777F"/>
+
+                                </Button>
+
+
+                                <Button x:Name="HeroIndicator4"
+                                        Style="{DynamicResource HeroIndicatorButtonStyle}"
+                                        Click="HeroIndicator4_Click">
+
+                                    <Ellipse x:Name="HeroIndicatorEllipse4"
+                                             Width="9"
+                                             Height="9"
+                                             Fill="#77777F"/>
+
+                                </Button>
+
+
+                                <Button x:Name="HeroIndicator5"
+                                        Style="{DynamicResource HeroIndicatorButtonStyle}"
+                                        Click="HeroIndicator5_Click">
+
+                                    <Ellipse x:Name="HeroIndicatorEllipse5"
+                                             Width="9"
+                                             Height="9"
+                                             Fill="#77777F"/>
+
+                                </Button>
 
                             </StackPanel>
-
+                            
                         </Grid>
 
                     </Grid>
@@ -685,6 +807,11 @@
             </StackPanel>
 
         </ScrollViewer>
+        <Grid
+            x:Name="PlaybackTestHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
 
     </Grid>
 
