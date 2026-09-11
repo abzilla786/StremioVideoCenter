@@ -331,10 +331,12 @@ namespace StremioVideoCenter.ViewModels
 
             RecentlyAdded.Add(new MediaItem
             {
-                Title = "New Movie",
-                Year = "2026",
-                Rating = "8.2",
+                Title = "Big Buck Bunny",
+                Year = "2010",
+                Rating = "7.5",
                 Type = "Movie",
+
+                StremioId = "tt1254207",
 
                 PosterPath =
                     "https://image.tmdb.org/t/p/w342/8cdWjvZQUExUUTzyp4t6EDMubfO.jpg"

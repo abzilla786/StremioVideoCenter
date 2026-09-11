@@ -1,14 +1,16 @@
-﻿using Playnite.SDK.Controls;
-using StremioVideoCenterControls;
-using StremioVideoCenter.ViewModels;
-using StremioVideoCenter.Services;
+using Playnite.SDK;
+using Playnite.SDK.Controls;
+using Playnite.SDK.Events;
+using StremioVideoCenter.Controls;
 using StremioVideoCenter.Models;
+using StremioVideoCenter.Services;
+using StremioVideoCenter.ViewModels;
+using StremioVideoCenterControls;
 using System;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
-using StremioVideoCenter.Controls;
 
 namespace StremioVideoCenter
 {
@@ -24,7 +26,7 @@ namespace StremioVideoCenter
         // STREMIO PLAYBACK TEST
         // =========================================================
 
-        private LibVlcPlayer _stremioPlayer;
+        private MpvPlayer _stremioPlayer;
 
         // =========================================================
         // STARTUP STATE
@@ -79,6 +81,15 @@ namespace StremioVideoCenter
                     TopShowsSection,
                     TopAnimeSection
                 };
+
+            foreach (MediaSection section in sections)
+            {
+                if (section != null)
+                {
+                    section.MediaSelected +=
+                        MediaSection_MediaSelected;
+                }
+            }
 
 
             // =========================================================
@@ -162,11 +173,7 @@ namespace StremioVideoCenter
                 }),
                 System.Windows.Threading.DispatcherPriority.Loaded);
 
-            // =========================================================
-            // TEMPORARY STREMIO CONNECTION TEST
-            // =========================================================
 
-            await PlayStremioTestStreamAsync();
             // =========================================================
             // START BACKDROP ROTATION
             // =========================================================
@@ -174,7 +181,7 @@ namespace StremioVideoCenter
             await StartHeroBackdropRotationAsync();
 
 
-            
+
         }
 
 
@@ -934,28 +941,304 @@ namespace StremioVideoCenter
             }
         }
 
-
         // =========================================================
-        // TEMPORARY STREMIO PLAYBACK TEST
+        // CONTROLLER INPUT
         // =========================================================
 
-        private async Task PlayStremioTestStreamAsync()
+        public bool HandleControllerInput(ControllerInput button)
         {
+            // Player owns controller input while playback is active.
+            if (_stremioPlayer != null)
+            {
+                return _stremioPlayer.HandleControllerInput(button);
+            }
+
+            switch (button)
+            {
+                case ControllerInput.A:
+                    return SelectFocusedMediaCard();
+
+                case ControllerInput.DPadLeft:
+                    return HandleHomeControllerDirection(Key.Left);
+
+                case ControllerInput.DPadRight:
+                    return HandleHomeControllerDirection(Key.Right);
+
+                case ControllerInput.DPadUp:
+                    return HandleHomeControllerDirection(Key.Up);
+
+                case ControllerInput.DPadDown:
+                    return HandleHomeControllerDirection(Key.Down);
+
+                default:
+                    return false;
+            }
+        }
+
+        private bool SelectFocusedMediaCard()
+        {
+            MediaSection currentSection = GetFocusedSection();
+
+            if (currentSection == null)
+            {
+                return false;
+            }
+
+            MediaCard focusedCard =
+                FindFocusedMediaCard(currentSection);
+
+            if (focusedCard == null)
+            {
+                currentSection.FocusFirstCard();
+                return true;
+            }
+
+            focusedCard.RaiseEvent(
+                new RoutedEventArgs(
+                    MediaCard.SelectedEvent));
+
+            return true;
+        }
+
+        private MediaCard FindFocusedMediaCard(
+            DependencyObject parent)
+        {
+            if (parent == null)
+            {
+                return null;
+            }
+
+            MediaCard card = parent as MediaCard;
+
+            if (card != null &&
+                card.IsKeyboardFocusWithin)
+            {
+                return card;
+            }
+
+            int childCount =
+                VisualTreeHelper.GetChildrenCount(parent);
+
+            for (int i = 0; i < childCount; i++)
+            {
+                DependencyObject child =
+                    VisualTreeHelper.GetChild(parent, i);
+
+                MediaCard result =
+                    FindFocusedMediaCard(child);
+
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+
+            return null;
+        }
+
+        private bool HandleHomeControllerDirection(
+            Key key)
+        {
+            if (HeroPreviousButton.IsKeyboardFocusWithin ||
+                HeroNextButton.IsKeyboardFocusWithin)
+            {
+                if (key == Key.Left)
+                {
+                    ChangeHero(-1);
+                    HeroPreviousButton.Focus();
+                    return true;
+                }
+
+                if (key == Key.Right)
+                {
+                    ChangeHero(1);
+                    HeroNextButton.Focus();
+                    return true;
+                }
+
+                if (key == Key.Down)
+                {
+                    HeroWatchNowButton.Focus();
+                    return true;
+                }
+
+                if (key == Key.Up)
+                {
+                    HomeButton.Focus();
+                    return true;
+                }
+            }
+
+            if (HeroWatchNowButton.IsKeyboardFocusWithin ||
+                HeroMyListButton.IsKeyboardFocusWithin)
+            {
+                if (key == Key.Left)
+                {
+                    if (HeroMyListButton.IsKeyboardFocusWithin)
+                    {
+                        HeroWatchNowButton.Focus();
+                    }
+                    else
+                    {
+                        SearchButton.Focus();
+                    }
+
+                    return true;
+                }
+
+                if (key == Key.Right)
+                {
+                    if (HeroWatchNowButton.IsKeyboardFocusWithin)
+                    {
+                        HeroMyListButton.Focus();
+                    }
+                    else
+                    {
+                        HomeButton.Focus();
+                    }
+
+                    return true;
+                }
+
+                if (key == Key.Up)
+                {
+                    HeroPreviousButton.Focus();
+                    return true;
+                }
+
+                if (key == Key.Down &&
+                    sections.Length > 0 &&
+                    sections[0] != null)
+                {
+                    sections[0].FocusFirstCard();
+                    return true;
+                }
+            }
+
+            if (key == Key.Down)
+            {
+                if (HomeButton.IsKeyboardFocusWithin ||
+                    MoviesButton.IsKeyboardFocusWithin ||
+                    TvShowsButton.IsKeyboardFocusWithin ||
+                    AnimeButton.IsKeyboardFocusWithin ||
+                    NavigationMyListButton.IsKeyboardFocusWithin ||
+                    HistoryButton.IsKeyboardFocusWithin ||
+                    SearchButton.IsKeyboardFocusWithin)
+                {
+                    HeroWatchNowButton.Focus();
+                    return true;
+                }
+            }
+
+            if (SearchButton.IsKeyboardFocusWithin &&
+                key == Key.Right)
+            {
+                HeroWatchNowButton.Focus();
+                return true;
+            }
+
+            if (HomeButton.IsKeyboardFocusWithin &&
+                key == Key.Left)
+            {
+                HeroMyListButton.Focus();
+                return true;
+            }
+
+            MediaSection currentSection =
+                GetFocusedSection();
+
+            if (key == Key.Left ||
+                key == Key.Right)
+            {
+                if (currentSection == null)
+                {
+                    return false;
+                }
+
+                currentSection.MoveHorizontal(
+                    key == Key.Left ? -1 : 1);
+
+                return true;
+            }
+
+            if (key == Key.Up ||
+                key == Key.Down)
+            {
+                if (currentSection == null)
+                {
+                    return false;
+                }
+
+                MoveVertical(
+                    currentSection,
+                    key);
+
+                return true;
+            }
+
+            return false;
+        }
+
+        // =========================================================
+        // MEDIA CARD SELECTION
+        // =========================================================
+
+        private async void MediaSection_MediaSelected(
+            object sender,
+            MediaItemSelectedEventArgs e)
+        {
+            if (e == null ||
+                e.Item == null)
+            {
+                return;
+            }
+
+            await PlaySelectedMediaAsync(
+                e.Item);
+        }
+
+        // =========================================================
+        // PLAY SELECTED MEDIA
+        // =========================================================
+
+        private async Task PlaySelectedMediaAsync(
+            MediaItem mediaItem)
+        {
+            if (mediaItem == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(
+                    mediaItem.StremioId))
+            {
+                MessageBox.Show(
+                    "This title does not have a Stremio ID yet.");
+
+                return;
+            }
+
             try
             {
+                string type =
+                    GetStremioType(
+                        mediaItem);
+
                 var addon =
                     new StremioAddonService(
                         "http://127.0.0.1:7000");
 
                 string streamUrl =
                     await addon.GetFirstPlayableUrlAsync(
-                        "movie",
-                        "tt1254207");
+                        type,
+                        mediaItem.StremioId);
 
-                if (string.IsNullOrWhiteSpace(streamUrl))
+                if (string.IsNullOrWhiteSpace(
+                        streamUrl))
                 {
                     MessageBox.Show(
-                        "Stremio returned no playable URL.");
+                        "Stremio returned no playable streams for:\n\n" +
+                        mediaItem.Title);
 
                     return;
                 }
@@ -963,25 +1246,116 @@ namespace StremioVideoCenter
                 if (_stremioPlayer == null)
                 {
                     _stremioPlayer =
-                        new LibVlcPlayer();
+                        new MpvPlayer();
 
+                    _stremioPlayer.CloseRequested +=
+                        StremioPlayer_CloseRequested;
+
+                    // Playback stays inside the Video Center.
+                    // The temporary MPV isolation window is deliberately gone.
                     PlaybackTestHost.Children.Add(
                         _stremioPlayer);
+
+                    PlaybackTestHost.Visibility =
+                        Visibility.Visible;
                 }
 
-                PlaybackTestHost.Visibility =
-                    Visibility.Visible;
-
-                _stremioPlayer.PlayVideo(
+                await _stremioPlayer.PlayVideoAsync(
                     streamUrl);
             }
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    "Stremio playback test failed:\n\n" +
+                    "Unable to start playback.\n\n" +
+                    "Title: " +
+                    mediaItem.Title +
+                    "\n\n" +
                     ex.Message);
             }
         }
+        // =========================================================
+        // PLAYER CLOSE
+        // =========================================================
+
+        private void StremioPlayer_CloseRequested(
+            object sender,
+            EventArgs e)
+        {
+            if (_stremioPlayer == null)
+            {
+                PlaybackTestHost.Visibility =
+                    Visibility.Collapsed;
+
+                FocusFirstAvailableSection();
+                return;
+            }
+
+            try
+            {
+                _stremioPlayer.CloseRequested -=
+                    StremioPlayer_CloseRequested;
+                _stremioPlayer.DisposePlayer();
+            }
+            catch
+            {
+                // Player cleanup is best-effort.
+            }
+
+            try
+            {
+                PlaybackTestHost.Children.Remove(
+                    _stremioPlayer);
+            }
+            catch
+            {
+                // Ignore removal errors.
+            }
+
+            _stremioPlayer = null;
+
+            PlaybackTestHost.Visibility =
+                Visibility.Collapsed;
+
+            FocusFirstAvailableSection();
+        }
+
+        // =========================================================
+        // STREMIO TYPE
+        // =========================================================
+
+        private string GetStremioType(
+            MediaItem mediaItem)
+        {
+            if (mediaItem == null)
+            {
+                return "movie";
+            }
+
+            if (string.Equals(
+                    mediaItem.Type,
+                    "TV",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return "series";
+            }
+
+            if (string.Equals(
+                    mediaItem.Type,
+                    "TV Show",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return "series";
+            }
+
+            if (string.Equals(
+                    mediaItem.Type,
+                    "Series",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return "series";
+            }
+
+            return "movie";
+        }
     }
-    
 }

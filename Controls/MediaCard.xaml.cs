@@ -1,4 +1,5 @@
 ﻿using StremioVideoCenter.Models;
+using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -8,6 +9,25 @@ namespace StremioVideoCenterControls
 {
     public partial class MediaCard : UserControl
     {
+        public static readonly RoutedEvent SelectedEvent =
+            EventManager.RegisterRoutedEvent(
+                "Selected",
+                RoutingStrategy.Bubble,
+                typeof(RoutedEventHandler),
+                typeof(MediaCard));
+
+        public event RoutedEventHandler Selected
+        {
+            add
+            {
+                AddHandler(SelectedEvent, value);
+            }
+            remove
+            {
+                RemoveHandler(SelectedEvent, value);
+            }
+        }
+
         public MediaCard()
         {
             InitializeComponent();
@@ -20,7 +40,14 @@ namespace StremioVideoCenterControls
             PreviewLostKeyboardFocus +=
                 MediaCard_PreviewLostKeyboardFocus;
 
-            Loaded += MediaCard_Loaded;
+            PreviewMouseLeftButtonUp +=
+                MediaCard_PreviewMouseLeftButtonUp;
+
+            PreviewKeyDown +=
+                MediaCard_PreviewKeyDown;
+
+            Loaded +=
+                MediaCard_Loaded;
         }
 
         private async void MediaCard_Loaded(
@@ -33,11 +60,44 @@ namespace StremioVideoCenterControls
             }
         }
 
+        private void MediaCard_PreviewMouseLeftButtonUp(
+            object sender,
+            MouseButtonEventArgs e)
+        {
+            Focus();
+
+            RaiseSelected();
+
+            e.Handled = true;
+        }
+
+        private void MediaCard_PreviewKeyDown(
+            object sender,
+            KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter ||
+                e.Key == Key.Space)
+            {
+                RaiseSelected();
+
+                e.Handled = true;
+            }
+        }
+
+        private void RaiseSelected()
+        {
+            RaiseEvent(
+                new RoutedEventArgs(
+                    SelectedEvent));
+        }
+
         private void MediaCard_PreviewGotKeyboardFocus(
             object sender,
             KeyboardFocusChangedEventArgs e)
         {
-            CardBorder.BorderBrush = Brushes.White;
+            CardBorder.BorderBrush =
+                Brushes.White;
+
             CardBorder.BorderThickness =
                 new Thickness(3);
         }

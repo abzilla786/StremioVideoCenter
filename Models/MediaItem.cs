@@ -12,6 +12,23 @@ namespace StremioVideoCenter.Models
         private BitmapImage _posterImage;
         private bool _posterLoading;
 
+        // =========================================================
+        // MEDIA IDENTITY
+        // =========================================================
+
+        // IMDb ID used by Stremio.
+        // Example: tt1254207
+        public string StremioId { get; set; }
+
+        // TMDB numeric ID.
+        // We will use this later when the TMDB integration becomes
+        // the primary source of media metadata.
+        public int? TmdbId { get; set; }
+
+        // =========================================================
+        // BASIC MEDIA INFORMATION
+        // =========================================================
+
         public string Title { get; set; }
 
         public string Subtitle { get; set; }
@@ -34,6 +51,10 @@ namespace StremioVideoCenter.Models
 
         public string TrailerUrl { get; set; }
 
+        // =========================================================
+        // POSTER IMAGE
+        // =========================================================
+
         public BitmapImage PosterImage
         {
             get => _posterImage;
@@ -41,9 +62,15 @@ namespace StremioVideoCenter.Models
             private set
             {
                 _posterImage = value;
-                OnPropertyChanged(nameof(PosterImage));
+
+                OnPropertyChanged(
+                    nameof(PosterImage));
             }
         }
+
+        // =========================================================
+        // PROPERTY CHANGED
+        // =========================================================
 
         public event PropertyChangedEventHandler PropertyChanged;
 
@@ -52,8 +79,13 @@ namespace StremioVideoCenter.Models
         {
             PropertyChanged?.Invoke(
                 this,
-                new PropertyChangedEventArgs(propertyName));
+                new PropertyChangedEventArgs(
+                    propertyName));
         }
+
+        // =========================================================
+        // LOAD POSTER
+        // =========================================================
 
         public async Task LoadPosterAsync()
         {
@@ -84,7 +116,8 @@ namespace StremioVideoCenter.Models
 
                         using (var client = new WebClient())
                         {
-                            client.Headers[HttpRequestHeader.UserAgent] =
+                            client.Headers[
+                                HttpRequestHeader.UserAgent] =
                                 "StremioVideoCenter/1.0";
 
                             return client.DownloadData(
@@ -95,14 +128,16 @@ namespace StremioVideoCenter.Models
                 using (var stream =
                     new MemoryStream(imageData))
                 {
-                    var image = new BitmapImage();
+                    var image =
+                        new BitmapImage();
 
                     image.BeginInit();
 
                     image.CacheOption =
                         BitmapCacheOption.OnLoad;
 
-                    image.StreamSource = stream;
+                    image.StreamSource =
+                        stream;
 
                     image.EndInit();
 

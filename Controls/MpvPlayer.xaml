@@ -1,0 +1,8 @@
+<UserControl x:Class="StremioVideoCenter.Controls.MpvPlayer"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="Black"
+             Focusable="True">
+    <Grid x:Name="VideoHost"
+          Background="Black" />
+</UserControl>

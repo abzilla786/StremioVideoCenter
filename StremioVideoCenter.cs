@@ -20,6 +20,7 @@ namespace StremioVideoCenter
 
         private System.Windows.Window videoCenterWindow;
         private System.Windows.Window playniteWindow;
+        private StremioVideoCenterView videoCenterView;
         private StremioVideoCenterSettingsViewModel settings { get; set; }
 
         public override Guid Id { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
@@ -95,8 +96,10 @@ namespace StremioVideoCenter
 
             try
             {
-                videoCenterWindow.Content = new StremioVideoCenterView(
-                                                settings?.Settings?.TmdbApiKey);
+                videoCenterView = new StremioVideoCenterView(
+                    settings?.Settings?.TmdbApiKey);
+
+                videoCenterWindow.Content = videoCenterView;
             }
             catch (Exception ex)
             {
@@ -171,15 +174,29 @@ namespace StremioVideoCenter
         }
 
         public override void OnControllerButtonStateChanged(
-    OnControllerButtonStateChangedArgs args)
+            OnControllerButtonStateChangedArgs args)
         {
-            if (videoCenterWindow == null)
+            if (videoCenterWindow == null ||
+                videoCenterView == null)
             {
                 return;
             }
 
-            if (args.Button == ControllerInput.B &&
-                args.State == ControllerInputState.Pressed)
+            if (args.State != ControllerInputState.Pressed)
+            {
+                return;
+            }
+
+            // Give the Video Center first chance to consume controller
+            // input. This keeps B inside the player and gives A a real
+            // Select action for cards and player controls.
+            if (videoCenterView.HandleControllerInput(args.Button))
+            {
+                return;
+            }
+
+            // If the Video Center did not consume B, close the window.
+            if (args.Button == ControllerInput.B)
             {
                 CloseVideoCenter();
             }
@@ -196,6 +213,7 @@ namespace StremioVideoCenter
             }
 
             videoCenterWindow = null;
+            videoCenterView = null;
 
             // Restore focus to Playnite after the Video Center
             // window has completely closed.

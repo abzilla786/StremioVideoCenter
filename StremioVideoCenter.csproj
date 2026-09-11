@@ -76,6 +76,10 @@
     <Compile Include="Controls\MediaCard.xaml.cs">
       <DependentUpon>MediaCard.xaml</DependentUpon>
     </Compile>
+	<Compile Include="Controls\MpvPlayer.xaml.cs">
+	  <DependentUpon>MpvPlayer.xaml</DependentUpon>
+	</Compile>
+	<Compile Include="Services\MpvProcessService.cs" />
     <Compile Include="Controls\MediaSection.xaml.cs">
       <DependentUpon>MediaSection.xaml</DependentUpon>
     </Compile>
@@ -104,6 +108,11 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+	<Content Include="mpv\**\*">
+	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	</Content>
+  </ItemGroup>    
+  <ItemGroup>
     <None Include="Localization\*.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
@@ -117,6 +126,10 @@
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
+	<Page Include="Controls\MpvPlayer.xaml">
+	  <SubType>Designer</SubType>
+	  <Generator>MSBuild:Compile</Generator>
+	</Page>
     <Page Include="Controls\MediaCard.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
@@ -151,5 +164,24 @@
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
     </PropertyGroup>
     <Error Condition="!Exists('packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets'))" />
+  </Target>
+	<!-- ========================================================= -->
+	<!-- MPV RUNTIME FILE DEPLOYMENT                               -->
+	<!-- ========================================================= -->
+  <Target Name="CopyMpvRuntimeFiles" AfterTargets="Build">
+
+	<ItemGroup>
+		<MpvRuntimeFiles Include="$(ProjectDir)mpv\**\*" />
+	</ItemGroup>
+
+	<Copy
+		 SourceFiles="@(MpvRuntimeFiles)"
+		 DestinationFiles="@(MpvRuntimeFiles->'$(TargetDir)mpv\%(RecursiveDir)%(Filename)%(Extension)')"
+		 SkipUnchangedFiles="true" />
+
+	<Error
+		 Condition="!Exists('$(TargetDir)mpv\mpv.exe')"
+		 Text="MPV deployment failed: $(TargetDir)mpv\mpv.exe was not found after build." />
+
   </Target>
 </Project>

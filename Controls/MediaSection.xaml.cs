@@ -1,4 +1,5 @@
-﻿using System;
+﻿using StremioVideoCenter.Models;
+using System;
 using System.Collections;
 using System.Windows;
 using System.Windows.Controls;
@@ -11,6 +12,45 @@ namespace StremioVideoCenterControls
         public MediaSection()
         {
             InitializeComponent();
+
+            AddHandler(
+                MediaCard.SelectedEvent,
+                new RoutedEventHandler(MediaCard_Selected));
+        }
+
+        // =========================================================
+        // MEDIA SELECTION
+        // =========================================================
+
+        public event EventHandler<MediaItemSelectedEventArgs>
+            MediaSelected;
+
+        private void MediaCard_Selected(
+            object sender,
+            RoutedEventArgs e)
+        {
+            MediaCard card =
+                e.OriginalSource as MediaCard;
+
+            if (card == null)
+            {
+                return;
+            }
+
+            MediaItem mediaItem =
+                card.DataContext as MediaItem;
+
+            if (mediaItem == null)
+            {
+                return;
+            }
+
+            MediaSelected?.Invoke(
+                this,
+                new MediaItemSelectedEventArgs(
+                    mediaItem));
+
+            e.Handled = true;
         }
 
         // =========================================================
@@ -62,7 +102,8 @@ namespace StremioVideoCenterControls
 
         public void FocusLastCard()
         {
-            int count = MediaItemsControl.Items.Count;
+            int count =
+                MediaItemsControl.Items.Count;
 
             if (count > 0)
             {
@@ -76,14 +117,16 @@ namespace StremioVideoCenterControls
 
         public void MoveHorizontal(int direction)
         {
-            int count = MediaItemsControl.Items.Count;
+            int count =
+                MediaItemsControl.Items.Count;
 
             if (count == 0)
             {
                 return;
             }
 
-            int currentIndex = GetFocusedCardIndex();
+            int currentIndex =
+                GetFocusedCardIndex();
 
             if (currentIndex < 0)
             {
@@ -97,11 +140,12 @@ namespace StremioVideoCenterControls
                 currentIndex += direction;
             }
 
-            currentIndex = Math.Max(
-                0,
-                Math.Min(
-                    currentIndex,
-                    count - 1));
+            currentIndex =
+                Math.Max(
+                    0,
+                    Math.Min(
+                        currentIndex,
+                        count - 1));
 
             FocusCard(currentIndex);
         }
@@ -128,7 +172,8 @@ namespace StremioVideoCenterControls
                 }
 
                 MediaCard card =
-                    FindVisualChild<MediaCard>(presenter);
+                    FindVisualChild<MediaCard>(
+                        presenter);
 
                 if (card != null &&
                     card.IsKeyboardFocusWithin)
@@ -162,7 +207,8 @@ namespace StremioVideoCenterControls
             }
 
             MediaCard card =
-                FindVisualChild<MediaCard>(presenter);
+                FindVisualChild<MediaCard>(
+                    presenter);
 
             if (card == null)
             {
@@ -175,10 +221,11 @@ namespace StremioVideoCenterControls
         }
 
         // =========================================================
-        // CHECK IF FIRST CARD IS VISIBLE
+        // CHECK FIRST CARD VISIBILITY
         // =========================================================
 
-        public bool IsFirstCardVisible(ScrollViewer scrollViewer)
+        public bool IsFirstCardVisible(
+            ScrollViewer scrollViewer)
         {
             if (scrollViewer == null)
             {
@@ -201,7 +248,8 @@ namespace StremioVideoCenterControls
             }
 
             MediaCard card =
-                FindVisualChild<MediaCard>(presenter);
+                FindVisualChild<MediaCard>(
+                    presenter);
 
             if (card == null)
             {
@@ -211,18 +259,22 @@ namespace StremioVideoCenterControls
             try
             {
                 GeneralTransform transform =
-                    card.TransformToAncestor(scrollViewer);
+                    card.TransformToAncestor(
+                        scrollViewer);
 
                 Point point =
                     transform.Transform(
                         new Point(0, 0));
 
-                double cardTop = point.Y;
+                double cardTop =
+                    point.Y;
 
                 double cardBottom =
-                    cardTop + card.ActualHeight;
+                    cardTop +
+                    card.ActualHeight;
 
-                double viewportTop = 0;
+                double viewportTop =
+                    0;
 
                 double viewportBottom =
                     scrollViewer.ViewportHeight;
@@ -240,7 +292,8 @@ namespace StremioVideoCenterControls
         // HORIZONTAL SCROLL
         // =========================================================
 
-        private void ScrollCardIntoView(MediaCard card)
+        private void ScrollCardIntoView(
+            MediaCard card)
         {
             try
             {
@@ -252,7 +305,8 @@ namespace StremioVideoCenterControls
                     transform.Transform(
                         new Point(0, 0));
 
-                double cardLeft = point.X;
+                double cardLeft =
+                    point.X;
 
                 double cardRight =
                     cardLeft +
@@ -269,7 +323,8 @@ namespace StremioVideoCenterControls
                     MediaScrollViewer.ScrollToHorizontalOffset(
                         Math.Max(
                             0,
-                            currentOffset + cardLeft));
+                            currentOffset +
+                            cardLeft));
                 }
                 else if (cardRight > viewportWidth)
                 {
@@ -277,7 +332,8 @@ namespace StremioVideoCenterControls
                         Math.Min(
                             MediaScrollViewer.ExtentWidth,
                             currentOffset +
-                            (cardRight - viewportWidth)));
+                            (cardRight -
+                             viewportWidth)));
                 }
             }
             catch
@@ -301,7 +357,8 @@ namespace StremioVideoCenterControls
 
             for (
                 int i = 0;
-                i < VisualTreeHelper.GetChildrenCount(parent);
+                i < VisualTreeHelper.GetChildrenCount(
+                    parent);
                 i++)
             {
                 DependencyObject child =
@@ -318,7 +375,8 @@ namespace StremioVideoCenterControls
                 }
 
                 result =
-                    FindVisualChild<T>(child);
+                    FindVisualChild<T>(
+                        child);
 
                 if (result != null)
                 {
@@ -327,6 +385,22 @@ namespace StremioVideoCenterControls
             }
 
             return null;
+        }
+    }
+
+    // =============================================================
+    // MEDIA ITEM SELECTED EVENT ARGS
+    // =============================================================
+
+    public class MediaItemSelectedEventArgs :
+        EventArgs
+    {
+        public MediaItem Item { get; }
+
+        public MediaItemSelectedEventArgs(
+            MediaItem item)
+        {
+            Item = item;
         }
     }
 }
