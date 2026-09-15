@@ -1,0 +1,246 @@
+using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Concurrent;
+using System.IO;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace StremioVideoCenter.Services
+{
+    public sealed class MpvEventArgs : EventArgs
+    {
+        public string EventName { get; private set; }
+        public JObject Raw { get; private set; }
+
+        public MpvEventArgs(string eventName, JObject raw)
+        {
+            EventName = eventName;
+            Raw = raw;
+        }
+    }
+
+    // Owns mpv's JSON IPC protocol over an already-connected pipe stream:
+    // - One background read loop runs for the lifetime of the connection,
+    //   independent of any individual command.
+    // - Lines with a "request_id" complete the matching pending command.
+    // - Lines with an "event" are raised as MpvEventArgs and never touch the
+    //   command-reply bookkeeping.
+    //
+    // This is the fix for the previous design, where the pipe reader only ran
+    // while a command was in flight, so async events sent while idle (end-file,
+    // track-list changes, pause toggled by mpv itself, etc) were silently lost
+    // or misread as stale replies to the next unrelated command.
+    public sealed class MpvIpcClient : IDisposable
+    {
+        private readonly ConcurrentDictionary<int, TaskCompletionSource<JObject>> _pending =
+            new ConcurrentDictionary<int, TaskCompletionSource<JObject>>();
+
+        private Stream _stream;
+        private StreamReader _reader;
+        private StreamWriter _writer;
+        private CancellationTokenSource _cts;
+        private Task _readLoopTask;
+        private int _requestId;
+        private bool _disposed;
+
+        public event EventHandler<MpvEventArgs> EventReceived;
+        public event EventHandler Disconnected;
+
+        public void Start(Stream stream)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(MpvIpcClient));
+
+            _stream = stream;
+            _reader = new StreamReader(stream, new UTF8Encoding(false), false, 4096, true);
+            _writer = new StreamWriter(stream, new UTF8Encoding(false), 4096, true)
+            {
+                AutoFlush = true,
+                NewLine = "\n"
+            };
+
+            _cts = new CancellationTokenSource();
+            _readLoopTask = Task.Run(() => ReadLoopAsync(_cts.Token));
+        }
+
+        private async Task ReadLoopAsync(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    string line = await _reader.ReadLineAsync().ConfigureAwait(false);
+
+                    // Null means the pipe was closed from the other end.
+                    if (line == null)
+                        break;
+
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+
+                    HandleLine(line);
+                }
+            }
+            catch
+            {
+                // Pipe faulted or was disposed out from under the read loop.
+                // Fall through to the shared teardown below either way.
+            }
+            finally
+            {
+                FailAllPending();
+
+                EventHandler disconnected = Disconnected;
+                if (disconnected != null)
+                    disconnected(this, EventArgs.Empty);
+            }
+        }
+
+        private void HandleLine(string line)
+        {
+            JObject obj;
+            try
+            {
+                obj = JObject.Parse(line);
+            }
+            catch
+            {
+                // Not valid JSON on this line; ignore rather than crash the reader.
+                return;
+            }
+
+            JToken requestIdToken;
+            if (obj.TryGetValue("request_id", out requestIdToken))
+            {
+                int id;
+                if (int.TryParse(requestIdToken.ToString(), out id))
+                {
+                    TaskCompletionSource<JObject> tcs;
+                    if (_pending.TryRemove(id, out tcs))
+                        tcs.TrySetResult(obj);
+                }
+
+                return;
+            }
+
+            JToken eventToken;
+            if (obj.TryGetValue("event", out eventToken))
+            {
+                EventHandler<MpvEventArgs> handler = EventReceived;
+                if (handler != null)
+                    handler(this, new MpvEventArgs(eventToken.Value<string>(), obj));
+            }
+        }
+
+        // Sends a raw mpv command array, e.g. RunCommandAsync("seek", 10, "relative").
+        public Task RunCommandAsync(params object[] args)
+        {
+            return SendCommandAsync(new JArray(args));
+        }
+
+        public async Task<JToken> GetPropertyAsync(string property)
+        {
+            JObject reply = await SendCommandAsync(new JArray("get_property", property)).ConfigureAwait(false);
+            JToken data;
+            return reply.TryGetValue("data", out data) ? data : null;
+        }
+
+        public Task SetPropertyAsync(string property, object value)
+        {
+            return SendCommandAsync(new JArray("set_property", property, value));
+        }
+
+        public Task ObservePropertyAsync(int observeId, string property)
+        {
+            return SendCommandAsync(new JArray("observe_property", observeId, property));
+        }
+
+        private async Task<JObject> SendCommandAsync(JArray command, int timeoutMs = 5000)
+        {
+            if (_disposed || _stream == null || _writer == null)
+                throw new InvalidOperationException("mpv IPC is not connected.");
+
+            int id = Interlocked.Increment(ref _requestId);
+            TaskCompletionSource<JObject> tcs =
+                new TaskCompletionSource<JObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pending[id] = tcs;
+
+            JObject payload = new JObject
+            {
+                ["command"] = command,
+                ["request_id"] = id
+            };
+
+            string json = payload.ToString(Newtonsoft.Json.Formatting.None);
+
+            try
+            {
+                await _writer.WriteLineAsync(json).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _pending.TryRemove(id, out tcs);
+                throw new InvalidOperationException("Failed to send mpv command.", ex);
+            }
+
+            Task finished = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs)).ConfigureAwait(false);
+
+            if (!ReferenceEquals(finished, tcs.Task))
+            {
+                _pending.TryRemove(id, out tcs);
+                throw new TimeoutException("mpv command timed out: " + json);
+            }
+
+            JObject reply = await tcs.Task.ConfigureAwait(false);
+
+            JToken errorToken;
+            if (reply.TryGetValue("error", out errorToken))
+            {
+                string error = errorToken.Value<string>();
+                if (!string.IsNullOrWhiteSpace(error) &&
+                    !string.Equals(error, "success", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("mpv command failed: " + error);
+                }
+            }
+
+            return reply;
+        }
+
+        private void FailAllPending()
+        {
+            foreach (var kvp in _pending)
+                kvp.Value.TrySetException(new InvalidOperationException("mpv IPC connection closed."));
+
+            _pending.Clear();
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            try { _cts?.Cancel(); } catch { }
+
+            // _reader/_writer were opened with leaveOpen:true (deliberately -
+            // they share one stream, so neither should close it independently),
+            // which means disposing them, as this method previously did on its
+            // own, never actually released the pipe handle. Disposing _stream
+            // directly is what returns the named-pipe handle to the OS. It also
+            // unblocks a pending ReadLineAsync() in the background read loop,
+            // which is how that loop notices shutdown when no command is
+            // in flight to wake it.
+            try { _stream?.Dispose(); } catch { }
+
+            FailAllPending();
+
+            try { _reader?.Dispose(); } catch { }
+            try { _writer?.Dispose(); } catch { }
+
+            _reader = null;
+            _writer = null;
+            _stream = null;
+        }
+    }
+}

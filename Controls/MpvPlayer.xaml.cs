@@ -1,26 +1,46 @@
-using Playnite.SDK;
 using Playnite.SDK.Events;
+using StremioVideoCenter.Models;
 using StremioVideoCenter.Services;
+using StremioVideoCenterControls.Player;
+using StremioVideoCenterControls.Player.Menus;
 using System;
-using System.Runtime.InteropServices;
-using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Interop;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
 
-namespace StremioVideoCenter.Controls
+namespace StremioVideoCenterControls
 {
     public partial class MpvPlayer : UserControl
     {
         private MpvHost _mpvHost;
-        private MpvProcessService _mpv;
-        private bool _started;
+        private PlayerSession _session;
+        private PlayerFocusController _focus;
+
+        private readonly PlayerUiState _uiState = new PlayerUiState();
+        private readonly TrackSelectionMenu _trackMenu = new TrackSelectionMenu();
+        private readonly SettingsMenu _settingsMenu = new SettingsMenu();
+        private bool _pendingTrackMenuIsAudio;
         private bool _disposed;
 
+        // Loaded and PlayVideoAsync can both request startup at the same time.
+        // Serialize startup so PlayerSession.StartAsync cannot tear down a
+        // process/IPC connection that another startup call is still using.
+        private readonly SemaphoreSlim _startupGate = new SemaphoreSlim(1, 1);
+
+        private DispatcherTimer _progressTimer;
+        private DispatcherTimer _hideControlsTimer;
+
+        private Window _fullscreenWindow;
+        private WindowState _previousWindowState;
+        private WindowStyle _previousWindowStyle;
+        private ResizeMode _previousResizeMode;
+
         public event EventHandler CloseRequested;
+        public event EventHandler FullscreenChanged;
 
         public MpvPlayer()
         {
@@ -30,44 +50,86 @@ namespace StremioVideoCenter.Controls
             Unloaded += MpvPlayer_Unloaded;
             SizeChanged += MpvPlayer_SizeChanged;
             PreviewKeyDown += MpvPlayer_PreviewKeyDown;
+            MouseMove += Player_MouseMove;
+            MouseLeave += Player_MouseLeave;
+
+            _trackMenu.TrackSelected += TrackMenu_TrackSelected;
+
+            _progressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            _progressTimer.Tick += ProgressTimer_Tick;
+
+            _hideControlsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            _hideControlsTimer.Tick += HideControlsTimer_Tick;
         }
+
+        // =====================================================================
+        // STARTUP / LIFECYCLE
+        // =====================================================================
 
         private async void MpvPlayer_Loaded(object sender, RoutedEventArgs e)
         {
-            if (_disposed || _started)
-                return;
+            if (_disposed) return;
+
+            if (_focus == null)
+                BuildFocusGrid();
+
+            WireSliders();
+
+            // Open the controls chrome (Close button included) before attempting
+            // to start mpv, not only after it succeeds. Previously ShowControls()
+            // only ran on the success path, so a startup failure left the Popup
+            // never opened - i.e. no Close button anywhere on screen to click.
+            SyncControlsPopupSize();
+            ShowControls();
+            FocusDefaultInPopup();
 
             try
             {
+                StartupTrace.Log("MpvPlayer_Loaded: about to call EnsureStartedAsync");
                 await EnsureStartedAsync();
+                _progressTimer.Start();
+                RestartHideTimer();
             }
             catch (Exception ex)
             {
                 MessageBox.Show(
                     "Unable to start MPV playback engine.\n\n" + ex.Message,
                     "MPV Playback Error");
+                // Controls (and Close) remain visible/open regardless.
             }
         }
 
         private void MpvPlayer_Unloaded(object sender, RoutedEventArgs e)
         {
-            // Do not dispose here. PlaybackTestHost temporarily changes visibility
-            // while the player is being managed by the Video Center.
+            // The Video Center manages the player lifetime explicitly.
         }
 
-        private void MpvPlayer_SizeChanged(object sender, SizeChangedEventArgs e)
+        private void BuildFocusGrid()
         {
-            if (_mpvHost == null)
-                return;
+            FocusGroup topRow = new FocusGroup(CloseButton);
+            FocusGroup centerRow = new FocusGroup(PlayPauseButton);
+            FocusGroup bottomRow = new FocusGroup(
+                BottomPlayPauseButton, Back10Button, Forward10Button,
+                MuteButton, VolumeSlider, AudioButton, SubtitleButton,
+                SettingsButton, FullscreenButton);
 
-            try
-            {
-                _mpvHost.SynchronizeNativeWindow();
-            }
-            catch
-            {
-                // Size synchronization is best-effort while WPF is laying out.
-            }
+            FocusGrid grid = new FocusGrid { DefaultElement = PlayPauseButton };
+            grid.AddRow(topRow);
+            grid.AddRow(centerRow);
+            grid.AddRow(bottomRow);
+
+            _focus = new PlayerFocusController(grid);
+        }
+
+        private void WireSliders()
+        {
+            SeekSlider.StepAmount = 5.0;
+            SeekSlider.OnStepLeft = amount => { var ignored = SeekRelativeAsync(-amount); };
+            SeekSlider.OnStepRight = amount => { var ignored = SeekRelativeAsync(amount); };
+
+            VolumeSlider.StepAmount = 5.0;
+            VolumeSlider.OnStepLeft = amount => AdjustVolume(-amount);
+            VolumeSlider.OnStepRight = amount => AdjustVolume(amount);
         }
 
         private async Task EnsureStartedAsync()
@@ -75,545 +137,678 @@ namespace StremioVideoCenter.Controls
             if (_disposed)
                 throw new ObjectDisposedException(nameof(MpvPlayer));
 
-            // Only reuse the player when the underlying process is genuinely alive.
-            if (_started &&
-                _mpv != null &&
-                _mpv.IsRunning)
+            StartupTrace.Log("EnsureStartedAsync: entered, waiting for gate");
+            await _startupGate.WaitAsync();
+            StartupTrace.Log("EnsureStartedAsync: gate acquired");
+            try
             {
-                return;
-            }
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(MpvPlayer));
 
-            // Clean up a stale process/service before starting a new one.
-            if (_mpv != null)
+                if (_mpvHost == null)
+                {
+                    _mpvHost = new MpvHost();
+                    VideoHost.Children.Add(_mpvHost);
+                }
+
+                if (_session == null)
+                {
+                    _session = new PlayerSession(_mpvHost);
+                    _session.StateChanged += Session_StateChanged;
+                    _session.TracksChanged += Session_StateChanged;
+                    _session.EndOfFileReached += Session_EndOfFileReached;
+                    _session.Disconnected += Session_Disconnected;
+                }
+
+                // IMPORTANT: Loaded and PlayVideoAsync can enter this method
+                // concurrently. Only one caller may execute StartAsync.
+                // PlayerSession.StartAsync begins by tearing down any existing
+                // mpv process/IPC, so concurrent calls could otherwise destroy
+                // the first startup while it is still connecting/initialising.
+                if (_session.IsRunning)
+                {
+                    StartupTrace.Log("EnsureStartedAsync: session already running, skipping StartAsync");
+                    return;
+                }
+
+                // Let the HwndHost finish creating its native window before mpv
+                // tries to embed into it.
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+                int attemptId = StartupTrace.NewAttemptId();
+                StartupTrace.Log("EnsureStartedAsync: attempt " + attemptId + " calling PlayerSession.StartAsync");
+
+                try
+                {
+                    await _session.StartAsync(_mpvHost.WindowHandle);
+                    StartupTrace.Log("EnsureStartedAsync: attempt " + attemptId + " StartAsync completed successfully");
+                }
+                catch (Exception ex)
+                {
+                    StartupTrace.Log("EnsureStartedAsync: attempt " + attemptId + " StartAsync threw: " + ex.GetType().Name + " - " + ex.Message);
+                    throw;
+                }
+            }
+            finally
             {
-                try { _mpv.Dispose(); } catch { }
-                _mpv = null;
+                StartupTrace.Log("EnsureStartedAsync: releasing gate");
+                _startupGate.Release();
             }
-
-            _started = false;
-
-            if (_mpvHost == null)
-            {
-                _mpvHost = new MpvHost();
-                VideoHost.Children.Add(_mpvHost);
-            }
-
-            await Dispatcher.InvokeAsync(
-                () => { },
-                DispatcherPriority.Render);
-
-            if (_mpvHost.WindowHandle == IntPtr.Zero)
-                throw new InvalidOperationException(
-                    "MPV video host window could not be created.");
-
-            _mpv = new MpvProcessService();
-
-            await _mpv.StartAsync(
-                _mpvHost.WindowHandle);
-
-            if (!_mpv.IsRunning)
-            {
-                throw new InvalidOperationException(
-                    "MPV stopped immediately after startup.");
-            }
-
-            // mpv normally creates its own video window under --wid. Wait for
-            // that native window, then verify its ownership. We only re-parent
-            // if Windows reports that mpv did not attach it to our host already.
-            await _mpvHost.WaitForAndAttachMpvWindowAsync(
-                _mpv.ProcessId,
-                3000);
-
-            _started = true;
-
-            // mpv creates its own child HWND under the --wid host. Make sure both
-            // the WPF host and mpv's native child are using the real playback size.
-            _mpvHost.SynchronizeNativeWindow();
-            await Dispatcher.InvokeAsync(
-                () => _mpvHost.SynchronizeNativeWindow(),
-                DispatcherPriority.Render);
         }
 
         public async Task PlayVideoAsync(string url)
         {
-            if (_disposed)
-                return;
+            if (_disposed) return;
 
+            // Keep the controls chrome (Close button included) visible
+            // regardless of whether this start/play attempt succeeds - a
+            // failure here should never leave the player with no way to exit.
+            ShowControls();
+
+            StartupTrace.Log("PlayVideoAsync: about to call EnsureStartedAsync");
             await EnsureStartedAsync();
 
-            if (_disposed || _mpv == null || _mpvHost == null)
-                return;
+            // EnsureStartedAsync has now fully completed (including a real
+            // PlayerSession.StartAsync call if one was needed) - only past
+            // this point does loadfile ever get issued.
+            StartupTrace.Log("PlayVideoAsync: startup complete, issuing loadfile");
+            await _session.PlayAsync(url);
 
-            try
-            {
-                await _mpv.PlayAsync(url);
-
-                if (_disposed || _mpv == null || _mpvHost == null)
-                    return;
-
-                // The child window can be recreated by mpv when a new file is
-                // loaded. Verify the current session's HWND after loadfile,
-                // but do not blindly re-parent a window that mpv already owns.
-                await _mpvHost.WaitForAndAttachMpvWindowAsync(
-                    _mpv.ProcessId,
-                    3000);
-            }
-            catch (InvalidOperationException ex)
-            {
-                // If mpv died between startup and loadfile, restart this
-                // playback session once. The player/host remains the same;
-                // only the dead mpv process and IPC session are replaced.
-                if (_disposed || _mpv == null ||
-                    !ex.Message.Contains("mpv is not running"))
-                    throw;
-
-                try { _mpv.Dispose(); } catch { }
-                _mpv = null;
-                _started = false;
-
-                await EnsureStartedAsync();
-
-                if (_disposed || _mpv == null || _mpvHost == null)
-                    return;
-
-                await _mpv.PlayAsync(url);
-
-                if (_disposed || _mpv == null || _mpvHost == null)
-                    return;
-
-                await _mpvHost.WaitForAndAttachMpvWindowAsync(
-                    _mpv.ProcessId,
-                    3000);
-            }
-        }
-
-        public async Task PauseAsync()
-        {
-            if (_mpv == null)
-                return;
-
-            await _mpv.PauseAsync();
-        }
-
-        public async Task SeekRelativeAsync(double seconds)
-        {
-            if (_mpv == null)
-                return;
-
-            await _mpv.SeekRelativeAsync(seconds);
-        }
-
-        public async Task SetVolumeAsync(double volume)
-        {
-            if (_mpv == null)
-                return;
-
-            await _mpv.SetVolumeAsync(volume);
-        }
-
-        public async Task ToggleMuteAsync()
-        {
-            if (_mpv == null)
-                return;
-
-            await _mpv.ToggleMuteAsync();
-        }
-
-        public bool HandleControllerInput(ControllerInput button)
-        {
-            if (_disposed || _mpv == null)
-                return false;
-
-            // Stage 1/2: basic transport proof only.
-            // Full Netflix-style focus navigation will be added after playback
-            // is confirmed working with the embedded MPV surface.
-            if (button == ControllerInput.B)
-            {
-                RaiseCloseRequested();
-                return true;
-            }
-
-            return false;
-        }
-
-        private async void MpvPlayer_PreviewKeyDown(object sender, KeyEventArgs e)
-        {
-            try
-            {
-                if (e.Key == Key.Escape || e.Key == Key.Back)
-                {
-                    RaiseCloseRequested();
-                    e.Handled = true;
-                    return;
-                }
-
-                if (e.Key == Key.Space || e.Key == Key.Enter)
-                {
-                    await PauseAsync();
-                    e.Handled = true;
-                    return;
-                }
-
-                if (e.Key == Key.Left)
-                {
-                    await SeekRelativeAsync(-10);
-                    e.Handled = true;
-                    return;
-                }
-
-                if (e.Key == Key.Right)
-                {
-                    await SeekRelativeAsync(10);
-                    e.Handled = true;
-                }
-            }
-            catch
-            {
-                // Input is best-effort during the playback proof stage.
-            }
-        }
-
-        private void RaiseCloseRequested()
-        {
-            CloseRequested?.Invoke(this, EventArgs.Empty);
+            RestartHideTimer();
         }
 
         public void DisposePlayer()
         {
-            if (_disposed)
-                return;
-
+            if (_disposed) return;
             _disposed = true;
 
+            try { _progressTimer?.Stop(); } catch { }
+            try { _hideControlsTimer?.Stop(); } catch { }
+            try { ControlsPopup.IsOpen = false; } catch { }
             try { PreviewKeyDown -= MpvPlayer_PreviewKeyDown; } catch { }
             try { SizeChanged -= MpvPlayer_SizeChanged; } catch { }
             try { Unloaded -= MpvPlayer_Unloaded; } catch { }
             try { Loaded -= MpvPlayer_Loaded; } catch { }
+            try { _trackMenu.TrackSelected -= TrackMenu_TrackSelected; } catch { }
+            try { _startupGate.Dispose(); } catch { }
 
-            // MpvProcessService.Dispose() waits for mpv.exe to exit (and
-            // force-kills it if required) before returning. Only after that do
-            // we destroy the HwndHost, preventing the old native video HWND
-            // from racing the next playback session.
-            try { _mpv?.Dispose(); } catch { }
-            _mpv = null;
-            _started = false;
+            if (_session != null)
+            {
+                try
+                {
+                    _session.StateChanged -= Session_StateChanged;
+                    _session.TracksChanged -= Session_StateChanged;
+                    _session.EndOfFileReached -= Session_EndOfFileReached;
+                    _session.Disconnected -= Session_Disconnected;
+                    _session.Dispose();
+                }
+                catch { }
+                _session = null;
+            }
 
             try
             {
                 if (_mpvHost != null)
-                {
-                    _mpvHost.WaitForMpvWindowsToDisappear(1000);
                     VideoHost.Children.Remove(_mpvHost);
-                }
             }
             catch { }
 
             _mpvHost = null;
         }
 
-        private sealed class MpvHost : HwndHost
+        // =====================================================================
+        // POPUP SIZING / PLACEMENT
+        // =====================================================================
+
+        private void MpvPlayer_SizeChanged(object sender, SizeChangedEventArgs e)
         {
-            private IntPtr _handle;
+            try { _mpvHost?.SynchronizeNativeWindow(); }
+            catch { }
 
-            public IntPtr WindowHandle
+            SyncControlsPopupSize();
+        }
+
+        private void SyncControlsPopupSize()
+        {
+            if (ControlsPopup == null || RootGrid == null)
+                return;
+
+            double width = Math.Max(1.0, RootGrid.ActualWidth);
+            double height = Math.Max(1.0, RootGrid.ActualHeight);
+
+            ControlsPopup.Width = width;
+            ControlsPopup.Height = height;
+            ControlsOverlay.Width = width;
+            ControlsOverlay.Height = height;
+        }
+
+        // WPF Popup is a separate native window, which lets the controls render
+        // above the embedded MPV HWND. Custom placement pins that window to the
+        // exact top-left corner of the Video Center player surface instead of
+        // allowing WPF to reposition it like a normal dropdown/context popup.
+        private CustomPopupPlacement[] ControlsPopupPlacement(Size popupSize, Size targetSize, Point offset)
+        {
+            return new[] { new CustomPopupPlacement(new Point(0, 0), PopupPrimaryAxis.None) };
+        }
+
+        // =====================================================================
+        // PLAYBACK STATE -> UI
+        // =====================================================================
+
+        private void Session_StateChanged(object sender, EventArgs e)
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshFromState));
+        }
+
+        private void RefreshFromState()
+        {
+            if (_disposed || _session == null) return;
+
+            PlaybackState state = _session.State;
+
+            if (state.DurationSeconds > 0)
+                SeekSlider.Maximum = state.DurationSeconds;
+
+            if (!_uiState.IsSeekBarBeingDragged)
+                SeekSlider.Value = Math.Max(0, Math.Min(SeekSlider.Maximum, state.PositionSeconds));
+
+            string playGlyph = state.IsPlaying ? "\u275A\u275A" : "\u25B6";
+            PlayPauseButton.Content = playGlyph;
+            BottomPlayPauseButton.Content = playGlyph;
+
+            if (!VolumeSlider.IsKeyboardFocusWithin)
+                VolumeSlider.Value = Math.Max(0, Math.Min(100, state.Volume));
+
+            MuteButton.Content = state.IsMuted ? "\U0001F507" : "\U0001F50A";
+
+            TimeText.Text = FormatTime(state.PositionSeconds) + " / " + FormatTime(state.DurationSeconds);
+        }
+
+        private void Session_EndOfFileReached(object sender, EventArgs e)
+        {
+            // Keep-open/keep-open-pause already leaves the last frame visible and
+            // pauses mpv itself, which flips IsPlaying via the "pause" property
+            // event. Here we just make sure the controls stay visible so the
+            // user can rewind/replay instead of auto-hiding onto a dead-looking
+            // frozen frame.
+            Dispatcher.BeginInvoke(new Action(() =>
             {
-                get { return _handle; }
-            }
+                ShowControls();
+                _hideControlsTimer.Stop();
+            }));
+        }
 
-            protected override HandleRef BuildWindowCore(HandleRef hwndParent)
+        private void Session_Disconnected(object sender, EventArgs e)
+        {
+            // mpv exited unexpectedly. PlayVideoAsync's internal recovery path
+            // rebuilds the process on the next play call; nothing else to do here.
+        }
+
+        private static string FormatTime(double seconds)
+        {
+            if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds < 0)
+                seconds = 0;
+
+            TimeSpan time = TimeSpan.FromSeconds(seconds);
+            if (time.TotalHours >= 1)
+                return time.ToString(@"hh\:mm\:ss");
+            return time.ToString(@"mm\:ss");
+        }
+
+        private async void ProgressTimer_Tick(object sender, EventArgs e)
+        {
+            if (_disposed || _session == null || !_session.IsRunning || _uiState.IsSeekBarBeingDragged)
+                return;
+
+            await _session.PollPositionAsync();
+        }
+
+        // =====================================================================
+        // TRANSPORT COMMANDS
+        // =====================================================================
+
+        public async Task SeekRelativeAsync(double seconds)
+        {
+            if (_session == null) return;
+            await _session.SeekRelativeAsync(seconds);
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        public async Task SeekAbsoluteAsync(double seconds)
+        {
+            if (_session == null) return;
+            await _session.SeekAbsoluteAsync(seconds);
+        }
+
+        private async void PlayPauseButton_Click(object sender, RoutedEventArgs e)
+        {
+            try { if (_session != null) await _session.TogglePauseAsync(); }
+            catch { }
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private async void RewindButton_Click(object sender, RoutedEventArgs e)
+        {
+            try { await SeekRelativeAsync(-10); }
+            catch { }
+        }
+
+        private async void ForwardButton_Click(object sender, RoutedEventArgs e)
+        {
+            try { await SeekRelativeAsync(10); }
+            catch { }
+        }
+
+        private async void MuteButton_Click(object sender, RoutedEventArgs e)
+        {
+            try { if (_session != null) await _session.ToggleMuteAsync(); }
+            catch { }
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private void CloseButton_Click(object sender, RoutedEventArgs e)
+        {
+            RaiseCloseRequested();
+        }
+
+        private void FullscreenButton_Click(object sender, RoutedEventArgs e)
+        {
+            ToggleFullscreen();
+        }
+
+        private void SeekSlider_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            _uiState.IsSeekBarBeingDragged = true;
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private async void SeekSlider_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            _uiState.IsSeekBarBeingDragged = false;
+            try { if (_session != null) await _session.SeekAbsoluteAsync(SeekSlider.Value); }
+            catch { }
+            RestartHideTimer();
+        }
+
+        private async void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_disposed || _session == null || !_session.IsRunning) return;
+
+            // Avoid sending a volume command for programmatic updates driven by
+            // RefreshFromState (i.e. mpv telling us its own current volume).
+            if (!VolumeSlider.IsKeyboardFocusWithin && !IsMouseOver) return;
+
+            try { await _session.SetVolumeAsync(VolumeSlider.Value); }
+            catch { }
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private void AdjustVolume(double delta)
+        {
+            VolumeSlider.Focus();
+            VolumeSlider.Value = Math.Max(0, Math.Min(100, VolumeSlider.Value + delta));
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        // =====================================================================
+        // AUDIO / SUBTITLE / SETTINGS MENUS
+        // =====================================================================
+
+        private void AudioButton_Click(object sender, RoutedEventArgs e)
+        {
+            OpenTrackMenu(isAudio: true);
+        }
+
+        private void SubtitleButton_Click(object sender, RoutedEventArgs e)
+        {
+            OpenTrackMenu(isAudio: false);
+        }
+
+        private void OpenTrackMenu(bool isAudio)
+        {
+            if (_session == null || _focus == null) return;
+
+            var tracks = isAudio ? _session.State.AudioTracks : _session.State.SubtitleTracks;
+            int? selected = isAudio ? _session.State.SelectedAudioTrackId : _session.State.SelectedSubtitleTrackId;
+            string title = isAudio ? "Audio" : "Subtitles";
+            UIElement originButton = isAudio ? (UIElement)AudioButton : SubtitleButton;
+
+            _pendingTrackMenuIsAudio = isAudio;
+
+            FocusGroup group = _trackMenu.Populate(title, tracks, selected, includeOffOption: !isAudio);
+
+            MenuHost.Content = _trackMenu;
+            MenuHost.Visibility = Visibility.Visible;
+            _uiState.OpenMenu = isAudio ? PlayerMenu.Audio : PlayerMenu.Subtitles;
+
+            _focus.PushMenuScope(group, originButton);
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private async void TrackMenu_TrackSelected(object sender, TrackMenuItemSelectedEventArgs e)
+        {
+            try
             {
-                _handle = NativeMethods.CreateWindowEx(
-                    0,
-                    "STATIC",
-                    string.Empty,
-                    NativeMethods.WS_CHILD |
-                    NativeMethods.WS_VISIBLE |
-                    NativeMethods.WS_CLIPCHILDREN |
-                    NativeMethods.WS_CLIPSIBLINGS,
-                    0,
-                    0,
-                    1,
-                    1,
-                    hwndParent.Handle,
-                    IntPtr.Zero,
-                    IntPtr.Zero,
-                    IntPtr.Zero);
-
-                if (_handle == IntPtr.Zero)
-                    throw new InvalidOperationException("Unable to create the MPV host window.");
-
-                return new HandleRef(this, _handle);
-            }
-
-            protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
-            {
-                base.OnRenderSizeChanged(sizeInfo);
-                SynchronizeNativeWindow();
-            }
-
-            public async Task<bool> WaitForAndAttachMpvWindowAsync(
-                int mpvProcessId,
-                int timeoutMilliseconds)
-            {
-                if (_handle == IntPtr.Zero || mpvProcessId <= 0)
-                    return false;
-
-                int elapsed = 0;
-
-                while (elapsed < timeoutMilliseconds)
+                if (_session != null)
                 {
-                    IntPtr mpvWindow = FindMpvChildWindow(mpvProcessId);
-
-                    if (mpvWindow != IntPtr.Zero)
+                    if (_pendingTrackMenuIsAudio)
                     {
-                        AttachMpvChildWindow(mpvWindow);
-                        SynchronizeNativeWindow();
-                        return true;
+                        if (e.TrackId.HasValue)
+                            await _session.SelectAudioTrackAsync(e.TrackId.Value);
                     }
-
-                    await Task.Delay(50).ConfigureAwait(true);
-                    elapsed += 50;
-                }
-
-                return false;
-            }
-
-            private IntPtr FindMpvChildWindow(int mpvProcessId)
-            {
-                IntPtr found = IntPtr.Zero;
-
-                NativeMethods.EnumChildWindows(
-                    _handle,
-                    delegate(IntPtr child, IntPtr parameter)
+                    else
                     {
-                        int processId = 0;
-                        NativeMethods.GetWindowThreadProcessId(
-                            child,
-                            out processId);
-
-                        if (processId == mpvProcessId)
-                        {
-                            found = child;
-                            return false;
-                        }
-
-                        return true;
-                    },
-                    IntPtr.Zero);
-
-                return found;
-            }
-
-            private void AttachMpvChildWindow(IntPtr child)
-            {
-                if (child == IntPtr.Zero || _handle == IntPtr.Zero)
-                    return;
-
-                IntPtr currentParent = NativeMethods.GetParent(child);
-
-                // In the normal --wid path mpv has already made the supplied
-                // HWND the parent. Avoid touching styles or calling SetParent
-                // again because doing so can destabilise the native window
-                // across repeated playback sessions.
-                if (currentParent != _handle)
-                {
-                    IntPtr style = NativeMethods.GetWindowLongPtr(
-                        child,
-                        NativeMethods.GWL_STYLE);
-
-                    long styleValue = style.ToInt64();
-                    styleValue &= ~((long)NativeMethods.WS_POPUP);
-                    styleValue |= NativeMethods.WS_CHILD |
-                                  NativeMethods.WS_CLIPSIBLINGS |
-                                  NativeMethods.WS_CLIPCHILDREN;
-
-                    NativeMethods.SetWindowLongPtr(
-                        child,
-                        NativeMethods.GWL_STYLE,
-                        new IntPtr(styleValue));
-
-                    NativeMethods.SetParent(child, _handle);
-                }
-
-                NativeMethods.ShowWindow(child, NativeMethods.SW_SHOW);
-                NativeMethods.BringWindowToTop(child);
-            }
-
-            public void WaitForMpvWindowsToDisappear(int timeoutMilliseconds)
-            {
-                if (_handle == IntPtr.Zero)
-                    return;
-
-                int elapsed = 0;
-                while (elapsed < timeoutMilliseconds)
-                {
-                    bool mpvChildExists = false;
-
-                    NativeMethods.EnumChildWindows(
-                        _handle,
-                        delegate(IntPtr child, IntPtr parameter)
-                        {
-                            int processId = 0;
-                            NativeMethods.GetWindowThreadProcessId(
-                                child,
-                                out processId);
-
-                            // At shutdown the process should already be gone,
-                            // so any remaining child is safe to treat as stale.
-                            mpvChildExists = true;
-                            return false;
-                        },
-                        IntPtr.Zero);
-
-                    if (!mpvChildExists)
-                        return;
-
-                    System.Threading.Thread.Sleep(25);
-                    elapsed += 25;
+                        await _session.SelectSubtitleTrackAsync(e.TrackId);
+                    }
                 }
             }
+            catch { }
 
-            public void SynchronizeNativeWindow()
+            CloseActiveMenuAndRestoreFocus();
+        }
+
+        private void SettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_focus == null) return;
+
+            FocusGroup group = _settingsMenu.BuildFocusGroup();
+
+            MenuHost.Content = _settingsMenu;
+            MenuHost.Visibility = Visibility.Visible;
+            _uiState.OpenMenu = PlayerMenu.Settings;
+
+            _focus.PushMenuScope(group, SettingsButton);
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        // Pops the focus scope (which also restores focus to the button that
+        // opened the menu) and hides the menu surface.
+        private void CloseActiveMenuAndRestoreFocus()
+        {
+            if (_focus != null)
+                _focus.PopScope();
+
+            MenuHost.Visibility = Visibility.Collapsed;
+            MenuHost.Content = null;
+            _uiState.OpenMenu = PlayerMenu.None;
+
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        // =====================================================================
+        // KEYBOARD / CONTROLLER INPUT
+        //
+        // Both the keyboard path (Overlay_PreviewKeyDown / MpvPlayer_PreviewKeyDown)
+        // and the external controller path (HandleControllerInput, called by
+        // whatever gamepad plumbing already exists in the Video Center) route
+        // through the same Handle* methods below, so B/A/D-pad behaviour is
+        // defined exactly once regardless of input source.
+        // =====================================================================
+
+        // Popup content is a separate PresentationSource, so this is the handler
+        // that actually fires while focus is on a control inside the popup.
+        private void Overlay_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            HandlePlayerKeyDown(e);
+        }
+
+        // Defensive fallback for the (normally brief) window where focus is on
+        // the UserControl itself, before the popup has opened.
+        private void MpvPlayer_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            HandlePlayerKeyDown(e);
+        }
+
+        private void HandlePlayerKeyDown(KeyEventArgs e)
+        {
+            if (_disposed || _focus == null) return;
+
+            switch (e.Key)
             {
-                if (_handle == IntPtr.Zero)
-                    return;
+                case Key.B:
+                case Key.Escape:
+                case Key.Back:
+                    HandleClose();
+                    e.Handled = true;
+                    break;
 
-                int width = Math.Max(1, (int)Math.Round(ActualWidth));
-                int height = Math.Max(1, (int)Math.Round(ActualHeight));
+                case Key.Enter:
+                case Key.Space:
+                    HandleActivate();
+                    e.Handled = true;
+                    break;
 
-                NativeMethods.SetWindowPos(
-                    _handle,
-                    IntPtr.Zero,
-                    0,
-                    0,
-                    width,
-                    height,
-                    NativeMethods.SWP_NOACTIVATE |
-                    NativeMethods.SWP_NOZORDER |
-                    NativeMethods.SWP_SHOWWINDOW);
+                case Key.Left:
+                    _focus.MoveHorizontal(-1);
+                    ShowControls();
+                    RestartHideTimer();
+                    e.Handled = true;
+                    break;
 
-                // Size the host first. The mpv child is explicitly attached
-                // and normalised after startup/playback, so there is no need
-                // to resize arbitrary child HWNDs here.
-                NativeMethods.EnumChildWindows(
-                    _handle,
-                    delegate(IntPtr child, IntPtr parameter)
-                    {
-                        NativeMethods.SetWindowPos(
-                            child,
-                            IntPtr.Zero,
-                            0,
-                            0,
-                            width,
-                            height,
-                            NativeMethods.SWP_NOACTIVATE |
-                            NativeMethods.SWP_NOZORDER |
-                            NativeMethods.SWP_SHOWWINDOW);
+                case Key.Right:
+                    _focus.MoveHorizontal(1);
+                    ShowControls();
+                    RestartHideTimer();
+                    e.Handled = true;
+                    break;
 
-                        return true;
-                    },
-                    IntPtr.Zero);
-            }
+                case Key.Up:
+                    _focus.MoveVertical(-1);
+                    ShowControls();
+                    RestartHideTimer();
+                    e.Handled = true;
+                    break;
 
-            protected override void DestroyWindowCore(HandleRef hwnd)
-            {
-                if (hwnd.Handle != IntPtr.Zero)
-                    NativeMethods.DestroyWindow(hwnd.Handle);
-
-                _handle = IntPtr.Zero;
+                case Key.Down:
+                    _focus.MoveVertical(1);
+                    ShowControls();
+                    RestartHideTimer();
+                    e.Handled = true;
+                    break;
             }
         }
 
-        private static class NativeMethods
+        // Called by the Video Center's existing gamepad plumbing.
+        public bool HandleControllerInput(ControllerInput button)
         {
-            public const int WS_CHILD = 0x40000000;
-            public const int WS_VISIBLE = 0x10000000;
-            public const int WS_CLIPSIBLINGS = 0x04000000;
-            public const int WS_CLIPCHILDREN = 0x02000000;
-            public const uint SWP_NOZORDER = 0x0004;
-            public const uint SWP_NOACTIVATE = 0x0010;
-            public const uint SWP_SHOWWINDOW = 0x0040;
+            if (_disposed || _focus == null) return false;
 
-            [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-            public static extern IntPtr CreateWindowEx(
-                int exStyle,
-                string className,
-                string windowName,
-                int style,
-                int x,
-                int y,
-                int width,
-                int height,
-                IntPtr parent,
-                IntPtr menu,
-                IntPtr instance,
-                IntPtr param);
+            ShowControls();
 
-            [DllImport("user32.dll", SetLastError = true)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public static extern bool DestroyWindow(IntPtr handle);
+            switch (button)
+            {
+                case ControllerInput.B:
+                    HandleClose();
+                    return true;
 
-            [DllImport("user32.dll", SetLastError = true)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public static extern bool SetWindowPos(
-                IntPtr hWnd,
-                IntPtr hWndInsertAfter,
-                int x,
-                int y,
-                int cx,
-                int cy,
-                uint uFlags);
+                case ControllerInput.A:
+                    HandleActivate();
+                    return true;
 
-            public const int GWL_STYLE = -16;
-            public const long WS_POPUP = unchecked((long)0x80000000);
-            public const int SW_SHOW = 5;
+                case ControllerInput.DPadLeft:
+                    _focus.MoveHorizontal(-1);
+                    RestartHideTimer();
+                    return true;
 
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern IntPtr SetParent(
-                IntPtr child,
-                IntPtr newParent);
+                case ControllerInput.DPadRight:
+                    _focus.MoveHorizontal(1);
+                    RestartHideTimer();
+                    return true;
 
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern IntPtr GetParent(
-                IntPtr hWnd);
+                case ControllerInput.DPadUp:
+                    _focus.MoveVertical(-1);
+                    RestartHideTimer();
+                    return true;
 
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern uint GetWindowThreadProcessId(
-                IntPtr hWnd,
-                out int processId);
+                case ControllerInput.DPadDown:
+                    _focus.MoveVertical(1);
+                    RestartHideTimer();
+                    return true;
+            }
 
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern IntPtr GetWindowLongPtr(
-                IntPtr hWnd,
-                int nIndex);
+            return false;
+        }
 
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern IntPtr SetWindowLongPtr(
-                IntPtr hWnd,
-                int nIndex,
-                IntPtr value);
+        // B is context-sensitive:
+        //   - Focus on a slider (Seek/Volume) at the root scope: exit the
+        //     slider back to the default control, don't close the player.
+        //   - A menu is open (Audio/Subtitle/Settings): pop it, restore focus
+        //     to the button that opened it, don't close the player.
+        //   - Otherwise (root scope, non-slider focus): close the player.
+        private void HandleClose()
+        {
+            UIElement focused = Keyboard.FocusedElement as UIElement;
 
-            [DllImport("user32.dll", SetLastError = true)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public static extern bool ShowWindow(
-                IntPtr hWnd,
-                int nCmdShow);
+            if (focused is PlayerSlider && _focus.IsAtRootScope)
+            {
+                _focus.FocusRootDefault();
+                ShowControls();
+                RestartHideTimer();
+                return;
+            }
 
-            [DllImport("user32.dll", SetLastError = true)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public static extern bool BringWindowToTop(
-                IntPtr hWnd);
+            if (!_focus.IsAtRootScope)
+            {
+                CloseActiveMenuAndRestoreFocus();
+                return;
+            }
 
-            [DllImport("user32.dll", SetLastError = true)]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public static extern bool EnumChildWindows(
-                IntPtr hWndParent,
-                EnumChildProc lpEnumFunc,
-                IntPtr lParam);
+            RaiseCloseRequested();
+        }
 
-            public delegate bool EnumChildProc(
-                IntPtr hWnd,
-                IntPtr lParam);
+        private void HandleActivate()
+        {
+            UIElement focused = Keyboard.FocusedElement as UIElement;
+
+            if (focused == null)
+            {
+                _focus.FocusRootDefault();
+                return;
+            }
+
+            Button button = focused as Button;
+            if (button != null)
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+            // A on a slider intentionally does nothing beyond keeping focus
+            // there - this avoids an accidental play/pause while adjusting
+            // seek or volume.
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private void FocusDefaultInPopup()
+        {
+            if (_focus == null) return;
+
+            ShowControls();
+
+            // Popup is a separate native window; queue focus until it is open
+            // and laid out so the button actually receives keyboard focus
+            // instead of the parent Video Center retaining it.
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    ControlsPopup.IsOpen = true;
+                    _focus.FocusRootDefault();
+                }
+                catch { }
+            }), DispatcherPriority.Input);
+        }
+
+        // =====================================================================
+        // MOUSE / AUTO-HIDE
+        // =====================================================================
+
+        private void Player_MouseMove(object sender, MouseEventArgs e)
+        {
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private void Player_MouseLeave(object sender, MouseEventArgs e)
+        {
+            RestartHideTimer();
+        }
+
+        private void ShowControls()
+        {
+            SyncControlsPopupSize();
+            ControlsOverlay.Visibility = Visibility.Visible;
+            ControlsPopup.IsOpen = true;
+            ControlsOverlay.UpdateLayout();
+            _uiState.ControlsVisible = true;
+        }
+
+        private void HideControlsTimer_Tick(object sender, EventArgs e)
+        {
+            if (_uiState.OpenMenu != PlayerMenu.None) return;
+
+            if (Keyboard.FocusedElement is Slider || Keyboard.FocusedElement is Button)
+                return;
+
+            if (_session != null && _session.State.IsPlaying)
+            {
+                ControlsOverlay.Visibility = Visibility.Collapsed;
+                ControlsPopup.IsOpen = false;
+                _uiState.ControlsVisible = false;
+            }
+        }
+
+        private void RestartHideTimer()
+        {
+            if (_hideControlsTimer == null) return;
+
+            _hideControlsTimer.Stop();
+            _hideControlsTimer.Start();
+        }
+
+        // =====================================================================
+        // FULLSCREEN
+        // =====================================================================
+
+        private void ToggleFullscreen()
+        {
+            _fullscreenWindow = Window.GetWindow(this);
+            if (_fullscreenWindow == null) return;
+
+            if (!_uiState.IsFullscreen)
+            {
+                _previousWindowState = _fullscreenWindow.WindowState;
+                _previousWindowStyle = _fullscreenWindow.WindowStyle;
+                _previousResizeMode = _fullscreenWindow.ResizeMode;
+
+                _fullscreenWindow.WindowStyle = WindowStyle.None;
+                _fullscreenWindow.ResizeMode = ResizeMode.NoResize;
+                _fullscreenWindow.WindowState = WindowState.Maximized;
+                _uiState.IsFullscreen = true;
+            }
+            else
+            {
+                _fullscreenWindow.WindowStyle = _previousWindowStyle;
+                _fullscreenWindow.ResizeMode = _previousResizeMode;
+                _fullscreenWindow.WindowState = _previousWindowState;
+                _uiState.IsFullscreen = false;
+            }
+
+            FullscreenChanged?.Invoke(this, EventArgs.Empty);
+            ShowControls();
+            RestartHideTimer();
+        }
+
+        private void RaiseCloseRequested()
+        {
+            CloseRequested?.Invoke(this, EventArgs.Empty);
         }
     }
 }

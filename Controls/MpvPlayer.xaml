@@ -1,8 +1,256 @@
-<UserControl x:Class="StremioVideoCenter.Controls.MpvPlayer"
+<UserControl x:Class="StremioVideoCenterControls.MpvPlayer"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:player="clr-namespace:StremioVideoCenterControls.Player"
              Background="Black"
-             Focusable="True">
-    <Grid x:Name="VideoHost"
-          Background="Black" />
+             Focusable="True"
+             KeyboardNavigation.IsTabStop="True">
+    <UserControl.Resources>
+        <Style x:Key="PlayerSliderFocusVisualStyle" TargetType="Control">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Border BorderBrush="White" BorderThickness="2" CornerRadius="3">
+                            <AdornedElementPlaceholder />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="PlayerSliderStyle" TargetType="Slider">
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource PlayerSliderFocusVisualStyle}" />
+        </Style>
+        <Style x:Key="PlayerButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#99000000" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ButtonBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              Content="{TemplateBinding Content}"
+                                              ContentTemplate="{TemplateBinding ContentTemplate}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="ButtonBorder" Property="BorderThickness" Value="3" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#DD333333" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Background" Value="#EE555555" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid x:Name="RootGrid" Background="Black">
+        <Grid x:Name="VideoHost" Background="Black" />
+
+        <Popup x:Name="ControlsPopup"
+               PlacementTarget="{Binding ElementName=RootGrid}"
+               Placement="Custom"
+               CustomPopupPlacementCallback="ControlsPopupPlacement"
+               HorizontalOffset="0"
+               VerticalOffset="0"
+               AllowsTransparency="True"
+               StaysOpen="True"
+               IsOpen="False"
+               PopupAnimation="None">
+            <!--
+                This overlay is deliberately a fixed-size surface. The code-behind
+                synchronizes its Width/Height with the real player surface so every
+                control remains visible at fullscreen and during resize.
+
+                Popup content is a separate PresentationSource from the rest of the
+                UserControl, so keyboard events tunnel from THIS Grid down, not from
+                the UserControl root. One PreviewKeyDown handler here (Overlay_
+                PreviewKeyDown) is enough to catch every key while focus is anywhere
+                inside the popup - individual buttons/sliders no longer need their
+                own PreviewKeyDown wiring.
+            -->
+            <Grid x:Name="ControlsOverlay"
+                  Background="Transparent"
+                  IsHitTestVisible="True"
+                  Focusable="False"
+                  PreviewKeyDown="Overlay_PreviewKeyDown">
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="120" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="125" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0" IsHitTestVisible="False" VerticalAlignment="Stretch">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Offset="0" Color="#AA000000" />
+                            <GradientStop Offset="1" Color="#00000000" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+                </Border>
+
+                <Border Grid.Row="2" IsHitTestVisible="False" VerticalAlignment="Stretch">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0,1" EndPoint="0,0">
+                            <GradientStop Offset="0" Color="#CC000000" />
+                            <GradientStop Offset="1" Color="#00000000" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+                </Border>
+
+                <!-- Top bar -->
+                <Grid Grid.Row="0" Margin="28,24,28,0">
+                    <Button x:Name="CloseButton"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            HorizontalAlignment="Left"
+                            Content="&#x2715;"
+                            ToolTip="Close"
+                            Click="CloseButton_Click"
+                            FontSize="22"
+                            Width="48"
+                            Height="48"
+                            Focusable="True" />
+                </Grid>
+
+                <!-- Centre transport control: Play/Pause only, nothing else. -->
+                <Grid Grid.Row="1">
+                    <StackPanel x:Name="CenterControls"
+                                Orientation="Horizontal"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                        <Button x:Name="PlayPauseButton"
+                                Style="{StaticResource PlayerButtonStyle}"
+                                Content="&#x25B6;"
+                                ToolTip="Play / Pause"
+                                Click="PlayPauseButton_Click"
+                                Margin="8"
+                                Width="72"
+                                Height="72"
+                                FontSize="28"
+                                Focusable="True" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Bottom player bar. Kept in a dedicated fixed-height row so
+                     it cannot collapse or disappear behind the MPV surface. -->
+                <Grid x:Name="BottomControls"
+                      Grid.Row="2"
+                      Margin="28,8,28,18">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="32" />
+                        <RowDefinition Height="55" />
+                    </Grid.RowDefinitions>
+
+                    <player:PlayerSlider x:Name="SeekSlider"
+                            Style="{StaticResource PlayerSliderStyle}"
+                            Grid.Row="0"
+                            Minimum="0"
+                            Maximum="1"
+                            Value="0"
+                            Height="28"
+                            PreviewMouseDown="SeekSlider_PreviewMouseDown"
+                            PreviewMouseUp="SeekSlider_PreviewMouseUp"
+                            Focusable="True" />
+
+                    <Grid Grid.Row="1">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button x:Name="BottomPlayPauseButton"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="&#x25B6;"
+                                    ToolTip="Play / Pause"
+                                    Click="PlayPauseButton_Click"
+                                    Width="44" Height="40" FontSize="18" Focusable="True" />
+                            <Button x:Name="Back10Button"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="&#x21B6;"
+                                    ToolTip="Back 10 seconds"
+                                    Click="RewindButton_Click"
+                                    Width="44" Height="40" FontSize="18" Focusable="True" />
+                            <Button x:Name="Forward10Button"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="&#x21B7;"
+                                    ToolTip="Forward 10 seconds"
+                                    Click="ForwardButton_Click"
+                                    Width="44" Height="40" FontSize="18" Focusable="True" />
+                            <TextBlock x:Name="TimeText"
+                                       Text="00:00 / 00:00"
+                                       Foreground="White"
+                                       VerticalAlignment="Center"
+                                       Margin="12,0,0,0"
+                                       FontSize="15" />
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center">
+                            <Button x:Name="MuteButton"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="&#x1F50A;"
+                                    ToolTip="Mute / Unmute"
+                                    Click="MuteButton_Click"
+                                    Width="44" Height="40" FontSize="17" Focusable="True" />
+                            <player:PlayerSlider x:Name="VolumeSlider"
+                                    Style="{StaticResource PlayerSliderStyle}"
+                                    Minimum="0" Maximum="100" Value="100"
+                                    Width="130" Height="40"
+                                    VerticalAlignment="Center"
+                                    ValueChanged="VolumeSlider_ValueChanged"
+                                    Focusable="True"
+                                    ToolTip="Volume" />
+                            <Button x:Name="AudioButton"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="AUD"
+                                    ToolTip="Audio track"
+                                    Click="AudioButton_Click"
+                                    Width="44" Height="40" FontSize="14" Focusable="True" />
+                            <Button x:Name="SubtitleButton"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="CC"
+                                    ToolTip="Subtitles"
+                                    Click="SubtitleButton_Click"
+                                    Width="44" Height="40" FontSize="14" Focusable="True" />
+                            <Button x:Name="SettingsButton"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="&#x2699;"
+                                    ToolTip="Settings"
+                                    Click="SettingsButton_Click"
+                                    Width="44" Height="40" FontSize="17" Focusable="True" />
+                            <Button x:Name="FullscreenButton"
+                                    Style="{StaticResource PlayerButtonStyle}"
+                                    Content="&#x26F6;"
+                                    ToolTip="Fullscreen"
+                                    Click="FullscreenButton_Click"
+                                    Width="44" Height="40" FontSize="20" Focusable="True" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+
+                <!-- Audio/Subtitle/Settings menus render here, above everything
+                     else in the popup. Only one is shown at a time; MpvPlayer.xaml.cs
+                     swaps Content and pushes/pops the matching focus scope. -->
+                <ContentControl x:Name="MenuHost"
+                                 Grid.Row="0"
+                                 Grid.RowSpan="3"
+                                 Visibility="Collapsed"
+                                 Focusable="False" />
+            </Grid>
+        </Popup>
+    </Grid>
 </UserControl>

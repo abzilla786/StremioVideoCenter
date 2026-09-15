@@ -1,11 +1,10 @@
 using Playnite.SDK;
 using Playnite.SDK.Controls;
 using Playnite.SDK.Events;
-using StremioVideoCenter.Controls;
+using StremioVideoCenterControls;
 using StremioVideoCenter.Models;
 using StremioVideoCenter.Services;
 using StremioVideoCenter.ViewModels;
-using StremioVideoCenterControls;
 using System;
 using System.Threading.Tasks;
 using System.Windows;
@@ -1265,6 +1264,8 @@ namespace StremioVideoCenter
             }
             catch (Exception ex)
             {
+                ClosePlayer();
+
                 MessageBox.Show(
                     "Unable to start playback.\n\n" +
                     "Title: " +
@@ -1281,37 +1282,43 @@ namespace StremioVideoCenter
             object sender,
             EventArgs e)
         {
-            if (_stremioPlayer == null)
-            {
-                PlaybackTestHost.Visibility =
-                    Visibility.Collapsed;
+            ClosePlayer();
+        }
 
-                FocusFirstAvailableSection();
-                return;
-            }
+        // Tears down _stremioPlayer/PlaybackTestHost and returns focus to the
+        // home screen. Called both when the player itself requests a close and
+        // when a play attempt fails outright - a failed PlayVideoAsync() call
+        // previously left PlaybackTestHost visible (its black, ZIndex=1000
+        // overlay) and _stremioPlayer non-null, which also meant
+        // HandleControllerInput kept routing all controller input into the
+        // broken player instead of back to the home screen.
+        private void ClosePlayer()
+        {
+            if (_stremioPlayer != null)
+            {
+                try
+                {
+                    _stremioPlayer.CloseRequested -=
+                        StremioPlayer_CloseRequested;
+                    _stremioPlayer.DisposePlayer();
+                }
+                catch
+                {
+                    // Player cleanup is best-effort.
+                }
 
-            try
-            {
-                _stremioPlayer.CloseRequested -=
-                    StremioPlayer_CloseRequested;
-                _stremioPlayer.DisposePlayer();
-            }
-            catch
-            {
-                // Player cleanup is best-effort.
-            }
+                try
+                {
+                    PlaybackTestHost.Children.Remove(
+                        _stremioPlayer);
+                }
+                catch
+                {
+                    // Ignore removal errors.
+                }
 
-            try
-            {
-                PlaybackTestHost.Children.Remove(
-                    _stremioPlayer);
+                _stremioPlayer = null;
             }
-            catch
-            {
-                // Ignore removal errors.
-            }
-
-            _stremioPlayer = null;
 
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;

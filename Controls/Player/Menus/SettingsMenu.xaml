@@ -1,0 +1,42 @@
+<UserControl x:Class="StremioVideoCenterControls.Player.Menus.SettingsMenu"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="#EE111111"
+             Focusable="False">
+    <UserControl.Resources>
+        <Style x:Key="FocusableBorderStyle" TargetType="Border">
+            <Setter Property="BorderBrush" Value="#55FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="White" />
+                    <Setter Property="BorderThickness" Value="3" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <!--
+        RootBorder is the sole focusable element for now (so B always has
+        something obvious to focus/back out of, per the "focus must never
+        become invisible" requirement). Future settings rows (playback speed,
+        subtitle styling, aspect ratio, etc) get added as additional focusable
+        rows inside this same scope without restructuring the menu host wiring
+        in MpvPlayer.xaml.cs.
+    -->
+    <Border x:Name="RootBorder"
+            Style="{StaticResource FocusableBorderStyle}"
+            CornerRadius="6"
+            MinWidth="260"
+            Padding="16"
+            Focusable="True"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center">
+        <StackPanel>
+            <TextBlock Text="Settings" Foreground="White" FontSize="16" FontWeight="Bold" Margin="0,0,0,10" />
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="#AAFFFFFF"
+                       Text="Playback speed, subtitle styling, aspect ratio, and other options will appear here in a future update." />
+        </StackPanel>
+    </Border>
+</UserControl>

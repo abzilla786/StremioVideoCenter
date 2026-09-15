@@ -48,6 +48,9 @@
     <Reference Include="Microsoft.Threading.Tasks.Extensions.Desktop, Version=1.0.168.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
       <HintPath>packages\Microsoft.Bcl.Async.1.0.168\lib\net40\Microsoft.Threading.Tasks.Extensions.Desktop.dll</HintPath>
     </Reference>
+    <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+      <HintPath>packages\Newtonsoft.Json.13.0.5-beta1\lib\net45\Newtonsoft.Json.dll</HintPath>
+    </Reference>
     <Reference Include="Playnite.SDK, Version=6.15.0.0, Culture=neutral, processorArchitecture=MSIL">
       <HintPath>packages\PlayniteSDK.6.15.0\lib\net462\Playnite.SDK.dll</HintPath>
     </Reference>
@@ -76,10 +79,24 @@
     <Compile Include="Controls\MediaCard.xaml.cs">
       <DependentUpon>MediaCard.xaml</DependentUpon>
     </Compile>
-	<Compile Include="Controls\MpvPlayer.xaml.cs">
-	  <DependentUpon>MpvPlayer.xaml</DependentUpon>
-	</Compile>
-	<Compile Include="Services\MpvProcessService.cs" />
+    <Compile Include="Controls\MpvPlayer.xaml.cs">
+      <DependentUpon>MpvPlayer.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
+      <DependentUpon>SettingsMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Controls\Player\Menus\TrackSelectionMenu.xaml.cs">
+      <DependentUpon>TrackSelectionMenu.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Controls\Player\MpvHost.cs" />
+    <Compile Include="Controls\Player\PlayerFocusController.cs" />
+    <Compile Include="Controls\Player\PlayerSession.cs" />
+    <Compile Include="Controls\Player\PlayerSlider.cs" />
+    <Compile Include="Controls\Player\StartupTrace.cs" />
+    <Compile Include="Models\MpvTrackInfo.cs" />
+    <Compile Include="Models\PlaybackState.cs" />
+    <Compile Include="Services\MpvIpcClient.cs" />
+    <Compile Include="Services\MpvProcessService.cs" />
     <Compile Include="Controls\MediaSection.xaml.cs">
       <DependentUpon>MediaSection.xaml</DependentUpon>
     </Compile>
@@ -108,10 +125,10 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-	<Content Include="mpv\**\*">
-	  <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-	</Content>
-  </ItemGroup>    
+    <Content Include="mpv\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
   <ItemGroup>
     <None Include="Localization\*.xaml">
       <Generator>MSBuild:Compile</Generator>
@@ -126,10 +143,10 @@
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
-	<Page Include="Controls\MpvPlayer.xaml">
-	  <SubType>Designer</SubType>
-	  <Generator>MSBuild:Compile</Generator>
-	</Page>
+    <Page Include="Controls\MpvPlayer.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
     <Page Include="Controls\MediaCard.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
@@ -137,6 +154,14 @@
     <Page Include="Controls\MediaSection.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\Player\Menus\SettingsMenu.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="Controls\Player\Menus\TrackSelectionMenu.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
     </Page>
     <Page Include="StremioVideoCenterSettingsView.xaml">
       <SubType>Designer</SubType>
@@ -165,23 +190,14 @@
     </PropertyGroup>
     <Error Condition="!Exists('packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets'))" />
   </Target>
-	<!-- ========================================================= -->
-	<!-- MPV RUNTIME FILE DEPLOYMENT                               -->
-	<!-- ========================================================= -->
+  <!-- ========================================================= -->
+  <!-- MPV RUNTIME FILE DEPLOYMENT                               -->
+  <!-- ========================================================= -->
   <Target Name="CopyMpvRuntimeFiles" AfterTargets="Build">
-
-	<ItemGroup>
-		<MpvRuntimeFiles Include="$(ProjectDir)mpv\**\*" />
-	</ItemGroup>
-
-	<Copy
-		 SourceFiles="@(MpvRuntimeFiles)"
-		 DestinationFiles="@(MpvRuntimeFiles->'$(TargetDir)mpv\%(RecursiveDir)%(Filename)%(Extension)')"
-		 SkipUnchangedFiles="true" />
-
-	<Error
-		 Condition="!Exists('$(TargetDir)mpv\mpv.exe')"
-		 Text="MPV deployment failed: $(TargetDir)mpv\mpv.exe was not found after build." />
-
+    <ItemGroup>
+      <MpvRuntimeFiles Include="$(ProjectDir)mpv\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(MpvRuntimeFiles)" DestinationFiles="@(MpvRuntimeFiles->'$(TargetDir)mpv\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Error Condition="!Exists('$(TargetDir)mpv\mpv.exe')" Text="MPV deployment failed: $(TargetDir)mpv\mpv.exe was not found after build." />
   </Target>
 </Project>
