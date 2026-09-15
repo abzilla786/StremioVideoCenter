@@ -53,6 +53,9 @@ namespace StremioVideoCenter
             OmdbApiKeyBox.Password =
                 viewModel.Settings.OmdbApiKey ?? string.Empty;
 
+            RealDebridApiKeyBox.Password =
+                viewModel.Settings.RealDebridApiKey ?? string.Empty;
+
             isLoadingValues = false;
         }
 
@@ -109,6 +112,34 @@ namespace StremioVideoCenter
                 OmdbApiKeyBox.Password;
 
             OmdbConnectionStatus.Text =
+                string.Empty;
+        }
+
+        // =========================================================
+        // REAL-DEBRID PASSWORD CHANGED
+        // =========================================================
+
+        private void RealDebridApiKeyBox_PasswordChanged(
+            object sender,
+            RoutedEventArgs e)
+        {
+            if (isLoadingValues)
+            {
+                return;
+            }
+
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            viewModel.Settings.RealDebridApiKey =
+                RealDebridApiKeyBox.Password;
+
+            RealDebridConnectionStatus.Text =
                 string.Empty;
         }
 
@@ -364,6 +395,68 @@ namespace StremioVideoCenter
             finally
             {
                 TestOmdbConnectionButton.IsEnabled = true;
+            }
+        }
+
+        // =========================================================
+        // TEST REAL-DEBRID CONNECTION
+        // =========================================================
+
+        private async void TestRealDebridConnection_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            string apiToken =
+                viewModel.Settings.RealDebridApiKey;
+
+            if (string.IsNullOrWhiteSpace(apiToken))
+            {
+                RealDebridConnectionStatus.Text =
+                    "Please enter your Real-Debrid API token first.";
+
+                return;
+            }
+
+            RealDebridConnectionStatus.Text =
+                "Testing Real-Debrid connection...";
+
+            TestRealDebridConnectionButton.IsEnabled = false;
+
+            try
+            {
+                var realDebridService =
+                    new RealDebridService(apiToken);
+
+                bool connected =
+                    await realDebridService.TestConnectionAsync();
+
+                if (connected)
+                {
+                    RealDebridConnectionStatus.Text =
+                        "Real-Debrid connection successful.";
+                }
+                else
+                {
+                    RealDebridConnectionStatus.Text =
+                        "Real-Debrid connection failed. Please check your API token and internet connection.";
+                }
+            }
+            catch
+            {
+                RealDebridConnectionStatus.Text =
+                    "Real-Debrid connection failed.";
+            }
+            finally
+            {
+                TestRealDebridConnectionButton.IsEnabled = true;
             }
         }
     }

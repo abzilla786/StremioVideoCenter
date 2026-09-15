@@ -1,203 +1,207 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
-  <PropertyGroup>
-    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{4FDF1E89-5BC3-4C72-8FDA-0D580E7A5D5F}</ProjectGuid>
-    <OutputType>Library</OutputType>
-    <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>StremioVideoCenter</RootNamespace>
-    <AssemblyName>StremioVideoCenter</AssemblyName>
-    <TargetFrameworkVersion>v4.6.2</TargetFrameworkVersion>
-    <FileAlignment>512</FileAlignment>
-    <Deterministic>true</Deterministic>
-    <NuGetPackageImportStamp>
-    </NuGetPackageImportStamp>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <DebugSymbols>true</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
-    <OutputPath>bin\Debug\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>true</Optimize>
-    <OutputPath>bin\Release\</OutputPath>
-    <DefineConstants>TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
-  <ItemGroup>
-    <Reference Include="LibVLCSharp, Version=3.9.7.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>packages\LibVLCSharp.3.9.7\lib\net40\LibVLCSharp.dll</HintPath>
-    </Reference>
-    <Reference Include="LibVLCSharp.WPF, Version=3.9.7.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>packages\LibVLCSharp.WPF.3.9.7\lib\net461\LibVLCSharp.WPF.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.Threading.Tasks, Version=1.0.12.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
-      <HintPath>packages\Microsoft.Bcl.Async.1.0.168\lib\net40\Microsoft.Threading.Tasks.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.Threading.Tasks.Extensions, Version=1.0.12.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
-      <HintPath>packages\Microsoft.Bcl.Async.1.0.168\lib\net40\Microsoft.Threading.Tasks.Extensions.dll</HintPath>
-    </Reference>
-    <Reference Include="Microsoft.Threading.Tasks.Extensions.Desktop, Version=1.0.168.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
-      <HintPath>packages\Microsoft.Bcl.Async.1.0.168\lib\net40\Microsoft.Threading.Tasks.Extensions.Desktop.dll</HintPath>
-    </Reference>
-    <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
-      <HintPath>packages\Newtonsoft.Json.13.0.5-beta1\lib\net45\Newtonsoft.Json.dll</HintPath>
-    </Reference>
-    <Reference Include="Playnite.SDK, Version=6.15.0.0, Culture=neutral, processorArchitecture=MSIL">
-      <HintPath>packages\PlayniteSDK.6.15.0\lib\net462\Playnite.SDK.dll</HintPath>
-    </Reference>
-    <Reference Include="PresentationCore" />
-    <Reference Include="PresentationFramework" />
-    <Reference Include="System" />
-    <Reference Include="System.Core" />
-    <Reference Include="System.Net" />
-    <Reference Include="System.Runtime.Serialization" />
-    <Reference Include="System.ValueTuple, Version=4.0.3.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
-      <HintPath>packages\System.ValueTuple.4.5.0\lib\net461\System.ValueTuple.dll</HintPath>
-    </Reference>
-    <Reference Include="System.Xaml" />
-    <Reference Include="System.Xml.Linq" />
-    <Reference Include="System.Data.DataSetExtensions" />
-    <Reference Include="Microsoft.CSharp" />
-    <Reference Include="System.Data" />
-    <Reference Include="System.Net.Http" />
-    <Reference Include="System.Xml" />
-    <Reference Include="WindowsBase" />
-  </ItemGroup>
-  <ItemGroup>
-    <Compile Include="Controls\LibVLCPlayer.xaml.cs">
-      <DependentUpon>LibVLCPlayer.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="Controls\MediaCard.xaml.cs">
-      <DependentUpon>MediaCard.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="Controls\MpvPlayer.xaml.cs">
-      <DependentUpon>MpvPlayer.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
-      <DependentUpon>SettingsMenu.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="Controls\Player\Menus\TrackSelectionMenu.xaml.cs">
-      <DependentUpon>TrackSelectionMenu.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="Controls\Player\MpvHost.cs" />
-    <Compile Include="Controls\Player\PlayerFocusController.cs" />
-    <Compile Include="Controls\Player\PlayerSession.cs" />
-    <Compile Include="Controls\Player\PlayerSlider.cs" />
-    <Compile Include="Controls\Player\StartupTrace.cs" />
-    <Compile Include="Models\MpvTrackInfo.cs" />
-    <Compile Include="Models\PlaybackState.cs" />
-    <Compile Include="Services\MpvIpcClient.cs" />
-    <Compile Include="Services\MpvProcessService.cs" />
-    <Compile Include="Controls\MediaSection.xaml.cs">
-      <DependentUpon>MediaSection.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="Models\HeroItem.cs" />
-    <Compile Include="Models\MediaItem.cs" />
-    <Compile Include="Models\StremioStream.cs" />
-    <Compile Include="Services\HeroRecommendationService.cs" />
-    <Compile Include="Services\OmdbService.cs" />
-    <Compile Include="Services\StremioAddonService.cs" />
-    <Compile Include="Services\TmdbService.cs" />
-    <Compile Include="StremioVideoCenter.cs" />
-    <Compile Include="StremioVideoCenterSettings.cs" />
-    <Compile Include="StremioVideoCenterSettingsView.xaml.cs">
-      <DependentUpon>StremioVideoCenterSettingsView.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="StremioVideoCenterView.xaml.cs">
-      <DependentUpon>StremioVideoCenterView.xaml</DependentUpon>
-    </Compile>
-    <Compile Include="ViewModels\HomeViewModel.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="extension.yaml">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <None Include="packages.config" />
-  </ItemGroup>
-  <ItemGroup>
-    <Content Include="mpv\**\*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="Localization\*.xaml">
-      <Generator>MSBuild:Compile</Generator>
-      <SubType>Designer</SubType>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-    <Page Include="App.xaml">
-      <Generator>MSBuild:Compile</Generator>
-      <SubType>Designer</SubType>
-    </Page>
-    <Page Include="Controls\LibVLCPlayer.xaml">
-      <SubType>Designer</SubType>
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
-    <Page Include="Controls\MpvPlayer.xaml">
-      <SubType>Designer</SubType>
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
-    <Page Include="Controls\MediaCard.xaml">
-      <SubType>Designer</SubType>
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
-    <Page Include="Controls\MediaSection.xaml">
-      <SubType>Designer</SubType>
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
-    <Page Include="Controls\Player\Menus\SettingsMenu.xaml">
-      <Generator>MSBuild:Compile</Generator>
-      <SubType>Designer</SubType>
-    </Page>
-    <Page Include="Controls\Player\Menus\TrackSelectionMenu.xaml">
-      <Generator>MSBuild:Compile</Generator>
-      <SubType>Designer</SubType>
-    </Page>
-    <Page Include="StremioVideoCenterSettingsView.xaml">
-      <SubType>Designer</SubType>
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
-    <Page Include="StremioVideoCenterView.xaml">
-      <SubType>Designer</SubType>
-      <Generator>MSBuild:Compile</Generator>
-    </Page>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="icon.png">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
-  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <Import Project="packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets" Condition="Exists('packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets')" />
-  <Target Name="EnsureBclBuildImported" BeforeTargets="BeforeBuild" Condition="'$(BclBuildImported)' == ''">
-    <Error Condition="!Exists('packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets')" Text="This project references NuGet package(s) that are missing on this computer. Enable NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=317567." HelpKeyword="BCLBUILD2001" />
-    <Error Condition="Exists('packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets')" Text="The build restored NuGet packages. Build the project again to include these packages in the build. For more information, see http://go.microsoft.com/fwlink/?LinkID=317568." HelpKeyword="BCLBUILD2002" />
-  </Target>
-  <Import Project="packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets" Condition="Exists('packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets')" />
-  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
-    <PropertyGroup>
-      <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
-    </PropertyGroup>
-    <Error Condition="!Exists('packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets'))" />
-  </Target>
-  <!-- ========================================================= -->
-  <!-- MPV RUNTIME FILE DEPLOYMENT                               -->
-  <!-- ========================================================= -->
-  <Target Name="CopyMpvRuntimeFiles" AfterTargets="Build">
-    <ItemGroup>
-      <MpvRuntimeFiles Include="$(ProjectDir)mpv\**\*" />
-    </ItemGroup>
-    <Copy SourceFiles="@(MpvRuntimeFiles)" DestinationFiles="@(MpvRuntimeFiles->'$(TargetDir)mpv\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
-    <Error Condition="!Exists('$(TargetDir)mpv\mpv.exe')" Text="MPV deployment failed: $(TargetDir)mpv\mpv.exe was not found after build." />
-  </Target>
+	<Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+	<PropertyGroup>
+		<Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+		<Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+		<ProjectGuid>{4FDF1E89-5BC3-4C72-8FDA-0D580E7A5D5F}</ProjectGuid>
+		<OutputType>Library</OutputType>
+		<AppDesignerFolder>Properties</AppDesignerFolder>
+		<RootNamespace>StremioVideoCenter</RootNamespace>
+		<AssemblyName>StremioVideoCenter</AssemblyName>
+		<TargetFrameworkVersion>v4.6.2</TargetFrameworkVersion>
+		<FileAlignment>512</FileAlignment>
+		<Deterministic>true</Deterministic>
+		<NuGetPackageImportStamp>
+		</NuGetPackageImportStamp>
+	</PropertyGroup>
+	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+		<DebugSymbols>true</DebugSymbols>
+		<DebugType>full</DebugType>
+		<Optimize>false</Optimize>
+		<OutputPath>bin\Debug\</OutputPath>
+		<DefineConstants>DEBUG;TRACE</DefineConstants>
+		<ErrorReport>prompt</ErrorReport>
+		<WarningLevel>4</WarningLevel>
+	</PropertyGroup>
+	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+		<DebugType>pdbonly</DebugType>
+		<Optimize>true</Optimize>
+		<OutputPath>bin\Release\</OutputPath>
+		<DefineConstants>TRACE</DefineConstants>
+		<ErrorReport>prompt</ErrorReport>
+		<WarningLevel>4</WarningLevel>
+	</PropertyGroup>
+	<ItemGroup>
+		<Reference Include="LibVLCSharp, Version=3.9.7.0, Culture=neutral, processorArchitecture=MSIL">
+			<HintPath>packages\LibVLCSharp.3.9.7\lib\net40\LibVLCSharp.dll</HintPath>
+		</Reference>
+		<Reference Include="LibVLCSharp.WPF, Version=3.9.7.0, Culture=neutral, processorArchitecture=MSIL">
+			<HintPath>packages\LibVLCSharp.WPF.3.9.7\lib\net461\LibVLCSharp.WPF.dll</HintPath>
+		</Reference>
+		<Reference Include="Microsoft.Threading.Tasks, Version=1.0.12.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+			<HintPath>packages\Microsoft.Bcl.Async.1.0.168\lib\net40\Microsoft.Threading.Tasks.dll</HintPath>
+		</Reference>
+		<Reference Include="Microsoft.Threading.Tasks.Extensions, Version=1.0.12.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+			<HintPath>packages\Microsoft.Bcl.Async.1.0.168\lib\net40\Microsoft.Threading.Tasks.Extensions.dll</HintPath>
+		</Reference>
+		<Reference Include="Microsoft.Threading.Tasks.Extensions.Desktop, Version=1.0.168.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
+			<HintPath>packages\Microsoft.Bcl.Async.1.0.168\lib\net40\Microsoft.Threading.Tasks.Extensions.Desktop.dll</HintPath>
+		</Reference>
+		<Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
+			<HintPath>packages\Newtonsoft.Json.13.0.5-beta1\lib\net45\Newtonsoft.Json.dll</HintPath>
+		</Reference>
+		<Reference Include="Playnite.SDK, Version=6.15.0.0, Culture=neutral, processorArchitecture=MSIL">
+			<HintPath>packages\PlayniteSDK.6.15.0\lib\net462\Playnite.SDK.dll</HintPath>
+		</Reference>
+		<Reference Include="PresentationCore" />
+		<Reference Include="PresentationFramework" />
+		<Reference Include="System" />
+		<Reference Include="System.Core" />
+		<Reference Include="System.Net" />
+		<Reference Include="System.Runtime.Serialization" />
+		<Reference Include="System.ValueTuple, Version=4.0.3.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51, processorArchitecture=MSIL">
+			<HintPath>packages\System.ValueTuple.4.5.0\lib\net461\System.ValueTuple.dll</HintPath>
+		</Reference>
+		<Reference Include="System.Xaml" />
+		<Reference Include="System.Xml.Linq" />
+		<Reference Include="System.Data.DataSetExtensions" />
+		<Reference Include="Microsoft.CSharp" />
+		<Reference Include="System.Data" />
+		<Reference Include="System.Net.Http" />
+		<Reference Include="System.Xml" />
+		<Reference Include="WindowsBase" />
+	</ItemGroup>
+	<ItemGroup>
+		<Compile Include="Controls\LibVLCPlayer.xaml.cs">
+			<DependentUpon>LibVLCPlayer.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="Controls\MediaCard.xaml.cs">
+			<DependentUpon>MediaCard.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="Controls\MpvPlayer.xaml.cs">
+			<DependentUpon>MpvPlayer.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
+			<DependentUpon>SettingsMenu.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="Controls\Player\Menus\TrackSelectionMenu.xaml.cs">
+			<DependentUpon>TrackSelectionMenu.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="Controls\Player\MpvHost.cs" />
+		<Compile Include="Controls\Player\PlayerFocusController.cs" />
+		<Compile Include="Controls\Player\PlayerSession.cs" />
+		<Compile Include="Controls\Player\PlayerSlider.cs" />
+		<Compile Include="Controls\Player\StartupTrace.cs" />
+		<Compile Include="Models\MpvTrackInfo.cs" />
+		<Compile Include="Models\PlaybackState.cs" />
+		<Compile Include="Services\MpvIpcClient.cs" />
+		<Compile Include="Services\MpvProcessService.cs" />
+		<Compile Include="Controls\MediaSection.xaml.cs">
+			<DependentUpon>MediaSection.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="Models\HeroItem.cs" />
+		<Compile Include="Models\MediaItem.cs" />
+		<Compile Include="Models\StremioStream.cs" />
+		<Compile Include="Models\PlaybackSource.cs" />
+		<Compile Include="Services\HeroRecommendationService.cs" />
+		<Compile Include="Services\OmdbService.cs" />
+		<Compile Include="Services\StremioAddonService.cs" />
+		<Compile Include="Services\StremioAddonRegistry.cs" />
+		<Compile Include="Services\RealDebridService.cs" />
+		<Compile Include="Services\StreamResolverService.cs" />
+		<Compile Include="Services\TmdbService.cs" />
+		<Compile Include="StremioVideoCenter.cs" />
+		<Compile Include="StremioVideoCenterSettings.cs" />
+		<Compile Include="StremioVideoCenterSettingsView.xaml.cs">
+			<DependentUpon>StremioVideoCenterSettingsView.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="Properties\AssemblyInfo.cs" />
+		<Compile Include="StremioVideoCenterView.xaml.cs">
+			<DependentUpon>StremioVideoCenterView.xaml</DependentUpon>
+		</Compile>
+		<Compile Include="ViewModels\HomeViewModel.cs" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Include="extension.yaml">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Include="packages.config" />
+	</ItemGroup>
+	<ItemGroup>
+		<Content Include="mpv\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+	<ItemGroup>
+		<None Include="Localization\*.xaml">
+			<Generator>MSBuild:Compile</Generator>
+			<SubType>Designer</SubType>
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<Page Include="App.xaml">
+			<Generator>MSBuild:Compile</Generator>
+			<SubType>Designer</SubType>
+		</Page>
+		<Page Include="Controls\LibVLCPlayer.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+		<Page Include="Controls\MpvPlayer.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+		<Page Include="Controls\MediaCard.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+		<Page Include="Controls\MediaSection.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+		<Page Include="Controls\Player\Menus\SettingsMenu.xaml">
+			<Generator>MSBuild:Compile</Generator>
+			<SubType>Designer</SubType>
+		</Page>
+		<Page Include="Controls\Player\Menus\TrackSelectionMenu.xaml">
+			<Generator>MSBuild:Compile</Generator>
+			<SubType>Designer</SubType>
+		</Page>
+		<Page Include="StremioVideoCenterSettingsView.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+		<Page Include="StremioVideoCenterView.xaml">
+			<SubType>Designer</SubType>
+			<Generator>MSBuild:Compile</Generator>
+		</Page>
+	</ItemGroup>
+	<ItemGroup>
+		<None Include="icon.png">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+	<Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+	<Import Project="packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets" Condition="Exists('packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets')" />
+	<Target Name="EnsureBclBuildImported" BeforeTargets="BeforeBuild" Condition="'$(BclBuildImported)' == ''">
+		<Error Condition="!Exists('packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets')" Text="This project references NuGet package(s) that are missing on this computer. Enable NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=317567." HelpKeyword="BCLBUILD2001" />
+		<Error Condition="Exists('packages\Microsoft.Bcl.Build.1.0.14\tools\Microsoft.Bcl.Build.targets')" Text="The build restored NuGet packages. Build the project again to include these packages in the build. For more information, see http://go.microsoft.com/fwlink/?LinkID=317568." HelpKeyword="BCLBUILD2002" />
+	</Target>
+	<Import Project="packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets" Condition="Exists('packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets')" />
+	<Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
+		<PropertyGroup>
+			<ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
+		</PropertyGroup>
+		<Error Condition="!Exists('packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\VideoLAN.LibVLC.Windows.3.0.23.1\build\VideoLAN.LibVLC.Windows.targets'))" />
+	</Target>
+	<!-- ========================================================= -->
+	<!-- MPV RUNTIME FILE DEPLOYMENT                               -->
+	<!-- ========================================================= -->
+	<Target Name="CopyMpvRuntimeFiles" AfterTargets="Build">
+		<ItemGroup>
+			<MpvRuntimeFiles Include="$(ProjectDir)mpv\**\*" />
+		</ItemGroup>
+		<Copy SourceFiles="@(MpvRuntimeFiles)" DestinationFiles="@(MpvRuntimeFiles->'$(TargetDir)mpv\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+		<Error Condition="!Exists('$(TargetDir)mpv\mpv.exe')" Text="MPV deployment failed: $(TargetDir)mpv\mpv.exe was not found after build." />
+	</Target>
 </Project>

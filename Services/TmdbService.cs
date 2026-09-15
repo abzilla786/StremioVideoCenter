@@ -132,8 +132,79 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
-        // MOVIE DETAILS + VIDEOS
+        // MOVIE SEARCH
         // =========================================================
+        //
+        // Returns the same TmdbDiscoveryItem shape as the discovery
+        // endpoints above - TMDB's search/movie response is identical in
+        // structure to discover/movie, so no separate model is needed.
+
+        public async Task<List<TmdbDiscoveryItem>>
+            SearchMoviesAsync(
+                string query,
+                int page = 1)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return new List<TmdbDiscoveryItem>();
+            }
+
+            string endpoint =
+                "search/movie" +
+                "?include_adult=false" +
+                "&language=en-US" +
+                "&page=" +
+                page +
+                "&query=" +
+                Uri.EscapeDataString(query);
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // TV SEARCH
+        // =========================================================
+
+        public async Task<List<TmdbDiscoveryItem>>
+            SearchTvAsync(
+                string query,
+                int page = 1)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return new List<TmdbDiscoveryItem>();
+            }
+
+            string endpoint =
+                "search/tv" +
+                "?include_adult=false" +
+                "&language=en-US" +
+                "&page=" +
+                page +
+                "&query=" +
+                Uri.EscapeDataString(query);
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // MOVIE DETAILS + VIDEOS + EXTERNAL IDS
+        // =========================================================
+        //
+        // append_to_response now also requests external_ids, which is
+        // where TMDB exposes the IMDb id (imdb_id) - the identifier Stremio
+        // addons actually key streams on. This is additive: existing videos
+        // parsing (GetBestTrailerOrTeaserAsync, etc.) is unaffected.
 
         public async Task<TmdbDetailsItem>
             GetMovieDetailsAsync(
@@ -143,7 +214,7 @@ namespace StremioVideoCenter.Services
                 "movie/" +
                 movieId +
                 "?language=en-US" +
-                "&append_to_response=videos";
+                "&append_to_response=videos,external_ids";
 
             string json =
                 await GetAsync(endpoint);
@@ -158,7 +229,7 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
-        // TV DETAILS + VIDEOS
+        // TV DETAILS + VIDEOS + EXTERNAL IDS
         // =========================================================
 
         public async Task<TmdbDetailsItem>
@@ -169,7 +240,7 @@ namespace StremioVideoCenter.Services
                 "tv/" +
                 tvId +
                 "?language=en-US" +
-                "&append_to_response=videos";
+                "&append_to_response=videos,external_ids";
 
             string json =
                 await GetAsync(endpoint);
@@ -180,6 +251,69 @@ namespace StremioVideoCenter.Services
             }
 
             return Deserialize<TmdbDetailsItem>(
+                json);
+        }
+
+        // =========================================================
+        // TV SEASON DETAILS
+        // =========================================================
+        //
+        // Needed to support Stremio's per-episode stream requests, which
+        // are keyed as "<imdbId>:<season>:<episode>" rather than by a
+        // TV-show-level id alone.
+
+        public async Task<TmdbSeasonDetails>
+            GetTvSeasonAsync(
+                int tvId,
+                int seasonNumber)
+        {
+            string endpoint =
+                "tv/" +
+                tvId +
+                "/season/" +
+                seasonNumber +
+                "?language=en-US";
+
+            string json =
+                await GetAsync(endpoint);
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            return Deserialize<TmdbSeasonDetails>(
+                json);
+        }
+
+        // =========================================================
+        // TV EPISODE DETAILS
+        // =========================================================
+
+        public async Task<TmdbEpisodeDetails>
+            GetTvEpisodeAsync(
+                int tvId,
+                int seasonNumber,
+                int episodeNumber)
+        {
+            string endpoint =
+                "tv/" +
+                tvId +
+                "/season/" +
+                seasonNumber +
+                "/episode/" +
+                episodeNumber +
+                "?language=en-US";
+
+            string json =
+                await GetAsync(endpoint);
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return null;
+            }
+
+            return Deserialize<TmdbEpisodeDetails>(
                 json);
         }
 
@@ -589,6 +723,12 @@ namespace StremioVideoCenter.Services
     // =============================================================
     // DETAILS ITEM
     // =============================================================
+    //
+    // Expanded to carry the fields the streaming pipeline and future UI
+    // need (poster/backdrop/rating/runtime/genres/seasons, plus external_ids
+    // for the IMDb bridge to Stremio). All additions are additive - nothing
+    // existing was removed or renamed, so GetBestTrailerOrTeaserAsync and
+    // any other existing caller keep working unchanged.
 
     [DataContract]
     public class TmdbDetailsItem
@@ -605,8 +745,182 @@ namespace StremioVideoCenter.Services
         [DataMember(Name = "overview")]
         public string Overview { get; set; }
 
+        [DataMember(Name = "poster_path")]
+        public string PosterPath { get; set; }
+
+        [DataMember(Name = "backdrop_path")]
+        public string BackdropPath { get; set; }
+
+        [DataMember(Name = "vote_average")]
+        public double VoteAverage { get; set; }
+
+        [DataMember(Name = "release_date")]
+        public string ReleaseDate { get; set; }
+
+        [DataMember(Name = "first_air_date")]
+        public string FirstAirDate { get; set; }
+
+        // Movies only.
+        [DataMember(Name = "runtime")]
+        public int? Runtime { get; set; }
+
+        // TV only - usually a single-element list of typical episode length.
+        [DataMember(Name = "episode_run_time")]
+        public List<int> EpisodeRunTime { get; set; }
+
+        [DataMember(Name = "genres")]
+        public List<TmdbGenre> Genres { get; set; }
+
+        // TV only.
+        [DataMember(Name = "seasons")]
+        public List<TmdbSeasonSummary> Seasons { get; set; }
+
         [DataMember(Name = "videos")]
         public TmdbVideoResponse Videos { get; set; }
+
+        [DataMember(Name = "external_ids")]
+        public TmdbExternalIds ExternalIds { get; set; }
+
+        public string DisplayTitle
+        {
+            get
+            {
+                if (!string.IsNullOrWhiteSpace(Title))
+                {
+                    return Title;
+                }
+
+                return Name;
+            }
+        }
+
+        // The identifier Stremio addons actually key streams on.
+        // Null when TMDB has no IMDb mapping for this title.
+        public string ImdbId
+        {
+            get
+            {
+                return ExternalIds?.ImdbId;
+            }
+        }
+    }
+
+    // =============================================================
+    // GENRE
+    // =============================================================
+
+    [DataContract]
+    public class TmdbGenre
+    {
+        [DataMember(Name = "id")]
+        public int Id { get; set; }
+
+        [DataMember(Name = "name")]
+        public string Name { get; set; }
+    }
+
+    // =============================================================
+    // SEASON SUMMARY (as embedded in TV details)
+    // =============================================================
+
+    [DataContract]
+    public class TmdbSeasonSummary
+    {
+        [DataMember(Name = "id")]
+        public int Id { get; set; }
+
+        [DataMember(Name = "season_number")]
+        public int SeasonNumber { get; set; }
+
+        [DataMember(Name = "name")]
+        public string Name { get; set; }
+
+        [DataMember(Name = "episode_count")]
+        public int EpisodeCount { get; set; }
+
+        [DataMember(Name = "poster_path")]
+        public string PosterPath { get; set; }
+
+        [DataMember(Name = "air_date")]
+        public string AirDate { get; set; }
+    }
+
+    // =============================================================
+    // SEASON DETAILS (full episode list, from /tv/{id}/season/{n})
+    // =============================================================
+
+    [DataContract]
+    public class TmdbSeasonDetails
+    {
+        [DataMember(Name = "id")]
+        public int Id { get; set; }
+
+        [DataMember(Name = "season_number")]
+        public int SeasonNumber { get; set; }
+
+        [DataMember(Name = "name")]
+        public string Name { get; set; }
+
+        [DataMember(Name = "overview")]
+        public string Overview { get; set; }
+
+        [DataMember(Name = "poster_path")]
+        public string PosterPath { get; set; }
+
+        [DataMember(Name = "air_date")]
+        public string AirDate { get; set; }
+
+        [DataMember(Name = "episodes")]
+        public List<TmdbEpisodeDetails> Episodes { get; set; }
+    }
+
+    // =============================================================
+    // EPISODE DETAILS
+    // =============================================================
+
+    [DataContract]
+    public class TmdbEpisodeDetails
+    {
+        [DataMember(Name = "id")]
+        public int Id { get; set; }
+
+        [DataMember(Name = "episode_number")]
+        public int EpisodeNumber { get; set; }
+
+        [DataMember(Name = "season_number")]
+        public int SeasonNumber { get; set; }
+
+        [DataMember(Name = "name")]
+        public string Name { get; set; }
+
+        [DataMember(Name = "overview")]
+        public string Overview { get; set; }
+
+        [DataMember(Name = "still_path")]
+        public string StillPath { get; set; }
+
+        [DataMember(Name = "air_date")]
+        public string AirDate { get; set; }
+
+        [DataMember(Name = "vote_average")]
+        public double VoteAverage { get; set; }
+
+        [DataMember(Name = "runtime")]
+        public int? Runtime { get; set; }
+    }
+
+    // =============================================================
+    // EXTERNAL IDS
+    // =============================================================
+    //
+    // TMDB exposes several external identifiers here; only imdb_id is
+    // needed for this phase (it's what Stremio addons key streams on).
+
+    [DataContract]
+    public class TmdbExternalIds
+    {
+        [DataMember(Name = "imdb_id")]
+        public string ImdbId { get; set; }
     }
 
     // =============================================================

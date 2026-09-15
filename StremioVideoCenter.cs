@@ -97,7 +97,8 @@ namespace StremioVideoCenter
             try
             {
                 videoCenterView = new StremioVideoCenterView(
-                    settings?.Settings?.TmdbApiKey);
+                    settings?.Settings?.TmdbApiKey,
+                    settings?.Settings?.RealDebridApiKey);
 
                 videoCenterWindow.Content = videoCenterView;
             }
@@ -167,7 +168,8 @@ namespace StremioVideoCenter
             if (args.Name == "VideoCenter")
             {
                 return new StremioVideoCenterView(
-                           settings?.Settings?.TmdbApiKey);
+                           settings?.Settings?.TmdbApiKey,
+                           settings?.Settings?.RealDebridApiKey);
             }
 
             return null;

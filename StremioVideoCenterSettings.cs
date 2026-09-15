@@ -15,6 +15,7 @@ namespace StremioVideoCenter
     {
         private string tmdbApiKey = string.Empty;
         private string omdbApiKey = string.Empty;
+        private string realDebridApiKey = string.Empty;
 
         // =========================================================
         // TMDB API CREDENTIAL
@@ -34,6 +35,16 @@ namespace StremioVideoCenter
         {
             get => omdbApiKey;
             set => SetValue(ref omdbApiKey, value);
+        }
+
+        // =========================================================
+        // REAL-DEBRID API CREDENTIAL
+        // =========================================================
+
+        public string RealDebridApiKey
+        {
+            get => realDebridApiKey;
+            set => SetValue(ref realDebridApiKey, value);
         }
     }
 

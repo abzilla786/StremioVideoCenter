@@ -6,6 +6,7 @@ using StremioVideoCenter.Models;
 using StremioVideoCenter.Services;
 using StremioVideoCenter.ViewModels;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
@@ -42,20 +43,31 @@ namespace StremioVideoCenter
 
 
         // =========================================================
+        // REAL-DEBRID CREDENTIAL
+        // =========================================================
+
+        private readonly string _realDebridApiToken;
+
+
+        // =========================================================
         // CONSTRUCTOR
         // =========================================================
 
         public StremioVideoCenterView(
-            string tmdbAccessToken = null)
+            string tmdbAccessToken = null,
+            string realDebridApiToken = null)
         {
             InitializeComponent();
 
             // =========================================================
-            // STORE TMDB CREDENTIAL
+            // STORE CREDENTIALS
             // =========================================================
 
             _tmdbAccessToken =
                 tmdbAccessToken;
+
+            _realDebridApiToken =
+                realDebridApiToken;
 
 
             // =========================================================
@@ -1227,16 +1239,89 @@ namespace StremioVideoCenter
                     new StremioAddonService(
                         "http://127.0.0.1:7000");
 
-                string streamUrl =
-                    await addon.GetFirstPlayableUrlAsync(
+                List<StremioStream> streams =
+                    await addon.GetStreamsAsync(
                         type,
                         mediaItem.StremioId);
 
-                if (string.IsNullOrWhiteSpace(
-                        streamUrl))
+                if (streams == null ||
+                    streams.Count == 0)
                 {
                     MessageBox.Show(
                         "Stremio returned no playable streams for:\n\n" +
+                        mediaItem.Title);
+
+                    return;
+                }
+
+                // =========================================================
+                // RESOLVE A PLAYABLE SOURCE
+                // =========================================================
+                //
+                // Try streams in order until one resolves. Direct-URL streams
+                // (our test addon's path) resolve immediately with no
+                // Real-Debrid involvement. InfoHash streams need Real-Debrid,
+                // which may not be configured - that surfaces as a per-stream
+                // failure here and we just move to the next stream rather
+                // than failing playback outright. ExternalUrl-only streams
+                // are skipped before ever reaching the resolver; they are not
+                // supported for in-app playback this phase.
+
+                RealDebridService realDebrid =
+                    string.IsNullOrWhiteSpace(
+                        _realDebridApiToken)
+                        ? null
+                        : new RealDebridService(
+                              _realDebridApiToken);
+
+                var resolver =
+                    new StreamResolverService(
+                        realDebrid);
+
+                PlaybackSource source = null;
+
+                foreach (StremioStream stream in streams)
+                {
+                    if (stream == null)
+                    {
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(stream.Url) &&
+                        string.IsNullOrWhiteSpace(stream.InfoHash))
+                    {
+                        // ExternalUrl-only (or empty) stream - unsupported
+                        // for in-app playback this phase.
+                        continue;
+                    }
+
+                    try
+                    {
+                        source =
+                            await resolver.ResolveStreamAsync(
+                                stream);
+
+                        if (source != null &&
+                            !string.IsNullOrWhiteSpace(source.Url))
+                        {
+                            break;
+                        }
+                    }
+                    catch
+                    {
+                        // This particular stream couldn't be resolved (e.g.
+                        // needs Real-Debrid but none is configured, or
+                        // Real-Debrid failed for this specific torrent).
+                        // Try the next stream instead of failing outright.
+                        source = null;
+                    }
+                }
+
+                if (source == null ||
+                    string.IsNullOrWhiteSpace(source.Url))
+                {
+                    MessageBox.Show(
+                        "None of the available streams could be resolved for:\n\n" +
                         mediaItem.Title);
 
                     return;
@@ -1260,7 +1345,7 @@ namespace StremioVideoCenter
                 }
 
                 await _stremioPlayer.PlayVideoAsync(
-                    streamUrl);
+                    source.Url);
             }
             catch (Exception ex)
             {
