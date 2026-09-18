@@ -3,6 +3,7 @@ using Playnite.SDK.Events;
 using Playnite.SDK.Models;
 using Playnite.SDK.Plugins;
 using Playnite.SDK.Controls;
+using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -96,9 +97,15 @@ namespace StremioVideoCenter
 
             try
             {
-                videoCenterView = new StremioVideoCenterView(
-                    settings?.Settings?.TmdbApiKey,
-                    settings?.Settings?.RealDebridApiKey);
+                var configuration = new StremioVideoCenterConfiguration
+                {
+                    TmdbApiKey = settings?.Settings?.TmdbApiKey,
+                    OmdbApiKey = settings?.Settings?.OmdbApiKey,
+                    RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
+                    StremioAddonUrls = settings?.Settings?.StremioAddonUrls
+                };
+
+                videoCenterView = new StremioVideoCenterView(configuration);
 
                 videoCenterWindow.Content = videoCenterView;
             }
@@ -167,9 +174,15 @@ namespace StremioVideoCenter
         {
             if (args.Name == "VideoCenter")
             {
-                return new StremioVideoCenterView(
-                           settings?.Settings?.TmdbApiKey,
-                           settings?.Settings?.RealDebridApiKey);
+                var configuration = new StremioVideoCenterConfiguration
+                {
+                    TmdbApiKey = settings?.Settings?.TmdbApiKey,
+                    OmdbApiKey = settings?.Settings?.OmdbApiKey,
+                    RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
+                    StremioAddonUrls = settings?.Settings?.StremioAddonUrls
+                };
+
+                return new StremioVideoCenterView(configuration);
             }
 
             return null;

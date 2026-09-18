@@ -43,6 +43,13 @@ namespace StremioVideoCenter
 
 
         // =========================================================
+        // OMDB CREDENTIAL
+        // =========================================================
+
+        private readonly string _omdbApiKey;
+
+
+        // =========================================================
         // REAL-DEBRID CREDENTIAL
         // =========================================================
 
@@ -50,12 +57,25 @@ namespace StremioVideoCenter
 
 
         // =========================================================
-        // CONSTRUCTOR
+        // STREMIO ADDON URLS (newline-delimited)
         // =========================================================
 
+        private readonly string _stremioAddonUrls;
+
+
+        // =========================================================
+        // CONSTRUCTOR
+        // =========================================================
+        //
+        // Takes a single configuration object rather than individually-
+        // growing positional parameters - see
+        // Models/StremioVideoCenterConfiguration.cs. Unpacked into private
+        // fields here (rather than stored as the whole object and threaded
+        // through every method) so the rest of this class's existing
+        // internal references stay exactly as they were.
+
         public StremioVideoCenterView(
-            string tmdbAccessToken = null,
-            string realDebridApiToken = null)
+            StremioVideoCenterConfiguration configuration = null)
         {
             InitializeComponent();
 
@@ -63,11 +83,19 @@ namespace StremioVideoCenter
             // STORE CREDENTIALS
             // =========================================================
 
+            configuration = configuration ?? new StremioVideoCenterConfiguration();
+
             _tmdbAccessToken =
-                tmdbAccessToken;
+                configuration.TmdbApiKey;
+
+            _omdbApiKey =
+                configuration.OmdbApiKey;
 
             _realDebridApiToken =
-                realDebridApiToken;
+                configuration.RealDebridApiKey;
+
+            _stremioAddonUrls =
+                configuration.StremioAddonUrls;
 
 
             // =========================================================
@@ -1235,12 +1263,12 @@ namespace StremioVideoCenter
                     GetStremioType(
                         mediaItem);
 
-                var addon =
-                    new StremioAddonService(
-                        "http://127.0.0.1:7000");
+                var addonRegistry =
+                    StremioAddonRegistry.FromConfiguredUrls(
+                        _stremioAddonUrls);
 
                 List<StremioStream> streams =
-                    await addon.GetStreamsAsync(
+                    await addonRegistry.GetAllStreamsAsync(
                         type,
                         mediaItem.StremioId);
 

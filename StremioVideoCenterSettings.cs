@@ -16,6 +16,7 @@ namespace StremioVideoCenter
         private string tmdbApiKey = string.Empty;
         private string omdbApiKey = string.Empty;
         private string realDebridApiKey = string.Empty;
+        private string stremioAddonUrls = "http://127.0.0.1:7000";
 
         // =========================================================
         // TMDB API CREDENTIAL
@@ -45,6 +46,16 @@ namespace StremioVideoCenter
         {
             get => realDebridApiKey;
             set => SetValue(ref realDebridApiKey, value);
+        }
+
+        // =========================================================
+        // STREMIO ADDON URLS (newline-delimited, one per line)
+        // =========================================================
+
+        public string StremioAddonUrls
+        {
+            get => stremioAddonUrls;
+            set => SetValue(ref stremioAddonUrls, value);
         }
     }
 

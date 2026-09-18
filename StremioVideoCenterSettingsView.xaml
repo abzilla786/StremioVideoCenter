@@ -177,6 +177,127 @@
 
             </StackPanel>
 
+
+            <!-- ========================================================= -->
+            <!-- CONTENT DISCOVERY TEST                                     -->
+            <!-- ========================================================= -->
+
+            <TextBlock
+                Text="Content Discovery"
+                FontWeight="Bold"
+                FontSize="14"
+                Margin="0,20,0,8"/>
+
+            <StackPanel>
+
+                <TextBlock
+                    Text="Proves the TMDB -&gt; Stremio content-id pipeline for a movie, a TV episode, and an anime episode. Requires a TMDB credential above; uses the local test addon."
+                    Opacity="0.65"
+                    FontSize="11"
+                    TextWrapping="Wrap"
+                    Margin="0,0,0,8"/>
+
+                <Button
+                    x:Name="TestContentDiscoveryButton"
+                    Content="Test Content Discovery"
+                    Width="180"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Click="TestContentDiscovery_Click"/>
+
+                <TextBlock
+                    x:Name="ContentDiscoveryStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
+            </StackPanel>
+
+
+            <!-- ========================================================= -->
+            <!-- STREMIO ADDONS                                             -->
+            <!-- ========================================================= -->
+
+            <TextBlock
+                Text="Stremio Addons"
+                FontWeight="Bold"
+                FontSize="14"
+                Margin="0,20,0,8"/>
+
+            <TextBlock
+                Text="One manifest/base addon URL per line."
+                Margin="0,0,0,5"/>
+
+            <TextBox
+                x:Name="StremioAddonUrlsBox"
+                Height="80"
+                Margin="0,0,0,5"
+                AcceptsReturn="True"
+                TextWrapping="Wrap"
+                VerticalScrollBarVisibility="Auto"
+                TextChanged="StremioAddonUrlsBox_TextChanged"/>
+
+            <StackPanel>
+
+                <TextBlock
+                    Text="The local test addon is included by default so existing regression testing continues to work."
+                    Opacity="0.65"
+                    FontSize="11"
+                    TextWrapping="Wrap"
+                    Margin="0,0,0,8"/>
+
+                <Button
+                    x:Name="TestConfiguredAddonsButton"
+                    Content="Test Configured Addons"
+                    Width="180"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Click="TestConfiguredAddons_Click"/>
+
+                <TextBlock
+                    x:Name="AddonTestStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
+            </StackPanel>
+
+
+            <!-- ========================================================= -->
+            <!-- SOURCE AGGREGATION TEST                                    -->
+            <!-- ========================================================= -->
+
+            <TextBlock
+                Text="Source Aggregation"
+                FontWeight="Bold"
+                FontSize="14"
+                Margin="0,20,0,8"/>
+
+            <StackPanel>
+
+                <TextBlock
+                    Text="Proves the full backend: configured addons -&gt; aggregated streams -&gt; resolved candidate playback sources (Direct and Real-Debrid), deduplicated, for a movie, a TV episode, and an anime episode."
+                    Opacity="0.65"
+                    FontSize="11"
+                    TextWrapping="Wrap"
+                    Margin="0,0,0,8"/>
+
+                <Button
+                    x:Name="TestSourceAggregationButton"
+                    Content="Test Source Aggregation"
+                    Width="180"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Click="TestSourceAggregation_Click"/>
+
+                <TextBlock
+                    x:Name="SourceAggregationStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
+            </StackPanel>
+
         </StackPanel>
 
     </Grid>

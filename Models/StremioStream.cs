@@ -25,5 +25,12 @@ namespace StremioVideoCenter.Models
 
         [DataMember(Name = "externalUrl")]
         public string ExternalUrl { get; set; }
+
+        // Which configured addon this stream came from. NOT part of the
+        // addon's JSON response (no [DataMember]) - set by
+        // StremioAddonRegistry.GetAllStreamsAsync after deserialization, so
+        // that a list aggregated across multiple addons can still be traced
+        // back to its source. Null for a stream constructed any other way.
+        public string SourceAddonUrl { get; set; }
     }
 }

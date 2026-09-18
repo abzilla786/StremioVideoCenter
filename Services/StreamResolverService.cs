@@ -37,13 +37,16 @@ namespace StremioVideoCenter.Services
 
             // Direct HTTP(S) URL - already playable. This is the path our
             // existing test addon uses, and it must keep working with zero
-            // Real-Debrid involvement.
+            // Real-Debrid involvement. Checked first and unconditionally:
+            // a stream with both Url and InfoHash populated is still Direct,
+            // since this branch runs regardless of InfoHash's presence.
             if (!string.IsNullOrWhiteSpace(stream.Url))
             {
                 return new PlaybackSource
                 {
                     Url = stream.Url,
-                    Title = ChooseTitle(stream)
+                    Title = ChooseTitle(stream),
+                    Kind = PlaybackSourceKind.Direct
                 };
             }
 
@@ -61,7 +64,8 @@ namespace StremioVideoCenter.Services
                 return new PlaybackSource
                 {
                     Url = directUrl,
-                    Title = ChooseTitle(stream)
+                    Title = ChooseTitle(stream),
+                    Kind = PlaybackSourceKind.RealDebrid
                 };
             }
 

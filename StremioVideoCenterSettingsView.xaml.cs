@@ -1,4 +1,5 @@
-﻿using StremioVideoCenter.Services;
+﻿using StremioVideoCenter.Models;
+using StremioVideoCenter.Services;
 using System.Windows;
 using System.Windows.Controls;
 
@@ -55,6 +56,9 @@ namespace StremioVideoCenter
 
             RealDebridApiKeyBox.Password =
                 viewModel.Settings.RealDebridApiKey ?? string.Empty;
+
+            StremioAddonUrlsBox.Text =
+                viewModel.Settings.StremioAddonUrls ?? string.Empty;
 
             isLoadingValues = false;
         }
@@ -140,6 +144,34 @@ namespace StremioVideoCenter
                 RealDebridApiKeyBox.Password;
 
             RealDebridConnectionStatus.Text =
+                string.Empty;
+        }
+
+        // =========================================================
+        // STREMIO ADDON URLS CHANGED
+        // =========================================================
+
+        private void StremioAddonUrlsBox_TextChanged(
+            object sender,
+            TextChangedEventArgs e)
+        {
+            if (isLoadingValues)
+            {
+                return;
+            }
+
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            viewModel.Settings.StremioAddonUrls =
+                StremioAddonUrlsBox.Text;
+
+            AddonTestStatus.Text =
                 string.Empty;
         }
 
@@ -458,6 +490,691 @@ namespace StremioVideoCenter
             {
                 TestRealDebridConnectionButton.IsEnabled = true;
             }
+        }
+
+        // =========================================================
+        // TEST CONTENT DISCOVERY (MOVIE / TV / ANIME)
+        // =========================================================
+        //
+        // Proves the unified TMDB -> Stremio content-id pipeline for all
+        // three content types against fixed, known-real TMDB ids:
+        //   Movie: Fight Club            (TMDB 550  - same id TestConnectionAsync already uses)
+        //   TV:    Breaking Bad S1E1     (TMDB 1396)
+        //   Anime: Attack on Titan S1E1  (TMDB 1429 - Japan origin, Animation genre)
+        //
+        // Deliberately does NOT touch StreamResolverService or
+        // RealDebridService, and never constructs a PlaybackSource or calls
+        // the player - this proves discovery only, exactly as scoped.
+        //
+        // A stream count of 0 for the anime case is reported as a
+        // limitation, not treated as a failure - the configured test addon
+        // may simply not have anime content for an IMDb-based id, which is
+        // an honest possible outcome, not a bug in this pipeline.
+
+        private async void TestContentDiscovery_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            string accessToken =
+                viewModel.Settings.TmdbApiKey;
+
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                ContentDiscoveryStatus.Text =
+                    "Please enter your TMDB API Read Access Token first.";
+
+                return;
+            }
+
+            ContentDiscoveryStatus.Text =
+                "Testing content discovery (movie / TV / anime)...";
+
+            TestContentDiscoveryButton.IsEnabled = false;
+
+            try
+            {
+                var tmdbService =
+                    new TmdbService(accessToken);
+
+                var addonRegistry =
+                    StremioAddonRegistry.FromConfiguredUrls(
+                        viewModel.Settings.StremioAddonUrls);
+
+                var discovery =
+                    new StremioContentDiscoveryService(addonRegistry);
+
+                var results =
+                    new System.Collections.Generic.List<string>();
+
+                // =========================================================
+                // MOVIE: Fight Club (TMDB 550)
+                // =========================================================
+
+                try
+                {
+                    var movie =
+                        await tmdbService.GetMovieDetailsAsync(550);
+
+                    if (movie == null)
+                    {
+                        results.Add(
+                            "Movie (Fight Club) → TMDB lookup failed.");
+                    }
+                    else if (string.IsNullOrWhiteSpace(movie.ImdbId))
+                    {
+                        results.Add(
+                            "Movie (" +
+                            movie.DisplayTitle +
+                            ") → no IMDb id from TMDB.");
+                    }
+                    else
+                    {
+                        var request =
+                            ContentRequest.ForMovie(movie);
+
+                        var streams =
+                            await discovery.ResolveStreamsAsync(request);
+
+                        results.Add(
+                            "Movie (" +
+                            movie.DisplayTitle +
+                            ", " +
+                            movie.ImdbId +
+                            ") → " +
+                            streams.Count +
+                            " stream(s).");
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    results.Add(
+                        "Movie test failed: " +
+                        ex.Message);
+                }
+
+                // =========================================================
+                // TV: Breaking Bad S1E1 (TMDB 1396)
+                // =========================================================
+
+                try
+                {
+                    var show =
+                        await tmdbService.GetTvDetailsAsync(1396);
+
+                    var episode =
+                        await tmdbService.GetTvEpisodeAsync(1396, 1, 1);
+
+                    if (show == null || episode == null)
+                    {
+                        results.Add(
+                            "TV (Breaking Bad) → TMDB lookup failed.");
+                    }
+                    else if (string.IsNullOrWhiteSpace(show.ImdbId))
+                    {
+                        results.Add(
+                            "TV (" +
+                            show.DisplayTitle +
+                            ") → no IMDb id from TMDB.");
+                    }
+                    else
+                    {
+                        var request =
+                            ContentRequest.ForTvEpisode(
+                                show,
+                                episode,
+                                isAnime: false);
+
+                        var streams =
+                            await discovery.ResolveStreamsAsync(request);
+
+                        results.Add(
+                            "TV (" +
+                            show.DisplayTitle +
+                            " S" +
+                            episode.SeasonNumber +
+                            "E" +
+                            episode.EpisodeNumber +
+                            ", " +
+                            request.BuildStremioId() +
+                            ") → " +
+                            streams.Count +
+                            " stream(s).");
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    results.Add(
+                        "TV test failed: " +
+                        ex.Message);
+                }
+
+                // =========================================================
+                // ANIME: Attack on Titan S1E1 (TMDB 1429)
+                // =========================================================
+
+                try
+                {
+                    var show =
+                        await tmdbService.GetTvDetailsAsync(1429);
+
+                    var episode =
+                        await tmdbService.GetTvEpisodeAsync(1429, 1, 1);
+
+                    if (show == null || episode == null)
+                    {
+                        results.Add(
+                            "Anime (Attack on Titan) → TMDB lookup failed.");
+                    }
+                    else if (string.IsNullOrWhiteSpace(show.ImdbId))
+                    {
+                        results.Add(
+                            "Anime (" +
+                            show.DisplayTitle +
+                            ") → no IMDb id from TMDB. This is a known " +
+                            "limitation for some anime titles, not a bug.");
+                    }
+                    else
+                    {
+                        var request =
+                            ContentRequest.ForTvEpisode(
+                                show,
+                                episode,
+                                isAnime: true);
+
+                        var streams =
+                            await discovery.ResolveStreamsAsync(request);
+
+                        if (streams.Count == 0)
+                        {
+                            results.Add(
+                                "Anime (" +
+                                show.DisplayTitle +
+                                " S" +
+                                episode.SeasonNumber +
+                                "E" +
+                                episode.EpisodeNumber +
+                                ") → 0 streams. The configured addon may " +
+                                "not provide anime streams for an IMDb-" +
+                                "based id - reported as a limitation, not " +
+                                "a bug.");
+                        }
+                        else
+                        {
+                            results.Add(
+                                "Anime (" +
+                                show.DisplayTitle +
+                                " S" +
+                                episode.SeasonNumber +
+                                "E" +
+                                episode.EpisodeNumber +
+                                ", " +
+                                request.BuildStremioId() +
+                                ") → " +
+                                streams.Count +
+                                " stream(s).");
+                        }
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    results.Add(
+                        "Anime test failed: " +
+                        ex.Message);
+                }
+
+                // =========================================================
+                // DISPLAY RESULTS
+                // =========================================================
+
+                ContentDiscoveryStatus.Text =
+                    "Content discovery test complete:\n\n" +
+                    string.Join(
+                        "\n",
+                        results);
+            }
+            catch (System.Exception ex)
+            {
+                ContentDiscoveryStatus.Text =
+                    "Content discovery test failed: " +
+                    ex.Message;
+            }
+            finally
+            {
+                TestContentDiscoveryButton.IsEnabled = true;
+            }
+        }
+
+        // =========================================================
+        // TEST CONFIGURED ADDONS
+        // =========================================================
+        //
+        // Tests every configured addon's manifest independently - one
+        // malformed or unreachable addon never prevents the others from
+        // being tested or reported. Does not touch stream discovery or
+        // playback; this is purely "can each configured addon be reached
+        // and does it return a manifest."
+
+        private async void TestConfiguredAddons_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            string urls =
+                viewModel.Settings.StremioAddonUrls;
+
+            if (string.IsNullOrWhiteSpace(urls))
+            {
+                AddonTestStatus.Text =
+                    "Please enter at least one addon URL first.";
+
+                return;
+            }
+
+            AddonTestStatus.Text =
+                "Testing configured addons...";
+
+            TestConfiguredAddonsButton.IsEnabled = false;
+
+            try
+            {
+                var registry =
+                    StremioAddonRegistry.FromConfiguredUrls(urls);
+
+                if (registry.AddonUrls.Count == 0)
+                {
+                    AddonTestStatus.Text =
+                        "No valid addon URLs were found.";
+
+                    return;
+                }
+
+                var results =
+                    await registry.TestAllAddonsAsync();
+
+                var lines =
+                    new System.Collections.Generic.List<string>();
+
+                foreach (var result in results)
+                {
+                    lines.Add(
+                        (result.Success ? "✓ " : "✗ ") +
+                        result.AddonUrl +
+                        " → " +
+                        result.Message);
+                }
+
+                AddonTestStatus.Text =
+                    "Addon test results:\n\n" +
+                    string.Join(
+                        "\n",
+                        lines);
+            }
+            catch (System.Exception ex)
+            {
+                AddonTestStatus.Text =
+                    "Addon test failed: " +
+                    ex.Message;
+            }
+            finally
+            {
+                TestConfiguredAddonsButton.IsEnabled = true;
+            }
+        }
+
+        // =========================================================
+        // TEST SOURCE AGGREGATION (MOVIE / TV / ANIME)
+        // =========================================================
+        //
+        // Proves the full Slice 4 backend end to end: configured addons ->
+        // aggregated streams -> resolved candidate PlaybackSources (Direct
+        // and Real-Debrid), deduplicated - using the same verified TMDB ids
+        // as the Slice 2 content-discovery test:
+        //   Movie: Fight Club            (TMDB 550)
+        //   TV:    Breaking Bad S1E1     (TMDB 1396)
+        //   Anime: Attack on Titan S1E1  (TMDB 1429)
+        //
+        // Does not send anything to MPV and does not touch any player file -
+        // this proves the backend produces correct data, nothing more.
+
+        private async void TestSourceAggregation_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            string accessToken =
+                viewModel.Settings.TmdbApiKey;
+
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                SourceAggregationStatus.Text =
+                    "Please enter your TMDB API Read Access Token first.";
+
+                return;
+            }
+
+            SourceAggregationStatus.Text =
+                "Testing source aggregation (movie / TV / anime)...";
+
+            TestSourceAggregationButton.IsEnabled = false;
+
+            try
+            {
+                var tmdbService =
+                    new TmdbService(accessToken);
+
+                var addonRegistry =
+                    StremioAddonRegistry.FromConfiguredUrls(
+                        viewModel.Settings.StremioAddonUrls);
+
+                var discovery =
+                    new StremioContentDiscoveryService(addonRegistry);
+
+                RealDebridService realDebrid =
+                    string.IsNullOrWhiteSpace(viewModel.Settings.RealDebridApiKey)
+                        ? null
+                        : new RealDebridService(viewModel.Settings.RealDebridApiKey);
+
+                var resolver =
+                    new StreamResolverService(realDebrid);
+
+                var aggregator =
+                    new PlaybackSourceAggregationService(
+                        discovery,
+                        resolver);
+
+                var results =
+                    new System.Collections.Generic.List<string>();
+
+                // =========================================================
+                // MOVIE: Fight Club (TMDB 550)
+                // =========================================================
+
+                try
+                {
+                    var movie =
+                        await tmdbService.GetMovieDetailsAsync(550);
+
+                    if (movie == null || string.IsNullOrWhiteSpace(movie.ImdbId))
+                    {
+                        results.Add(
+                            "Movie (Fight Club) → no IMDb id or TMDB lookup " +
+                            "failed, cannot test.");
+                    }
+                    else
+                    {
+                        var request =
+                            ContentRequest.ForMovie(movie);
+
+                        var set =
+                            await aggregator.AggregateAsync(request);
+
+                        results.Add(
+                            FormatAggregationResult(
+                                "Movie (" + movie.DisplayTitle + ")",
+                                set));
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    results.Add(
+                        "Movie test failed: " +
+                        ex.Message);
+                }
+
+                // =========================================================
+                // TV: Breaking Bad S1E1 (TMDB 1396)
+                // =========================================================
+
+                try
+                {
+                    var show =
+                        await tmdbService.GetTvDetailsAsync(1396);
+
+                    var episode =
+                        await tmdbService.GetTvEpisodeAsync(1396, 1, 1);
+
+                    if (show == null || episode == null ||
+                        string.IsNullOrWhiteSpace(show.ImdbId))
+                    {
+                        results.Add(
+                            "TV (Breaking Bad) → no IMDb id or TMDB lookup " +
+                            "failed, cannot test.");
+                    }
+                    else
+                    {
+                        var request =
+                            ContentRequest.ForTvEpisode(
+                                show,
+                                episode,
+                                isAnime: false);
+
+                        var set =
+                            await aggregator.AggregateAsync(request);
+
+                        results.Add(
+                            FormatAggregationResult(
+                                "TV (" + show.DisplayTitle + " S1E1)",
+                                set));
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    results.Add(
+                        "TV test failed: " +
+                        ex.Message);
+                }
+
+                // =========================================================
+                // ANIME: Attack on Titan S1E1 (TMDB 1429)
+                // =========================================================
+
+                try
+                {
+                    var show =
+                        await tmdbService.GetTvDetailsAsync(1429);
+
+                    var episode =
+                        await tmdbService.GetTvEpisodeAsync(1429, 1, 1);
+
+                    if (show == null || episode == null ||
+                        string.IsNullOrWhiteSpace(show.ImdbId))
+                    {
+                        results.Add(
+                            "Anime (Attack on Titan) → no IMDb id or TMDB " +
+                            "lookup failed - a known limitation for some " +
+                            "anime titles, not a bug.");
+                    }
+                    else
+                    {
+                        var request =
+                            ContentRequest.ForTvEpisode(
+                                show,
+                                episode,
+                                isAnime: true);
+
+                        var set =
+                            await aggregator.AggregateAsync(request);
+
+                        results.Add(
+                            FormatAggregationResult(
+                                "Anime (" + show.DisplayTitle + " S1E1)",
+                                set));
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    results.Add(
+                        "Anime test failed: " +
+                        ex.Message);
+                }
+
+                // =========================================================
+                // MOVIE: Big Buck Bunny (IMDb tt1254207)
+                // =========================================================
+                //
+                // Exercises the Direct URL -> StreamResolverService ->
+                // PlaybackSource path specifically against the known-working
+                // local Hello World test addon. Uses the IMDb id directly
+                // via a synthetic TmdbDetailsItem rather than a live TMDB
+                // lookup - this case is about proving the addon/resolver
+                // pipeline works end to end, not about TMDB's metadata
+                // mapping for this specific title, so it deliberately does
+                // not depend on TMDB having (or not having) a correct
+                // external_ids entry for it.
+
+                try
+                {
+                    var movie = new TmdbDetailsItem
+                    {
+                        Title = "Big Buck Bunny",
+                        ExternalIds = new TmdbExternalIds
+                        {
+                            ImdbId = "tt1254207"
+                        }
+                    };
+
+                    var request =
+                        ContentRequest.ForMovie(movie);
+
+                    var set =
+                        await aggregator.AggregateAsync(request);
+
+                    var addonUrlSet =
+                        new System.Collections.Generic.HashSet<string>();
+
+                    foreach (var source in set.Sources)
+                    {
+                        if (!string.IsNullOrWhiteSpace(source.SourceAddonUrl))
+                        {
+                            addonUrlSet.Add(source.SourceAddonUrl);
+                        }
+                    }
+
+                    string addonUrlsText =
+                        addonUrlSet.Count > 0
+                            ? string.Join(", ", addonUrlSet)
+                            : "(none)";
+
+                    results.Add(
+                        FormatAggregationResult(
+                            "Movie (Big Buck Bunny, tt1254207)",
+                            set) +
+                        "\n   Addon(s): " +
+                        addonUrlsText);
+                }
+                catch (System.Exception ex)
+                {
+                    results.Add(
+                        "Big Buck Bunny test failed: " +
+                        ex.Message);
+                }
+
+                // =========================================================
+                // DISPLAY RESULTS
+                // =========================================================
+
+                SourceAggregationStatus.Text =
+                    "Source aggregation test complete:\n\n" +
+                    string.Join(
+                        "\n\n",
+                        results);
+            }
+            catch (System.Exception ex)
+            {
+                SourceAggregationStatus.Text =
+                    "Source aggregation test failed: " +
+                    ex.Message;
+            }
+            finally
+            {
+                TestSourceAggregationButton.IsEnabled = true;
+            }
+        }
+
+        // =========================================================
+        // FORMAT AGGREGATION RESULT
+        // =========================================================
+
+        private static string FormatAggregationResult(
+            string label,
+            PlaybackSourceSet set)
+        {
+            int direct = 0;
+            int realDebrid = 0;
+
+            foreach (var source in set.Sources)
+            {
+                if (source.Kind == PlaybackSourceKind.Direct)
+                {
+                    direct++;
+                }
+                else
+                {
+                    realDebrid++;
+                }
+            }
+
+            string line =
+                label +
+                " → " +
+                set.Sources.Count +
+                " playable source(s) [" +
+                direct +
+                " direct, " +
+                realDebrid +
+                " Real-Debrid], " +
+                set.Unresolved.Count +
+                " unresolved.";
+
+            if (set.Unresolved.Count > 0)
+            {
+                var reasons =
+                    new System.Collections.Generic.List<string>();
+
+                foreach (var unresolved in set.Unresolved)
+                {
+                    string name =
+                        unresolved.Stream?.Name ??
+                        unresolved.Stream?.Title ??
+                        "(unnamed)";
+
+                    reasons.Add(
+                        "   - " +
+                        name +
+                        ": " +
+                        unresolved.Reason);
+                }
+
+                line +=
+                    "\n" +
+                    string.Join(
+                        "\n",
+                        reasons);
+            }
+
+            return line;
         }
     }
 }
