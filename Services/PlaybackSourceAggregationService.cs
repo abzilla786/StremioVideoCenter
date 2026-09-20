@@ -190,6 +190,7 @@ namespace StremioVideoCenter.Services
                 // mislabel a stream that has both Url and InfoHash.
                 source.Name = stream.Name;
                 source.SourceAddonUrl = stream.SourceAddonUrl;
+                source.OriginatingStream = stream;
 
                 // Deduplicate genuinely identical playback sources: the same
                 // final resolved URL means the same underlying video

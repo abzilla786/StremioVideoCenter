@@ -1176,5 +1176,274 @@ namespace StremioVideoCenter
 
             return line;
         }
+
+        // =========================================================
+        // TEST SOURCE NORMALISATION
+        // =========================================================
+        //
+        // Proves PlaybackSourceNormalizationService end to end against the
+        // same known-working fixture as the Slice 4 Big Buck Bunny case:
+        // a synthetic TmdbDetailsItem carrying tt1254207 directly (this
+        // test is about the normalisation layer, not TMDB lookup fidelity),
+        // resolved through the real aggregation pipeline, then normalised.
+        //
+        // Does not touch MPV, does not wire into live playback, and does
+        // not rank/score sources - purely reports the normalised shape of
+        // whatever the pipeline actually returns.
+
+        private async void TestSourceNormalisation_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            var viewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (viewModel?.Settings == null)
+            {
+                return;
+            }
+
+            SourceNormalisationStatus.Text =
+                "Testing source normalisation (Big Buck Bunny)...";
+
+            TestSourceNormalisationButton.IsEnabled = false;
+
+            try
+            {
+                var addonRegistry =
+                    StremioAddonRegistry.FromConfiguredUrls(
+                        viewModel.Settings.StremioAddonUrls);
+
+                var discovery =
+                    new StremioContentDiscoveryService(addonRegistry);
+
+                RealDebridService realDebrid =
+                    string.IsNullOrWhiteSpace(viewModel.Settings.RealDebridApiKey)
+                        ? null
+                        : new RealDebridService(viewModel.Settings.RealDebridApiKey);
+
+                var resolver =
+                    new StreamResolverService(realDebrid);
+
+                var aggregator =
+                    new PlaybackSourceAggregationService(
+                        discovery,
+                        resolver);
+
+                var normalizer =
+                    new PlaybackSourceNormalizationService();
+
+                var movie = new TmdbDetailsItem
+                {
+                    Title = "Big Buck Bunny",
+                    ExternalIds = new TmdbExternalIds
+                    {
+                        ImdbId = "tt1254207"
+                    }
+                };
+
+                var request =
+                    ContentRequest.ForMovie(movie);
+
+                var set =
+                    await aggregator.AggregateAsync(request);
+
+                var normalizedSources =
+                    normalizer.NormalizeAll(set.Sources);
+
+                var lines =
+                    new System.Collections.Generic.List<string>();
+
+                lines.Add("Big Buck Bunny");
+                lines.Add(string.Empty);
+                lines.Add("Playable Sources: " + normalizedSources.Count);
+
+                int index = 1;
+
+                foreach (var normalized in normalizedSources)
+                {
+                    lines.Add(string.Empty);
+                    lines.Add("Source #" + index);
+                    lines.Add("  Kind: " + normalized.Kind);
+                    lines.Add("  Name: " + (normalized.Name ?? "Unknown"));
+                    lines.Add("  Title: " + (normalized.Title ?? "Unknown"));
+                    lines.Add("  Description: " + (normalized.Description ?? "Unknown"));
+                    lines.Add("  Addon: " + (normalized.SourceAddonUrl ?? "Unknown"));
+                    lines.Add("  URL: " + RedactUrlIfNeeded(normalized));
+
+                    lines.Add(
+                        "  Quality: " +
+                        (normalized.ResolutionHeight.HasValue
+                            ? normalized.ResolutionHeight.Value + "p"
+                            : "Unknown"));
+
+                    lines.Add(
+                        "  File Size: " +
+                        (normalized.FileSizeBytes.HasValue
+                            ? FormatFileSize(normalized.FileSizeBytes.Value)
+                            : "Unknown"));
+
+                    lines.Add(
+                        "  Release Filename: " +
+                        (normalized.ReleaseFilename ?? "Unknown"));
+
+                    lines.Add(
+                        "  Release Name: " +
+                        (normalized.ReleaseName ?? "Unknown"));
+
+                    lines.Add(
+                        "  Subtitle Languages: " +
+                        (normalized.SubtitleLanguages != null &&
+                         normalized.SubtitleLanguages.Count > 0
+                            ? string.Join(", ", normalized.SubtitleLanguages)
+                            : "Unknown"));
+
+                    lines.Add("  HDR: " + (normalized.HdrInfo ?? "Unknown"));
+                    lines.Add("  Video Codec: " + (normalized.CodecInfo ?? "Unknown"));
+                    lines.Add("  Container: " + (normalized.ContainerInfo ?? "Unknown"));
+                    lines.Add("  Audio Codec: " + (normalized.AudioInfo ?? "Unknown"));
+                    lines.Add("  Atmos: " + (normalized.AtmosInfo ?? "Unknown"));
+                    lines.Add("  Audio Channels: " + (normalized.AudioChannels ?? "Unknown"));
+
+                    index++;
+                }
+
+                if (set.Unresolved.Count > 0)
+                {
+                    lines.Add(string.Empty);
+                    lines.Add("Unresolved: " + set.Unresolved.Count);
+
+                    foreach (var unresolved in set.Unresolved)
+                    {
+                        string name =
+                            unresolved.Stream?.Name ??
+                            unresolved.Stream?.Title ??
+                            "(unnamed)";
+
+                        lines.Add("  - " + name + ": " + unresolved.Reason);
+                    }
+                }
+
+                SourceNormalisationStatus.Text =
+                    string.Join("\n", lines);
+            }
+            catch (System.Exception ex)
+            {
+                SourceNormalisationStatus.Text =
+                    "Source normalisation test failed: " +
+                    ex.Message;
+            }
+            finally
+            {
+                TestSourceNormalisationButton.IsEnabled = true;
+            }
+        }
+
+        // =========================================================
+        // REDACT URL IF NEEDED
+        // =========================================================
+        //
+        // Real-Debrid unrestricted links are effectively bearer-style
+        // capability URLs - anyone with the link can stream it without
+        // further authentication. Printing one in full in test output
+        // would leak a usable download link, so only the host is shown.
+        // Direct URLs (this addon's own plain HTTP links) carry no such
+        // secret and are shown in full.
+
+        private static string RedactUrlIfNeeded(NormalizedPlaybackSource normalized)
+        {
+            if (normalized.Kind != PlaybackSourceKind.RealDebrid)
+            {
+                return normalized.Url ?? "Unknown";
+            }
+
+            if (string.IsNullOrWhiteSpace(normalized.Url))
+            {
+                return "[redacted - Real-Debrid link]";
+            }
+
+            try
+            {
+                var uri = new System.Uri(normalized.Url);
+                return uri.Scheme + "://" + uri.Host + "/... [redacted - Real-Debrid link]";
+            }
+            catch
+            {
+                return "[redacted - Real-Debrid link]";
+            }
+        }
+
+        // =========================================================
+        // FORMAT FILE SIZE
+        // =========================================================
+
+        private static string FormatFileSize(long bytes)
+        {
+            double gb = bytes / 1024.0 / 1024.0 / 1024.0;
+
+            if (gb >= 0.1)
+            {
+                return gb.ToString("0.0") + " GB";
+            }
+
+            double mb = bytes / 1024.0 / 1024.0;
+            return mb.ToString("0") + " MB";
+        }
+
+        // =========================================================
+        // RUN SELF-CHECKS
+        // =========================================================
+        //
+        // Deterministic, dependency-free checks against the pure
+        // normalization logic (PlaybackSourceNormalizationService.
+        // RunSelfChecks) - no network call, no addon, no async needed.
+        // Exists specifically to prove parsing edge cases like the DV/
+        // DVDRip false-positive guard without depending on a real addon
+        // happening to return a stream that exercises them.
+
+        private void RunSelfChecks_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            try
+            {
+                var results =
+                    PlaybackSourceNormalizationService.RunSelfChecks();
+
+                int passCount = 0;
+                int failCount = 0;
+
+                foreach (var result in results)
+                {
+                    if (result.StartsWith("PASS"))
+                    {
+                        passCount++;
+                    }
+                    else
+                    {
+                        failCount++;
+                    }
+                }
+
+                var lines =
+                    new System.Collections.Generic.List<string>();
+
+                lines.Add(
+                    passCount + " passed, " +
+                    failCount + " failed/errored:");
+
+                lines.Add(string.Empty);
+                lines.AddRange(results);
+
+                SelfCheckStatus.Text =
+                    string.Join("\n", lines);
+            }
+            catch (System.Exception ex)
+            {
+                SelfCheckStatus.Text =
+                    "Self-checks failed to run: " +
+                    ex.Message;
+            }
+        }
     }
 }

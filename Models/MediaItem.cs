@@ -41,6 +41,28 @@ namespace StremioVideoCenter.Models
 
         public string Type { get; set; }
 
+        // =========================================================
+        // EPISODE IDENTITY (Slice 11)
+        // =========================================================
+        //
+        // Null for a movie or a show-level MediaItem - both remain
+        // completely unchanged from before this slice. Populated only for
+        // a MediaItem representing one specific TV/anime episode, which
+        // nothing in the project constructs yet (episode browsing UI is a
+        // separate, later slice - this is foundation only).
+        //
+        // Deliberately nullable int, matching ContentRequest.Season/
+        // .Episode exactly - StremioId continues to mean "the show's IMDb
+        // id" for an episode-shaped MediaItem (unchanged meaning), with
+        // these two carrying the season/episode numbers separately so
+        // PlaySelectedMediaAsync can combine them via
+        // ContentRequest.BuildStremioId() the same way ForTvEpisode
+        // already does, rather than requiring a pre-combined id string
+        // here.
+        public int? Season { get; set; }
+
+        public int? Episode { get; set; }
+
         public double Progress { get; set; }
 
         // =========================================================

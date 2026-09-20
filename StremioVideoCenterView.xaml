@@ -813,6 +813,23 @@
             Background="Black"
             Visibility="Collapsed" />
 
+        <!-- ========================================================= -->
+        <!-- SOURCE SELECTOR HOST (Slice 9)                            -->
+        <!-- ========================================================= -->
+        <!--
+            Separate from PlaybackTestHost even though the two are never
+            visible at the same time - the selector is created fresh and
+            torn down per selection, while PlaybackTestHost's child
+            (_stremioPlayer) is reused across a whole viewing session.
+            Sharing one Grid's Children between two differently-lived
+            things was judged not worth the small extra XAML to avoid.
+        -->
+        <Grid
+            x:Name="SourceSelectorHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
     </Grid>
 
 </PluginUserControl>

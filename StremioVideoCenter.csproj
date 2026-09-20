@@ -82,6 +82,9 @@
     <Compile Include="Controls\MpvPlayer.xaml.cs">
       <DependentUpon>MpvPlayer.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\SourceSelectorView.xaml.cs">
+      <DependentUpon>SourceSelectorView.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
       <DependentUpon>SettingsMenu.xaml</DependentUpon>
     </Compile>
@@ -105,6 +108,7 @@
     <Compile Include="Models\StremioStream.cs" />
     <Compile Include="Models\PlaybackSource.cs" />
     <Compile Include="Models\PlaybackSourceKind.cs" />
+    <Compile Include="Models\NormalizedPlaybackSource.cs" />
     <Compile Include="Models\ContentType.cs" />
     <Compile Include="Models\ContentRequest.cs" />
     <Compile Include="Models\StremioVideoCenterConfiguration.cs" />
@@ -116,6 +120,7 @@
     <Compile Include="Services\RealDebridService.cs" />
     <Compile Include="Services\StreamResolverService.cs" />
     <Compile Include="Services\PlaybackSourceAggregationService.cs" />
+    <Compile Include="Services\PlaybackSourceNormalizationService.cs" />
     <Compile Include="Services\TmdbService.cs" />
     <Compile Include="StremioVideoCenter.cs" />
     <Compile Include="StremioVideoCenterSettings.cs" />
@@ -154,6 +159,10 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Controls\MpvPlayer.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\SourceSelectorView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

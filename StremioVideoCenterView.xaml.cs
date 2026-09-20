@@ -29,6 +29,17 @@ namespace StremioVideoCenter
         private MpvPlayer _stremioPlayer;
 
         // =========================================================
+        // SOURCE SELECTION (Slice 9)
+        // =========================================================
+        //
+        // Non-null only while a SourceSelectorView is actively shown for
+        // one in-progress selection. Created fresh per selection (unlike
+        // _stremioPlayer, which is reused across a whole viewing session)
+        // and torn down immediately after SourceSelected/SelectionCancelled.
+
+        private SourceSelectorView _activeSourceSelector;
+
+        // =========================================================
         // STARTUP STATE
         // =========================================================
 
@@ -986,6 +997,16 @@ namespace StremioVideoCenter
 
         public bool HandleControllerInput(ControllerInput button)
         {
+            // Source selector owns controller input while a selection is
+            // in progress - checked before the player, since a selector and
+            // a player are never active at the same time, but checking
+            // selector first is harmless either way and keeps this
+            // consistent with "most specific overlay wins" ordering.
+            if (_activeSourceSelector != null)
+            {
+                return _activeSourceSelector.HandleControllerInput(button);
+            }
+
             // Player owns controller input while playback is active.
             if (_stremioPlayer != null)
             {
@@ -1257,43 +1278,36 @@ namespace StremioVideoCenter
                 return;
             }
 
+            // Defensive safety net: a stale player from a previous session
+            // should never still be around by the time a new play attempt
+            // starts (the home grid isn't reachable while PlaybackTestHost
+            // covers the screen), but this guarantees it rather than
+            // relying on that reachability assumption alone.
+            if (_stremioPlayer != null)
+            {
+                ClosePlayer();
+            }
+
             try
             {
-                string type =
-                    GetStremioType(
-                        mediaItem);
+                // =========================================================
+                // DISCOVER + AGGREGATE + NORMALISE
+                // =========================================================
+                //
+                // ContentRequest.ExplicitStremioId is used directly rather
+                // than ForMovie/ForTvEpisode, which both require a
+                // TmdbDetailsItem/TmdbEpisodeDetails this method doesn't
+                // have - MediaItem.StremioId is already the correct Stremio
+                // content id, so BuildStremioId() can use it verbatim with
+                // no TMDB call added to this path.
 
                 var addonRegistry =
                     StremioAddonRegistry.FromConfiguredUrls(
                         _stremioAddonUrls);
 
-                List<StremioStream> streams =
-                    await addonRegistry.GetAllStreamsAsync(
-                        type,
-                        mediaItem.StremioId);
-
-                if (streams == null ||
-                    streams.Count == 0)
-                {
-                    MessageBox.Show(
-                        "Stremio returned no playable streams for:\n\n" +
-                        mediaItem.Title);
-
-                    return;
-                }
-
-                // =========================================================
-                // RESOLVE A PLAYABLE SOURCE
-                // =========================================================
-                //
-                // Try streams in order until one resolves. Direct-URL streams
-                // (our test addon's path) resolve immediately with no
-                // Real-Debrid involvement. InfoHash streams need Real-Debrid,
-                // which may not be configured - that surfaces as a per-stream
-                // failure here and we just move to the next stream rather
-                // than failing playback outright. ExternalUrl-only streams
-                // are skipped before ever reaching the resolver; they are not
-                // supported for in-app playback this phase.
+                var discovery =
+                    new StremioContentDiscoveryService(
+                        addonRegistry);
 
                 RealDebridService realDebrid =
                     string.IsNullOrWhiteSpace(
@@ -1306,54 +1320,97 @@ namespace StremioVideoCenter
                     new StreamResolverService(
                         realDebrid);
 
-                PlaybackSource source = null;
+                var aggregator =
+                    new PlaybackSourceAggregationService(
+                        discovery,
+                        resolver);
 
-                foreach (StremioStream stream in streams)
+                var normalizer =
+                    new PlaybackSourceNormalizationService();
+
+                var request = new ContentRequest
                 {
-                    if (stream == null)
-                    {
-                        continue;
-                    }
+                    Type = GetContentType(mediaItem),
+                    Title = mediaItem.Title
+                };
 
-                    if (string.IsNullOrWhiteSpace(stream.Url) &&
-                        string.IsNullOrWhiteSpace(stream.InfoHash))
-                    {
-                        // ExternalUrl-only (or empty) stream - unsupported
-                        // for in-app playback this phase.
-                        continue;
-                    }
-
-                    try
-                    {
-                        source =
-                            await resolver.ResolveStreamAsync(
-                                stream);
-
-                        if (source != null &&
-                            !string.IsNullOrWhiteSpace(source.Url))
-                        {
-                            break;
-                        }
-                    }
-                    catch
-                    {
-                        // This particular stream couldn't be resolved (e.g.
-                        // needs Real-Debrid but none is configured, or
-                        // Real-Debrid failed for this specific torrent).
-                        // Try the next stream instead of failing outright.
-                        source = null;
-                    }
+                // Slice 11: an episode-shaped MediaItem (Season and Episode
+                // both populated) is combined into "<imdbId>:<season>:
+                // <episode>" via ContentRequest.BuildStremioId() itself -
+                // the same mechanism ForTvEpisode already uses - rather
+                // than requiring a pre-combined id string on MediaItem.
+                // Nothing constructs a MediaItem with these populated yet
+                // (episode browsing UI is a separate, later slice), so this
+                // branch is not yet reachable in practice - it exists so
+                // the pipeline is ready the moment something does.
+                if (mediaItem.Season.HasValue &&
+                    mediaItem.Episode.HasValue)
+                {
+                    request.ImdbId = mediaItem.StremioId;
+                    request.Season = mediaItem.Season;
+                    request.Episode = mediaItem.Episode;
+                }
+                else
+                {
+                    // Movie or show-level MediaItem - completely unchanged
+                    // from before this slice.
+                    request.ExplicitStremioId = mediaItem.StremioId;
                 }
 
-                if (source == null ||
-                    string.IsNullOrWhiteSpace(source.Url))
+                PlaybackSourceSet set =
+                    await aggregator.AggregateAsync(
+                        request);
+
+                // Nothing discovered at all (no addon had anything, or the
+                // request couldn't even build a Stremio id) - identical
+                // behaviour to before this slice, no selector shown.
+                if (set.Sources.Count == 0 &&
+                    set.Unresolved.Count == 0)
                 {
                     MessageBox.Show(
-                        "None of the available streams could be resolved for:\n\n" +
+                        "Stremio returned no playable streams for:\n\n" +
                         mediaItem.Title);
 
                     return;
                 }
+
+                // set.Unresolved is preserved on the set itself for future
+                // diagnostics. Not surfaced to the user this slice, and
+                // deliberately not passed to the selector, which has no
+                // concept of unresolved entries by design.
+                List<NormalizedPlaybackSource> normalizedSources =
+                    normalizer.NormalizeAll(
+                        set.Sources);
+
+                // =========================================================
+                // SHOW THE SOURCE SELECTOR
+                // =========================================================
+                //
+                // Populate() is called regardless of count, including zero -
+                // SourceSelectorView already handles the empty-source case
+                // (a "No playable sources found." message with a Back
+                // action) by design. That is exactly the case where
+                // set.Sources is empty but set.Unresolved is not.
+
+                NormalizedPlaybackSource selected =
+                    await ShowSourceSelectorAsync(
+                        normalizedSources,
+                        mediaItem);
+
+                if (selected == null)
+                {
+                    // Selection cancelled - already torn down and refocused
+                    // by ShowSourceSelectorAsync itself.
+                    return;
+                }
+
+                // =========================================================
+                // PLAY THE SELECTED SOURCE
+                // =========================================================
+                //
+                // Player creation/behaviour is completely unchanged from
+                // before this slice - only where the URL comes from has
+                // changed.
 
                 if (_stremioPlayer == null)
                 {
@@ -1373,7 +1430,7 @@ namespace StremioVideoCenter
                 }
 
                 await _stremioPlayer.PlayVideoAsync(
-                    source.Url);
+                    selected.Source.Url);
             }
             catch (Exception ex)
             {
@@ -1386,6 +1443,127 @@ namespace StremioVideoCenter
                     "\n\n" +
                     ex.Message);
             }
+        }
+
+        // =========================================================
+        // GET CONTENT TYPE
+        // =========================================================
+        //
+        // Maps MediaItem.Type to the ContentType enum needed to build a
+        // ContentRequest. Mirrors GetStremioType's existing TV/TV Show/
+        // Series matching, and additionally recognises "Anime" ->
+        // ContentType.Anime. GetStremioType itself has no Anime case at
+        // all (it falls through to "movie" for anime titles) - this
+        // corrects that for anything going through this new path, per
+        // explicit approval for this slice. GetStremioType is no longer
+        // called anywhere but is left in place rather than removed, since
+        // removing it wasn't part of what was asked for this slice.
+
+        private ContentType GetContentType(
+            MediaItem mediaItem)
+        {
+            if (mediaItem == null)
+            {
+                return ContentType.Movie;
+            }
+
+            if (string.Equals(
+                    mediaItem.Type,
+                    "Anime",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return ContentType.Anime;
+            }
+
+            if (string.Equals(
+                    mediaItem.Type,
+                    "TV",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return ContentType.TvShow;
+            }
+
+            if (string.Equals(
+                    mediaItem.Type,
+                    "TV Show",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return ContentType.TvShow;
+            }
+
+            if (string.Equals(
+                    mediaItem.Type,
+                    "Series",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return ContentType.TvShow;
+            }
+
+            return ContentType.Movie;
+        }
+
+        // =========================================================
+        // SHOW SOURCE SELECTOR
+        // =========================================================
+        //
+        // Creates a fresh SourceSelectorView, shows it in
+        // SourceSelectorHost, and bridges its SourceSelected/
+        // SelectionCancelled events into an awaitable Task via
+        // TaskCompletionSource - SourceSelectorView itself stays purely
+        // event-based and is not modified. Returns the selected source, or
+        // null if the user cancelled. Tears the host down and restores
+        // browsing focus before returning either way.
+
+        private async Task<NormalizedPlaybackSource> ShowSourceSelectorAsync(
+            List<NormalizedPlaybackSource> sources,
+            MediaItem mediaItem)
+        {
+            var selector = new SourceSelectorView();
+
+            var completionSource =
+                new TaskCompletionSource<NormalizedPlaybackSource>();
+
+            EventHandler<SourceSelectedEventArgs> onSelected = null;
+            EventHandler onCancelled = null;
+
+            onSelected = (sender, args) =>
+            {
+                completionSource.TrySetResult(args.Source);
+            };
+
+            onCancelled = (sender, args) =>
+            {
+                completionSource.TrySetResult(null);
+            };
+
+            selector.SourceSelected += onSelected;
+            selector.SelectionCancelled += onCancelled;
+
+            _activeSourceSelector = selector;
+
+            SourceSelectorHost.Children.Add(selector);
+            SourceSelectorHost.Visibility = Visibility.Visible;
+
+            // mediaItem is passed through only to populate the selector's
+            // header media-context line (Slice 10) - it plays no role in
+            // discovery/aggregation/normalisation, all of which already
+            // completed before this method is called.
+            selector.Populate(sources, mediaItem);
+
+            NormalizedPlaybackSource result =
+                await completionSource.Task;
+
+            selector.SourceSelected -= onSelected;
+            selector.SelectionCancelled -= onCancelled;
+
+            SourceSelectorHost.Children.Remove(selector);
+            SourceSelectorHost.Visibility = Visibility.Collapsed;
+
+            _activeSourceSelector = null;
+
+            FocusFirstAvailableSection();
+
+            return result;
         }
         // =========================================================
         // PLAYER CLOSE

@@ -43,6 +43,20 @@ namespace StremioVideoCenter.Models
         // there's no "Unresolved" value here - if you have one of these, it
         // is playable.
         public PlaybackSourceKind Kind { get; set; }
+
+        // =========================================================
+        // SLICE 5 ADDITION - additive, nothing above changed
+        // =========================================================
+
+        // Back-reference to the StremioStream this source was resolved
+        // from, set by PlaybackSourceAggregationService alongside Name/
+        // SourceAddonUrl. Exists so PlaybackSourceNormalizationService can
+        // reach BehaviorHints/Subtitles data that PlaybackSource itself
+        // doesn't carry directly. The player never inspects this - it only
+        // ever reads Url - so this does not change the "player never sees
+        // a StremioStream" behaviour described above; it's reachable, not
+        // consumed.
+        public StremioStream OriginatingStream { get; set; }
     }
 }
 

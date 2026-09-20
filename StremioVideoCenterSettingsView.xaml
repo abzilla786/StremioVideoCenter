@@ -6,8 +6,22 @@
     <Grid>
 
         <!-- ========================================================= -->
-        <!-- MAIN SETTINGS PANEL                                       -->
+        <!-- MAIN SETTINGS PANEL (SCROLLABLE)                          -->
         <!-- ========================================================= -->
+        <!--
+            Added to fix content that grows taller than the settings window
+            once test buttons produce multi-line results (Source
+            Normalisation in particular could scroll fully off-screen with
+            no way to reach it). Vertical-only: horizontal scrolling is
+            explicitly disabled since nothing in this layout needs it.
+            Mouse wheel scrolling works automatically with ScrollViewer -
+            no extra wiring required. No Background/Foreground set here, so
+            the existing dark appearance (inherited from Playnite's theme
+            resources) is completely unaffected.
+        -->
+        <ScrollViewer
+            VerticalScrollBarVisibility="Auto"
+            HorizontalScrollBarVisibility="Disabled">
 
         <StackPanel Margin="10">
 
@@ -298,7 +312,66 @@
 
             </StackPanel>
 
+
+            <!-- ========================================================= -->
+            <!-- SOURCE NORMALISATION TEST                                  -->
+            <!-- ========================================================= -->
+
+            <TextBlock
+                Text="Source Normalisation"
+                FontWeight="Bold"
+                FontSize="14"
+                Margin="0,20,0,8"/>
+
+            <StackPanel>
+
+                <TextBlock
+                    Text="Proves normalisation of a resolved source into a consistent, addon-independent representation, using Big Buck Bunny (tt1254207) against the local test addon."
+                    Opacity="0.65"
+                    FontSize="11"
+                    TextWrapping="Wrap"
+                    Margin="0,0,0,8"/>
+
+                <Button
+                    x:Name="TestSourceNormalisationButton"
+                    Content="Test Source Normalisation"
+                    Width="220"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Click="TestSourceNormalisation_Click"/>
+
+                <TextBlock
+                    x:Name="SourceNormalisationStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
+                <TextBlock
+                    Text="Deterministic self-checks against the pure parsing logic - no network/addon required."
+                    Opacity="0.65"
+                    FontSize="11"
+                    TextWrapping="Wrap"
+                    Margin="0,16,0,8"/>
+
+                <Button
+                    x:Name="RunSelfChecksButton"
+                    Content="Run Self-Checks"
+                    Width="180"
+                    Height="30"
+                    HorizontalAlignment="Left"
+                    Click="RunSelfChecks_Click"/>
+
+                <TextBlock
+                    x:Name="SelfCheckStatus"
+                    Margin="0,8,0,0"
+                    FontSize="11"
+                    TextWrapping="Wrap"/>
+
+            </StackPanel>
+
         </StackPanel>
+
+        </ScrollViewer>
 
     </Grid>
 
