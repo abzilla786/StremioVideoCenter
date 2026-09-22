@@ -40,6 +40,17 @@ namespace StremioVideoCenter
         private SourceSelectorView _activeSourceSelector;
 
         // =========================================================
+        // EPISODE BROWSER (Slice 12)
+        // =========================================================
+        //
+        // Non-null only while an EpisodeBrowserView is actively shown for
+        // one in-progress TV show selection. Same lifecycle discipline as
+        // _activeSourceSelector: created fresh, torn down immediately
+        // after EpisodeSelected/BrowsingCancelled.
+
+        private EpisodeBrowserView _activeEpisodeBrowser;
+
+        // =========================================================
         // STARTUP STATE
         // =========================================================
 
@@ -77,22 +88,11 @@ namespace StremioVideoCenter
         // =========================================================
         // CONSTRUCTOR
         // =========================================================
-        //
-        // Takes a single configuration object rather than individually-
-        // growing positional parameters - see
-        // Models/StremioVideoCenterConfiguration.cs. Unpacked into private
-        // fields here (rather than stored as the whole object and threaded
-        // through every method) so the rest of this class's existing
-        // internal references stay exactly as they were.
 
         public StremioVideoCenterView(
             StremioVideoCenterConfiguration configuration = null)
         {
             InitializeComponent();
-
-            // =========================================================
-            // STORE CREDENTIALS
-            // =========================================================
 
             configuration = configuration ?? new StremioVideoCenterConfiguration();
 
@@ -108,18 +108,8 @@ namespace StremioVideoCenter
             _stremioAddonUrls =
                 configuration.StremioAddonUrls;
 
-
-            // =========================================================
-            // CREATE HOME VIEW MODEL
-            // =========================================================
-
             DataContext =
                 new HomeViewModel();
-
-
-            // =========================================================
-            // REGISTER MEDIA SECTIONS
-            // =========================================================
 
             sections =
                 new[]
@@ -141,11 +131,6 @@ namespace StremioVideoCenter
                 }
             }
 
-
-            // =========================================================
-            // REGISTER VIEW EVENTS
-            // =========================================================
-
             Loaded +=
                 StremioVideoCenterView_Loaded;
 
@@ -165,21 +150,12 @@ namespace StremioVideoCenter
             object sender,
             RoutedEventArgs e)
         {
-            // =========================================================
-            // PREVENT DUPLICATE STARTUP SEQUENCES
-            // =========================================================
-
             if (_startupSequenceStarted)
             {
                 return;
             }
 
             _startupSequenceStarted = true;
-
-
-            // =========================================================
-            // LOAD TMDB HERO RECOMMENDATIONS
-            // =========================================================
 
             if (!string.IsNullOrWhiteSpace(
                     _tmdbAccessToken) &&
@@ -204,17 +180,7 @@ namespace StremioVideoCenter
                 }
             }
 
-
-            // =========================================================
-            // UPDATE CAROUSEL INDICATORS
-            // =========================================================
-
             UpdateHeroIndicators();
-
-
-            // =========================================================
-            // INITIAL FOCUS
-            // =========================================================
 
             await Dispatcher.BeginInvoke(
                 new Action(() =>
@@ -223,15 +189,7 @@ namespace StremioVideoCenter
                 }),
                 System.Windows.Threading.DispatcherPriority.Loaded);
 
-
-            // =========================================================
-            // START BACKDROP ROTATION
-            // =========================================================
-
             await StartHeroBackdropRotationAsync();
-
-
-
         }
 
 
@@ -261,12 +219,6 @@ namespace StremioVideoCenter
         // =========================================================
         // HERO BACKDROP ROTATION
         // =========================================================
-        //
-        // Backdrop-only Hero mode.
-        //
-        // Each recommendation remains visible for 15 seconds.
-        // Manual navigation starts a fresh 15-second display period.
-        // =========================================================
 
         private async Task StartHeroBackdropRotationAsync()
         {
@@ -282,18 +234,8 @@ namespace StremioVideoCenter
             HeroItem heroItem =
                 vm.CurrentHeroItem;
 
-
-            // =========================================================
-            // HERO DISPLAY PERIOD
-            // =========================================================
-
             await Task.Delay(
                 TimeSpan.FromSeconds(15));
-
-
-            // =========================================================
-            // ONLY ADVANCE IF THIS HERO IS STILL ACTIVE
-            // =========================================================
 
             if (ReferenceEquals(
                     vm.CurrentHeroItem,
@@ -615,10 +557,6 @@ namespace StremioVideoCenter
             object sender,
             KeyEventArgs e)
         {
-            // =====================================================
-            // HERO CAROUSEL BUTTONS
-            // =====================================================
-
             if (HeroPreviousButton.IsKeyboardFocusWithin ||
                 HeroNextButton.IsKeyboardFocusWithin)
             {
@@ -662,11 +600,6 @@ namespace StremioVideoCenter
                     return;
                 }
             }
-
-
-            // =====================================================
-            // HERO INFORMATION BUTTONS
-            // =====================================================
 
             if (HeroWatchNowButton.IsKeyboardFocusWithin ||
                 HeroMyListButton.IsKeyboardFocusWithin)
@@ -730,11 +663,6 @@ namespace StremioVideoCenter
                 }
             }
 
-
-            // =====================================================
-            // TOP NAVIGATION -> HERO
-            // =====================================================
-
             if (e.Key == Key.Down)
             {
                 if (HomeButton.IsKeyboardFocusWithin ||
@@ -753,11 +681,6 @@ namespace StremioVideoCenter
                 }
             }
 
-
-            // =====================================================
-            // SEARCH -> HERO
-            // =====================================================
-
             if (SearchButton.IsKeyboardFocusWithin &&
                 e.Key == Key.Right)
             {
@@ -768,11 +691,6 @@ namespace StremioVideoCenter
                 return;
             }
 
-
-            // =====================================================
-            // HOME LEFT -> HERO MY LIST
-            // =====================================================
-
             if (HomeButton.IsKeyboardFocusWithin &&
                 e.Key == Key.Left)
             {
@@ -782,11 +700,6 @@ namespace StremioVideoCenter
 
                 return;
             }
-
-
-            // =====================================================
-            // MEDIA NAVIGATION
-            // =====================================================
 
             MediaSection currentSection =
                 GetFocusedSection();
@@ -997,6 +910,15 @@ namespace StremioVideoCenter
 
         public bool HandleControllerInput(ControllerInput button)
         {
+            // Episode browser owns controller input while season/episode
+            // selection is in progress - checked first, since it's the
+            // "most specific" overlay when present (mirrors how the source
+            // selector is already checked before the player).
+            if (_activeEpisodeBrowser != null)
+            {
+                return _activeEpisodeBrowser.HandleControllerInput(button);
+            }
+
             // Source selector owns controller input while a selection is
             // in progress - checked before the player, since a selector and
             // a player are never active at the same time, but checking
@@ -1253,8 +1175,97 @@ namespace StremioVideoCenter
                 return;
             }
 
+            MediaItem selectedItem = e.Item;
+
+            // Slice 12: only ContentType.TvShow opens the episode browser.
+            // Anime deliberately does NOT go through EpisodeBrowserView -
+            // it continues through its existing content/playback path
+            // unchanged. Movies are unaffected either way, since
+            // GetContentType never returns TvShow for them. An item that
+            // already carries Season/Episode (nothing currently produces
+            // one from the home grid, but a future slice might) is treated
+            // as already-resolved and skips browsing, going straight to
+            // playback.
+            if (GetContentType(selectedItem) == ContentType.TvShow &&
+                !(selectedItem.Season.HasValue && selectedItem.Episode.HasValue))
+            {
+                MediaItem episode =
+                    await ShowEpisodeBrowserAsync(selectedItem);
+
+                if (episode == null)
+                {
+                    // Browsing cancelled - already torn down and refocused
+                    // by ShowEpisodeBrowserAsync itself.
+                    return;
+                }
+
+                selectedItem = episode;
+            }
+
             await PlaySelectedMediaAsync(
-                e.Item);
+                selectedItem);
+        }
+
+        // =========================================================
+        // SHOW EPISODE BROWSER
+        // =========================================================
+        //
+        // Creates a fresh EpisodeBrowserView, shows it in
+        // EpisodeBrowserHost, and bridges its EpisodeSelected/
+        // BrowsingCancelled events into an awaitable Task via
+        // TaskCompletionSource - the same bridging pattern already used
+        // for ShowSourceSelectorAsync. Returns the episode-shaped
+        // MediaItem, or null if the user cancelled. Tears the host down
+        // and restores browsing focus before returning either way.
+
+        private async Task<MediaItem> ShowEpisodeBrowserAsync(
+            MediaItem show)
+        {
+            var browser = new EpisodeBrowserView();
+
+            var completionSource =
+                new TaskCompletionSource<MediaItem>();
+
+            EventHandler<EpisodeSelectedEventArgs> onSelected = null;
+            EventHandler onCancelled = null;
+
+            onSelected = (sender, args) =>
+            {
+                completionSource.TrySetResult(args.Episode);
+            };
+
+            onCancelled = (sender, args) =>
+            {
+                completionSource.TrySetResult(null);
+            };
+
+            browser.EpisodeSelected += onSelected;
+            browser.BrowsingCancelled += onCancelled;
+
+            _activeEpisodeBrowser = browser;
+
+            EpisodeBrowserHost.Children.Add(browser);
+            EpisodeBrowserHost.Visibility = Visibility.Visible;
+
+            var tmdbService =
+                new TmdbService(_tmdbAccessToken);
+
+            await browser.LoadAsync(show, tmdbService);
+
+            MediaItem result =
+                await completionSource.Task;
+
+            browser.EpisodeSelected -= onSelected;
+            browser.BrowsingCancelled -= onCancelled;
+
+            EpisodeBrowserHost.Children.Remove(browser);
+            EpisodeBrowserHost.Visibility = Visibility.Collapsed;
+
+            _activeEpisodeBrowser = null;
+
+            FocusFirstAvailableSection();
+
+            return result;
         }
 
         // =========================================================
@@ -1290,17 +1301,6 @@ namespace StremioVideoCenter
 
             try
             {
-                // =========================================================
-                // DISCOVER + AGGREGATE + NORMALISE
-                // =========================================================
-                //
-                // ContentRequest.ExplicitStremioId is used directly rather
-                // than ForMovie/ForTvEpisode, which both require a
-                // TmdbDetailsItem/TmdbEpisodeDetails this method doesn't
-                // have - MediaItem.StremioId is already the correct Stremio
-                // content id, so BuildStremioId() can use it verbatim with
-                // no TMDB call added to this path.
-
                 var addonRegistry =
                     StremioAddonRegistry.FromConfiguredUrls(
                         _stremioAddonUrls);
@@ -1339,10 +1339,6 @@ namespace StremioVideoCenter
                 // <episode>" via ContentRequest.BuildStremioId() itself -
                 // the same mechanism ForTvEpisode already uses - rather
                 // than requiring a pre-combined id string on MediaItem.
-                // Nothing constructs a MediaItem with these populated yet
-                // (episode browsing UI is a separate, later slice), so this
-                // branch is not yet reachable in practice - it exists so
-                // the pipeline is ready the moment something does.
                 if (mediaItem.Season.HasValue &&
                     mediaItem.Episode.HasValue)
                 {
@@ -1361,9 +1357,6 @@ namespace StremioVideoCenter
                     await aggregator.AggregateAsync(
                         request);
 
-                // Nothing discovered at all (no addon had anything, or the
-                // request couldn't even build a Stremio id) - identical
-                // behaviour to before this slice, no selector shown.
                 if (set.Sources.Count == 0 &&
                     set.Unresolved.Count == 0)
                 {
@@ -1374,23 +1367,9 @@ namespace StremioVideoCenter
                     return;
                 }
 
-                // set.Unresolved is preserved on the set itself for future
-                // diagnostics. Not surfaced to the user this slice, and
-                // deliberately not passed to the selector, which has no
-                // concept of unresolved entries by design.
                 List<NormalizedPlaybackSource> normalizedSources =
                     normalizer.NormalizeAll(
                         set.Sources);
-
-                // =========================================================
-                // SHOW THE SOURCE SELECTOR
-                // =========================================================
-                //
-                // Populate() is called regardless of count, including zero -
-                // SourceSelectorView already handles the empty-source case
-                // (a "No playable sources found." message with a Back
-                // action) by design. That is exactly the case where
-                // set.Sources is empty but set.Unresolved is not.
 
                 NormalizedPlaybackSource selected =
                     await ShowSourceSelectorAsync(
@@ -1399,18 +1378,8 @@ namespace StremioVideoCenter
 
                 if (selected == null)
                 {
-                    // Selection cancelled - already torn down and refocused
-                    // by ShowSourceSelectorAsync itself.
                     return;
                 }
-
-                // =========================================================
-                // PLAY THE SELECTED SOURCE
-                // =========================================================
-                //
-                // Player creation/behaviour is completely unchanged from
-                // before this slice - only where the URL comes from has
-                // changed.
 
                 if (_stremioPlayer == null)
                 {
@@ -1420,8 +1389,6 @@ namespace StremioVideoCenter
                     _stremioPlayer.CloseRequested +=
                         StremioPlayer_CloseRequested;
 
-                    // Playback stays inside the Video Center.
-                    // The temporary MPV isolation window is deliberately gone.
                     PlaybackTestHost.Children.Add(
                         _stremioPlayer);
 
@@ -1448,16 +1415,6 @@ namespace StremioVideoCenter
         // =========================================================
         // GET CONTENT TYPE
         // =========================================================
-        //
-        // Maps MediaItem.Type to the ContentType enum needed to build a
-        // ContentRequest. Mirrors GetStremioType's existing TV/TV Show/
-        // Series matching, and additionally recognises "Anime" ->
-        // ContentType.Anime. GetStremioType itself has no Anime case at
-        // all (it falls through to "movie" for anime titles) - this
-        // corrects that for anything going through this new path, per
-        // explicit approval for this slice. GetStremioType is no longer
-        // called anywhere but is left in place rather than removed, since
-        // removing it wasn't part of what was asked for this slice.
 
         private ContentType GetContentType(
             MediaItem mediaItem)
@@ -1505,14 +1462,6 @@ namespace StremioVideoCenter
         // =========================================================
         // SHOW SOURCE SELECTOR
         // =========================================================
-        //
-        // Creates a fresh SourceSelectorView, shows it in
-        // SourceSelectorHost, and bridges its SourceSelected/
-        // SelectionCancelled events into an awaitable Task via
-        // TaskCompletionSource - SourceSelectorView itself stays purely
-        // event-based and is not modified. Returns the selected source, or
-        // null if the user cancelled. Tears the host down and restores
-        // browsing focus before returning either way.
 
         private async Task<NormalizedPlaybackSource> ShowSourceSelectorAsync(
             List<NormalizedPlaybackSource> sources,
@@ -1544,10 +1493,6 @@ namespace StremioVideoCenter
             SourceSelectorHost.Children.Add(selector);
             SourceSelectorHost.Visibility = Visibility.Visible;
 
-            // mediaItem is passed through only to populate the selector's
-            // header media-context line (Slice 10) - it plays no role in
-            // discovery/aggregation/normalisation, all of which already
-            // completed before this method is called.
             selector.Populate(sources, mediaItem);
 
             NormalizedPlaybackSource result =
@@ -1576,13 +1521,6 @@ namespace StremioVideoCenter
             ClosePlayer();
         }
 
-        // Tears down _stremioPlayer/PlaybackTestHost and returns focus to the
-        // home screen. Called both when the player itself requests a close and
-        // when a play attempt fails outright - a failed PlayVideoAsync() call
-        // previously left PlaybackTestHost visible (its black, ZIndex=1000
-        // overlay) and _stremioPlayer non-null, which also meant
-        // HandleControllerInput kept routing all controller input into the
-        // broken player instead of back to the home screen.
         private void ClosePlayer()
         {
             if (_stremioPlayer != null)

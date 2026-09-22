@@ -39,22 +39,8 @@ namespace StremioVideoCenter.ViewModels
 
                 _currentHeroIndex = value;
 
-                // =================================================
-                // NOTIFY CURRENT INDEX CHANGE
-                // =================================================
-
                 OnPropertyChanged(
                     nameof(CurrentHeroIndex));
-
-
-                // =================================================
-                // NOTIFY CURRENT HERO CHANGE
-                // =================================================
-                //
-                // CurrentHeroItem is calculated from
-                // CurrentHeroIndex, so WPF must be told that
-                // CurrentHeroItem has changed as well.
-                // =================================================
 
                 OnPropertyChanged(
                     nameof(CurrentHeroItem));
@@ -158,22 +144,11 @@ namespace StremioVideoCenter.ViewModels
                     await recommendationService
                         .GetRecommendationsAsync();
 
-
-                // =================================================
-                // REQUIRE A VALID RESULT
-                // =================================================
-
                 if (recommendations == null ||
                     recommendations.Count == 0)
                 {
                     return;
                 }
-
-
-                // =================================================
-                // ONLY REPLACE THE HERO COLLECTION AFTER A
-                // SUCCESSFUL RESULT
-                // =================================================
 
                 HeroItems.Clear();
 
@@ -182,30 +157,14 @@ namespace StremioVideoCenter.ViewModels
                     HeroItems.Add(heroItem);
                 }
 
-
-                // =================================================
-                // START FROM THE FIRST HERO
-                // =================================================
-
                 CurrentHeroIndex = 0;
-
-
-                // =================================================
-                // NOTIFY THAT THE CURRENT HERO COLLECTION HAS
-                // BEEN UPDATED
-                // =================================================
 
                 OnPropertyChanged(
                     nameof(CurrentHeroItem));
             }
             catch
             {
-                // =================================================
-                // KEEP EXISTING HERO DATA IF TMDB FAILS
-                // =================================================
-                //
                 // The existing test HeroItems remain available.
-                // =================================================
             }
         }
 
@@ -381,6 +340,15 @@ namespace StremioVideoCenter.ViewModels
                 Year = "2025",
                 Rating = "8.8",
                 Type = "TV",
+
+                // Slice 12: verified against Wikidata's structured
+                // identifiers and TMDB's own page
+                // (themoviedb.org/tv/100088-the-last-of-us) - not invented.
+                // This is the existing verified TV test item already
+                // present in the repository; Breaking Bad is not added
+                // since it does not exist in this test data.
+                TmdbId = 100088,
+                StremioId = "tt3581920",
 
                 PosterPath =
                     "https://image.tmdb.org/t/p/w342/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg"

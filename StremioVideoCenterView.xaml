@@ -830,6 +830,23 @@
             Background="Black"
             Visibility="Collapsed" />
 
+        <!-- ========================================================= -->
+        <!-- EPISODE BROWSER HOST (Slice 12)                            -->
+        <!-- ========================================================= -->
+        <!--
+            Same reasoning as SourceSelectorHost being separate from
+            PlaybackTestHost: this overlay has its own short-lived
+            lifecycle (created fresh per TV-show selection, torn down on
+            episode pick or cancellation), distinct from both the player
+            and the source selector, so it gets its own host rather than
+            sharing either of theirs.
+        -->
+        <Grid
+            x:Name="EpisodeBrowserHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
     </Grid>
 
 </PluginUserControl>
