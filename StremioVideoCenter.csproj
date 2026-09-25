@@ -79,6 +79,18 @@
     <Compile Include="Controls\EpisodeBrowserView.xaml.cs">
       <DependentUpon>EpisodeBrowserView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\LocalMediaView.xaml.cs">
+      <DependentUpon>LocalMediaView.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Controls\CatalogueBrowseView.xaml.cs">
+      <DependentUpon>CatalogueBrowseView.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Controls\AnimeBrowseView.xaml.cs">
+      <DependentUpon>AnimeBrowseView.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Controls\SearchView.xaml.cs">
+      <DependentUpon>SearchView.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
       <DependentUpon>SettingsMenu.xaml</DependentUpon>
     </Compile>
@@ -94,6 +106,7 @@
     <Compile Include="Models\PlaybackState.cs" />
     <Compile Include="Services\MpvIpcClient.cs" />
     <Compile Include="Services\MpvProcessService.cs" />
+    <Compile Include="Services\StremioVideoCenterLogger.cs" />
     <Compile Include="Controls\MediaSection.xaml.cs">
       <DependentUpon>MediaSection.xaml</DependentUpon>
     </Compile>
@@ -106,6 +119,7 @@
     <Compile Include="Models\ContentType.cs" />
     <Compile Include="Models\ContentRequest.cs" />
     <Compile Include="Models\StremioVideoCenterConfiguration.cs" />
+    <Compile Include="Models\AddonInstance.cs" />
     <Compile Include="Services\HeroRecommendationService.cs" />
     <Compile Include="Services\OmdbService.cs" />
     <Compile Include="Services\StremioAddonService.cs" />
@@ -116,6 +130,14 @@
     <Compile Include="Services\PlaybackSourceAggregationService.cs" />
     <Compile Include="Services\PlaybackSourceNormalizationService.cs" />
     <Compile Include="Services\TmdbService.cs" />
+    <Compile Include="Services\CatalogueService.cs" />
+    <Compile Include="Services\CinemetaService.cs" />
+    <Compile Include="Services\AnimeFlvCatalogueService.cs" />
+    <Compile Include="Services\CoreAddonSeedingService.cs" />
+    <Compile Include="Models\LocalMediaModels.cs" />
+    <Compile Include="Services\LocalMediaIdentificationService.cs" />
+    <Compile Include="Services\LocalMediaScanService.cs" />
+    <Compile Include="Services\LocalLibraryService.cs" />
     <Compile Include="StremioVideoCenter.cs" />
     <Compile Include="StremioVideoCenterSettings.cs" />
     <Compile Include="StremioVideoCenterSettingsView.xaml.cs">
@@ -157,6 +179,22 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Controls\EpisodeBrowserView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\LocalMediaView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\CatalogueBrowseView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\AnimeBrowseView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\SearchView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

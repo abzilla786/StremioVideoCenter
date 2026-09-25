@@ -1,5 +1,7 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Threading.Tasks;
 using StremioVideoCenter.Models;
@@ -7,6 +9,32 @@ using StremioVideoCenter.Services;
 
 namespace StremioVideoCenter.ViewModels
 {
+    // =============================================================
+    // HOME VIEW MODEL (restructured by Slice 15)
+    // =============================================================
+    //
+    // Slice 15 (Search, Discovery, Home & Local Media Architecture)
+    // replaces the old Top 10 / Trending / Recently Released structure
+    // (nine rows across Movies/TV/Anime, plus an unrelated "Recently
+    // Added" row that was never wired to real data) with the revised
+    // Home structure: HERO -> [MY LIST if populated] ->
+    // [CONTINUE WATCHING if populated] -> FEATURED MOVIES -> POPULAR
+    // MOVIES -> FEATURED TV -> POPULAR TV -> FEATURED ANIME -> POPULAR
+    // ANIME. New Releases is no longer a Home row (moved to the
+    // dedicated Movies/TV pages only - see CatalogueBrowseView).
+    //
+    // ContinueWatching/MyList are an architectural CONTRACT only this
+    // slice, not real functionality - Slice 16 (Watch State) and
+    // Slice 17 (My List) are what will ever populate these collections.
+    // They start empty (the old hardcoded test entries - a dummy "Demon
+    // Slayer"/"The Last of Us" continue-watching pair and a dummy
+    // "Interstellar"/"One Piece" My List pair - are removed entirely,
+    // per this slice's explicit "no dummy data visible on production
+    // Home" instruction) and HasContinueWatching/HasMyList expose
+    // whether each collection is currently non-empty, so
+    // StremioVideoCenterView.xaml can bind each section's Visibility to
+    // collapse it completely (no empty carousel, no reserved space) - see
+    // those two properties below.
     public class HomeViewModel : INotifyPropertyChanged
     {
         // =========================================================
@@ -39,11 +67,8 @@ namespace StremioVideoCenter.ViewModels
 
                 _currentHeroIndex = value;
 
-                OnPropertyChanged(
-                    nameof(CurrentHeroIndex));
-
-                OnPropertyChanged(
-                    nameof(CurrentHeroItem));
+                OnPropertyChanged(nameof(CurrentHeroIndex));
+                OnPropertyChanged(nameof(CurrentHeroItem));
             }
         }
 
@@ -61,8 +86,7 @@ namespace StremioVideoCenter.ViewModels
                     return null;
                 }
 
-                if (CurrentHeroIndex < 0 ||
-                    CurrentHeroIndex >= HeroItems.Count)
+                if (CurrentHeroIndex < 0 || CurrentHeroIndex >= HeroItems.Count)
                 {
                     return HeroItems[0];
                 }
@@ -73,8 +97,18 @@ namespace StremioVideoCenter.ViewModels
 
 
         // =========================================================
-        // MEDIA SECTIONS
+        // CONDITIONAL SECTIONS: CONTINUE WATCHING / MY LIST
         // =========================================================
+        //
+        // Architecture-only this slice (see class remarks) - both
+        // collections start empty and nothing in this slice ever adds to
+        // them. HasContinueWatching/HasMyList exist purely so
+        // StremioVideoCenterView.xaml can bind each MediaSection's
+        // Visibility and collapse it entirely while empty, satisfying
+        // "no empty carousel, no placeholder cards, no reserved vertical
+        // space" without any view-side polling - the CollectionChanged
+        // subscriptions below keep these two flags accurate the moment
+        // Slice 16/17 ever start adding real items.
 
         public ObservableCollection<MediaItem> ContinueWatching { get; }
             = new ObservableCollection<MediaItem>();
@@ -82,16 +116,71 @@ namespace StremioVideoCenter.ViewModels
         public ObservableCollection<MediaItem> MyList { get; }
             = new ObservableCollection<MediaItem>();
 
-        public ObservableCollection<MediaItem> RecentlyAdded { get; }
+        private bool _hasContinueWatching;
+
+        public bool HasContinueWatching
+        {
+            get { return _hasContinueWatching; }
+
+            private set
+            {
+                if (_hasContinueWatching == value)
+                {
+                    return;
+                }
+
+                _hasContinueWatching = value;
+                OnPropertyChanged(nameof(HasContinueWatching));
+            }
+        }
+
+        private bool _hasMyList;
+
+        public bool HasMyList
+        {
+            get { return _hasMyList; }
+
+            private set
+            {
+                if (_hasMyList == value)
+                {
+                    return;
+                }
+
+                _hasMyList = value;
+                OnPropertyChanged(nameof(HasMyList));
+            }
+        }
+
+
+        // =========================================================
+        // REAL CATALOGUE ROWS (Slice 15: Featured / Popular)
+        // =========================================================
+        //
+        // Six rows total - two per group (Movies/TV/Anime). Replaces the
+        // previous nine Top10/Trending/RecentlyReleased rows entirely;
+        // "New"/Recently-Released content is no longer shown on Home at
+        // all (see CatalogueBrowseView for the dedicated Movies/TV pages
+        // that now carry it). Up to 25 items per row (see
+        // CatalogueService's DefaultTake) rather than the previous
+        // fixed 10.
+
+        public ObservableCollection<MediaItem> FeaturedMovies { get; }
             = new ObservableCollection<MediaItem>();
 
-        public ObservableCollection<MediaItem> TopMovies { get; }
+        public ObservableCollection<MediaItem> PopularMovies { get; }
             = new ObservableCollection<MediaItem>();
 
-        public ObservableCollection<MediaItem> TopShows { get; }
+        public ObservableCollection<MediaItem> FeaturedShows { get; }
             = new ObservableCollection<MediaItem>();
 
-        public ObservableCollection<MediaItem> TopAnime { get; }
+        public ObservableCollection<MediaItem> PopularShows { get; }
+            = new ObservableCollection<MediaItem>();
+
+        public ObservableCollection<MediaItem> FeaturedAnime { get; }
+            = new ObservableCollection<MediaItem>();
+
+        public ObservableCollection<MediaItem> PopularAnime { get; }
             = new ObservableCollection<MediaItem>();
 
 
@@ -101,18 +190,9 @@ namespace StremioVideoCenter.ViewModels
 
         public event PropertyChangedEventHandler PropertyChanged;
 
-
-        // =========================================================
-        // PROPERTY CHANGE HELPER
-        // =========================================================
-
-        protected virtual void OnPropertyChanged(
-            string propertyName)
+        protected virtual void OnPropertyChanged(string propertyName)
         {
-            PropertyChanged?.Invoke(
-                this,
-                new PropertyChangedEventArgs(
-                    propertyName));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
 
 
@@ -122,7 +202,20 @@ namespace StremioVideoCenter.ViewModels
 
         public HomeViewModel()
         {
-            LoadTestData();
+            ContinueWatching.CollectionChanged += ContinueWatching_CollectionChanged;
+            MyList.CollectionChanged += MyList_CollectionChanged;
+
+            LoadHeroFallbackData();
+        }
+
+        private void ContinueWatching_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
+        {
+            HasContinueWatching = ContinueWatching.Count > 0;
+        }
+
+        private void MyList_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
+        {
+            HasMyList = MyList.Count > 0;
         }
 
 
@@ -130,8 +223,7 @@ namespace StremioVideoCenter.ViewModels
         // LOAD HERO RECOMMENDATIONS
         // =========================================================
 
-        public async Task LoadHeroRecommendationsAsync(
-            HeroRecommendationService recommendationService)
+        public async Task LoadHeroRecommendationsAsync(HeroRecommendationService recommendationService)
         {
             if (recommendationService == null)
             {
@@ -140,12 +232,9 @@ namespace StremioVideoCenter.ViewModels
 
             try
             {
-                var recommendations =
-                    await recommendationService
-                        .GetRecommendationsAsync();
+                var recommendations = await recommendationService.GetRecommendationsAsync();
 
-                if (recommendations == null ||
-                    recommendations.Count == 0)
+                if (recommendations == null || recommendations.Count == 0)
                 {
                     return;
                 }
@@ -159,26 +248,89 @@ namespace StremioVideoCenter.ViewModels
 
                 CurrentHeroIndex = 0;
 
-                OnPropertyChanged(
-                    nameof(CurrentHeroItem));
+                OnPropertyChanged(nameof(CurrentHeroItem));
             }
             catch
             {
-                // The existing test HeroItems remain available.
+                // The existing fallback HeroItems remain available.
             }
         }
 
 
         // =========================================================
-        // TEST / FALLBACK DATA
+        // LOAD REAL CATALOGUE (Slice 15: Featured / Popular)
         // =========================================================
+        //
+        // Each of the six rows is fetched and swapped in independently -
+        // one row failing (a transient Cinemeta/TMDB error) never blanks
+        // a row that succeeded, and a row that fails simply keeps
+        // whatever it already had (empty on first load, or last
+        // session's data on a refresh) - same defensive shape as before
+        // this slice.
 
-        private void LoadTestData()
+        public async Task LoadCatalogueAsync(CatalogueService catalogueService)
         {
-            // =========================================================
-            // HERO CAROUSEL FALLBACK
-            // =========================================================
+            if (catalogueService == null)
+            {
+                return;
+            }
 
+            await LoadRowAsync(FeaturedMovies, () => catalogueService.GetFeaturedMoviesAsync());
+            await LoadRowAsync(PopularMovies, () => catalogueService.GetPopularMoviesAsync());
+
+            await LoadRowAsync(FeaturedShows, () => catalogueService.GetFeaturedTvShowsAsync());
+            await LoadRowAsync(PopularShows, () => catalogueService.GetPopularTvShowsAsync());
+
+            await LoadRowAsync(FeaturedAnime, () => catalogueService.GetFeaturedAnimeAsync());
+            await LoadRowAsync(PopularAnime, () => catalogueService.GetPopularAnimeAsync());
+        }
+
+        private async Task LoadRowAsync(
+            ObservableCollection<MediaItem> targetCollection,
+            Func<Task<List<MediaItem>>> fetchRow)
+        {
+            try
+            {
+                List<MediaItem> items = await fetchRow();
+
+                if (items == null || items.Count == 0)
+                {
+                    // Genuinely empty is a real, honest result - the
+                    // previous content (if any) is left in place rather
+                    // than cleared, so a row never flashes away on a
+                    // transient hiccup.
+                    return;
+                }
+
+                targetCollection.Clear();
+
+                foreach (MediaItem item in items)
+                {
+                    targetCollection.Add(item);
+                }
+            }
+            catch
+            {
+                // This row keeps whatever it already had - see method
+                // remarks.
+            }
+        }
+
+
+        // =========================================================
+        // HERO FALLBACK DATA
+        // =========================================================
+        //
+        // Hero is unaffected by this slice's catalogue restructure - it
+        // remains HeroRecommendationService's own TMDB-based
+        // recommendation feed, with this fixed fallback shown until that
+        // loads (or if it never configures). No catalogue/Continue-
+        // Watching/My-List dummy data is seeded here any more (see class
+        // remarks) - only the three pre-existing Hero fallback slides,
+        // unchanged from before this slice.
+
+        private void LoadHeroFallbackData()
+        {
             HeroItems.Add(new HeroItem
             {
                 Title = "The Last of Us",
@@ -192,7 +344,6 @@ namespace StremioVideoCenter.ViewModels
                 BackdropUrl =
                     "https://image.tmdb.org/t/p/w1280/9l1eZiJHmhr5jIlthMdJN5WYoff.jpg"
             });
-
 
             HeroItems.Add(new HeroItem
             {
@@ -208,7 +359,6 @@ namespace StremioVideoCenter.ViewModels
                     "https://image.tmdb.org/t/p/w1280/xJHokMbljvjADYdit5fK4wFro0c.jpg"
             });
 
-
             HeroItems.Add(new HeroItem
             {
                 Title = "Demon Slayer",
@@ -221,165 +371,6 @@ namespace StremioVideoCenter.ViewModels
                     "https://image.tmdb.org/t/p/w342/xUfRZu2mi8jH6SzQEJGP6tjBuYj.jpg",
                 BackdropUrl =
                     "https://image.tmdb.org/t/p/w1280/5s7fX4VhT0X9yQn5XQW6J7VY9bC.jpg"
-            });
-
-
-            // =========================================================
-            // CONTINUE WATCHING
-            // =========================================================
-
-            ContinueWatching.Add(new MediaItem
-            {
-                Title = "Demon Slayer",
-                Subtitle = "Season 4 • Episode 5",
-                Year = "2024",
-                Rating = "8.7",
-                Type = "Anime",
-                Progress = 0.65,
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/xUfRZu2mi8jH6SzQEJGP6tjBuYj.jpg"
-            });
-
-
-            ContinueWatching.Add(new MediaItem
-            {
-                Title = "The Last of Us",
-                Subtitle = "Season 2 • Episode 3",
-                Year = "2025",
-                Rating = "8.8",
-                Type = "TV",
-                Progress = 0.42,
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg"
-            });
-
-
-            // =========================================================
-            // MY LIST
-            // =========================================================
-
-            MyList.Add(new MediaItem
-            {
-                Title = "Interstellar",
-                Year = "2014",
-                Rating = "8.7",
-                Type = "Movie",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg"
-            });
-
-
-            MyList.Add(new MediaItem
-            {
-                Title = "One Piece",
-                Year = "1999",
-                Rating = "9.0",
-                Type = "Anime",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/fcXdJlbSdUEeMSJFsXKsznGwwok.jpg"
-            });
-
-
-            // =========================================================
-            // RECENTLY ADDED
-            // =========================================================
-
-            RecentlyAdded.Add(new MediaItem
-            {
-                Title = "Big Buck Bunny",
-                Year = "2010",
-                Rating = "7.5",
-                Type = "Movie",
-
-                StremioId = "tt1254207",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/8cdWjvZQUExUUTzyp4t6EDMubfO.jpg"
-            });
-
-
-            // =========================================================
-            // TOP MOVIES
-            // =========================================================
-
-            TopMovies.Add(new MediaItem
-            {
-                Title = "Interstellar",
-                Year = "2014",
-                Rating = "8.7",
-                Type = "Movie",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg"
-            });
-
-
-            TopMovies.Add(new MediaItem
-            {
-                Title = "Inception",
-                Year = "2010",
-                Rating = "8.8",
-                Type = "Movie",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/9gk7adHYeDvHkCSEqAvQNLV5Uge.jpg"
-            });
-
-
-            // =========================================================
-            // TOP TV
-            // =========================================================
-
-            TopShows.Add(new MediaItem
-            {
-                Title = "The Last of Us",
-                Year = "2025",
-                Rating = "8.8",
-                Type = "TV",
-
-                // Slice 12: verified against Wikidata's structured
-                // identifiers and TMDB's own page
-                // (themoviedb.org/tv/100088-the-last-of-us) - not invented.
-                // This is the existing verified TV test item already
-                // present in the repository; Breaking Bad is not added
-                // since it does not exist in this test data.
-                TmdbId = 100088,
-                StremioId = "tt3581920",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg"
-            });
-
-
-            // =========================================================
-            // TOP ANIME
-            // =========================================================
-
-            TopAnime.Add(new MediaItem
-            {
-                Title = "Demon Slayer",
-                Year = "2024",
-                Rating = "8.7",
-                Type = "Anime",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/xUfRZu2mi8jH6SzQEJGP6tjBuYj.jpg"
-            });
-
-
-            TopAnime.Add(new MediaItem
-            {
-                Title = "One Piece",
-                Year = "1999",
-                Rating = "9.0",
-                Type = "Anime",
-
-                PosterPath =
-                    "https://image.tmdb.org/t/p/w342/fcXdJlbSdUEeMSJFsXKsznGwwok.jpg"
             });
         }
     }

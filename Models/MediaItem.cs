@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Net;
@@ -40,6 +41,28 @@ namespace StremioVideoCenter.Models
         public string Year { get; set; }
 
         public string Type { get; set; }
+
+        // =========================================================
+        // EXTENDED CATALOGUE METADATA (Real Catalogue & Content
+        // Foundation)
+        // =========================================================
+        //
+        // Additive fields for real catalogue-sourced items (Home's
+        // Top/Trending/Recently Released rows). Null/empty for every
+        // MediaItem that predates this - nothing existing sets or reads
+        // these, so no prior behaviour changes. Not merged into
+        // Subtitle/Rating/etc. - those already carry a specific,
+        // established meaning throughout the codebase.
+
+        // Full synopsis/overview, distinct from the short Subtitle
+        // field (which today holds things like "Season 4 - Episode 5").
+        public string Overview { get; set; }
+
+        public List<string> Genres { get; set; }
+
+        // Full ISO date (e.g. "2025-01-15") where Year is only the
+        // 4-digit year. Movies: release_date. TV/Anime: first_air_date.
+        public string ReleaseDate { get; set; }
 
         // =========================================================
         // EPISODE IDENTITY (Slice 11)

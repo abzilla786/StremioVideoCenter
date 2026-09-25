@@ -1,5 +1,7 @@
 ﻿using Playnite.SDK;
 using Playnite.SDK.Data;
+using StremioVideoCenter.Models;
+using System;
 using System.Collections.Generic;
 
 namespace StremioVideoCenter
@@ -17,6 +19,9 @@ namespace StremioVideoCenter
         private string omdbApiKey = string.Empty;
         private string realDebridApiKey = string.Empty;
         private string stremioAddonUrls = "http://127.0.0.1:7000";
+        private List<AddonInstance> addonInstances = new List<AddonInstance>();
+        private List<string> seededCoreAddonProviderKeys = new List<string>();
+        private List<LibraryLocation> libraryLocations = new List<LibraryLocation>();
 
         // =========================================================
         // TMDB API CREDENTIAL
@@ -56,6 +61,175 @@ namespace StremioVideoCenter
         {
             get => stremioAddonUrls;
             set => SetValue(ref stremioAddonUrls, value);
+        }
+
+        // =========================================================
+        // STRUCTURED ADDON INSTANCES
+        // =========================================================
+        //
+        // Each entry is one configured Stremio addon (a manifest URL
+        // plus display/category metadata). This is additive to
+        // StremioAddonUrls above, not a replacement - see
+        // SyncLegacyAddonUrls for how the two stay in sync.
+
+        public List<AddonInstance> AddonInstances
+        {
+            get => addonInstances;
+            set => SetValue(ref addonInstances, value);
+        }
+
+        // =========================================================
+        // CORE ADDON SEEDING MEMORY
+        // =========================================================
+        //
+        // Records which core-addon ProviderKeys have EVER been
+        // successfully seeded (see CoreAddonSeedingService), independent
+        // of whether that instance still exists in AddonInstances today.
+        // This is what makes seeding idempotent AND respectful of user
+        // removal: a key is added here only once seeding actually
+        // succeeded, and is never removed just because the user later
+        // deletes that instance - so it is never silently recreated on a
+        // later launch. A key that failed to seed (e.g. no network on
+        // first run) is intentionally left OFF this list so seeding can
+        // retry on the next launch, since "core addons actually
+        // installed out of the box" is a hard shipping requirement.
+        public List<string> SeededCoreAddonProviderKeys
+        {
+            get => seededCoreAddonProviderKeys;
+            set => SetValue(ref seededCoreAddonProviderKeys, value);
+        }
+
+        // =========================================================
+        // LOCAL MEDIA LIBRARY LOCATIONS (Slice 15 - architecture only)
+        // =========================================================
+        //
+        // The Local Media / File Manager architecture's persisted state -
+        // just the list of folders the user has added as local media
+        // sources. Reuses this exact Playnite plugin-settings mechanism
+        // (the same one AddonInstances already uses) rather than a new
+        // file or database - see LocalLibraryService, which is the only
+        // class that reads/writes this list. No scan RESULTS are
+        // persisted here, only the locations themselves - scanning is
+        // on-demand this slice (see LocalMediaScanService remarks).
+        public List<LibraryLocation> LibraryLocations
+        {
+            get => libraryLocations;
+            set => SetValue(ref libraryLocations, value);
+        }
+
+        // =========================================================
+        // INSTALL OR REPLACE ADDON INSTANCE
+        // =========================================================
+        //
+        // Single entry point for adding a newly-fetched-and-validated
+        // AddonInstance to AddonInstances, honouring InstallPolicy:
+        //
+        //   ReplaceExisting (Torrentio/Comet): every existing instance
+        //   sharing the new instance's ProviderKey is removed, then the
+        //   new instance is added - so exactly one active instance per
+        //   ProviderKey ever exists. Callers must only invoke this AFTER
+        //   the new instance's manifest has already been fetched and
+        //   validated (see StremioVideoCenterSettingsView.
+        //   InstallAddonFromManifestUrlAsync) - this method itself does
+        //   no fetching, so the "never delete the old config first"
+        //   safety property comes from ordering at the call site, not
+        //   from anything here: by the time this runs, the replacement
+        //   is already known-good.
+        //
+        //   AllowMultiple (generic custom addons): unchanged prior
+        //   behaviour - simply appended, no removal.
+        //
+        // Never partially applies - the list is only mutated once, via
+        // Add/RemoveAll below, both of which are synchronous and cannot
+        // leave AddonInstances in an inconsistent in-between state.
+        public void InstallOrReplaceAddonInstance(AddonInstance newInstance)
+        {
+            if (newInstance == null)
+            {
+                return;
+            }
+
+            if (AddonInstances == null)
+            {
+                AddonInstances = new List<AddonInstance>();
+            }
+
+            bool isReplace =
+                string.Equals(
+                    newInstance.InstallPolicy,
+                    AddonInstallPolicy.ReplaceExisting,
+                    StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(newInstance.ProviderKey);
+
+            if (isReplace)
+            {
+                AddonInstances.RemoveAll(existing =>
+                    existing != null &&
+                    string.Equals(
+                        existing.ProviderKey,
+                        newInstance.ProviderKey,
+                        StringComparison.OrdinalIgnoreCase));
+            }
+
+            AddonInstances.Add(newInstance);
+        }
+
+        // =========================================================
+        // MIGRATE LEGACY ADDON URLS INTO ADDON INSTANCES
+        // =========================================================
+        //
+        // Backward-compatible, additive, one-directional migration:
+        // every URL already present in the legacy StremioAddonUrls
+        // setting that is not yet represented in AddonInstances (by
+        // case-insensitive ManifestUrl match) is added as a new
+        // "Legacy" category instance. StremioAddonUrls itself is never
+        // cleared or modified by this - both settings keep working
+        // side by side. Safe to call repeatedly (idempotent).
+        public void SyncLegacyAddonUrls()
+        {
+            if (AddonInstances == null)
+            {
+                AddonInstances = new List<AddonInstance>();
+            }
+
+            if (string.IsNullOrWhiteSpace(StremioAddonUrls))
+            {
+                return;
+            }
+
+            string[] lines = StremioAddonUrls.Split(
+                new[] { '\r', '\n' },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (string line in lines)
+            {
+                string trimmed = line.Trim();
+
+                if (string.IsNullOrWhiteSpace(trimmed))
+                {
+                    continue;
+                }
+
+                bool alreadyPresent = AddonInstances.Exists(instance =>
+                    instance != null &&
+                    string.Equals(
+                        instance.ManifestUrl,
+                        trimmed,
+                        StringComparison.OrdinalIgnoreCase));
+
+                if (alreadyPresent)
+                {
+                    continue;
+                }
+
+                AddonInstances.Add(new AddonInstance
+                {
+                    FriendlyName = trimmed,
+                    ManifestUrl = trimmed,
+                    Enabled = true,
+                    Category = "Legacy"
+                });
+            }
         }
     }
 
@@ -107,6 +281,47 @@ namespace StremioVideoCenter
                 // First launch - create default settings.
                 Settings = new StremioVideoCenterSettings();
             }
+
+            // One-directional, additive, idempotent migration - any
+            // legacy StremioAddonUrls entry not yet represented as an
+            // AddonInstance is added as one. Runs on every load so
+            // settings saved by an older build still pick up their
+            // instance the first time this Settings view is opened.
+            Settings.SyncLegacyAddonUrls();
+
+            // Fresh-install / core-addon seeding. Runs here (the plugin
+            // constructor's ISettings load, not just when the Settings
+            // UI happens to be opened) so a fresh install actually has
+            // Cinemeta/AnimeFLV/OpenSubtitles v3/Local Files registered
+            // the first time the user opens Video Center, not only after
+            // they visit Settings. Idempotent - see
+            // CoreAddonSeedingService and Settings.
+            // SeededCoreAddonProviderKeys for how repeat launches and
+            // user-removal are both respected. Only persists if seeding
+            // actually changed anything, so a normal launch with
+            // everything already seeded does not rewrite the settings
+            // file for no reason.
+            try
+            {
+                bool seeded =
+                    Services.CoreAddonSeedingService.SeedIfNeeded(Settings);
+
+                if (seeded)
+                {
+                    plugin.SavePluginSettings(Settings);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Seeding must never prevent the plugin from loading -
+                // Settings.AddonInstances is left exactly as it was
+                // before this attempt (SeedIfNeeded only mutates the
+                // list after each addon's own construction succeeds),
+                // and the next launch will simply retry.
+                Playnite.SDK.LogManager.GetLogger().Warn(
+                    ex,
+                    "Core addon seeding failed; will retry on next launch.");
+            }
         }
 
         // =========================================================
@@ -137,6 +352,10 @@ namespace StremioVideoCenter
 
         public void EndEdit()
         {
+            // Re-run the legacy-URL migration before saving in case the
+            // user edited StremioAddonUrls directly during this session.
+            Settings.SyncLegacyAddonUrls();
+
             // Save the current settings using Playnite's
             // standard plugin settings system.
             plugin.SavePluginSettings(Settings);

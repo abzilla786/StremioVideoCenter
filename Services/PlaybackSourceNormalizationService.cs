@@ -43,10 +43,26 @@ namespace StremioVideoCenter.Services
             new KeyValuePair<string, int>("2160p", 2160),
             new KeyValuePair<string, int>("4k", 2160),
             new KeyValuePair<string, int>("uhd", 2160),
+            new KeyValuePair<string, int>("1440p", 1440),
+            new KeyValuePair<string, int>("2k", 1440),
             new KeyValuePair<string, int>("1080p", 1080),
+            new KeyValuePair<string, int>("fhd", 1080),
             new KeyValuePair<string, int>("720p", 720),
+            new KeyValuePair<string, int>("576p", 576),
             new KeyValuePair<string, int>("480p", 480),
             new KeyValuePair<string, int>("360p", 360)
+        };
+
+        // Short, ambiguous resolution aliases (Slice 14 correction, added
+        // alongside Source Selector quality ordering) that need
+        // delimiter-aware matching rather than plain substring matching -
+        // the same technique already used below for the "dv" HDR token.
+        // Bare "hd"/"sd" would otherwise false-positive inside many
+        // unrelated release tags ("HDR10", "SDR", "HDCAM", etc).
+        private static readonly KeyValuePair<string, int>[] KnownDelimitedResolutionTokens = new[]
+        {
+            new KeyValuePair<string, int>("hd", 720),
+            new KeyValuePair<string, int>("sd", 480)
         };
 
         // Order matters: longer/more specific tokens are checked before
@@ -106,6 +122,7 @@ namespace StremioVideoCenter.Services
                 Title = source.Title,
                 Url = source.Url,
                 SourceAddonUrl = source.SourceAddonUrl,
+                SourceAddonName = source.SourceAddonName,
                 Kind = source.Kind
             };
 
@@ -126,7 +143,9 @@ namespace StremioVideoCenter.Services
             // kind of addon-embedded release/quality text.
             string searchText = BuildSearchText(source.Name, source.Title, normalized.Description);
 
-            normalized.ResolutionHeight = TryMatchIntToken(searchText, KnownResolutionTokens);
+            normalized.ResolutionHeight =
+                TryMatchIntToken(searchText, KnownResolutionTokens) ??
+                TryMatchDelimitedIntToken(searchText, KnownDelimitedResolutionTokens);
             normalized.CodecInfo = TryMatchToken(searchText, KnownVideoCodecTokens);
             normalized.HdrInfo = TryParseHdr(searchText);
             normalized.AtmosInfo = TryParseAtmos(searchText);
@@ -202,6 +221,24 @@ namespace StremioVideoCenter.Services
             foreach (KeyValuePair<string, int> token in tokens)
             {
                 if (searchText.Contains(token.Key))
+                {
+                    return token.Value;
+                }
+            }
+
+            return null;
+        }
+
+        // Delimiter-aware counterpart to TryMatchIntToken, for short/
+        // ambiguous tokens (see KnownDelimitedResolutionTokens) that would
+        // false-positive under plain substring matching. Reuses
+        // ContainsDelimitedToken, the same helper already relied on for
+        // the "dv" HDR token below.
+        private static int? TryMatchDelimitedIntToken(string searchText, KeyValuePair<string, int>[] tokens)
+        {
+            foreach (KeyValuePair<string, int> token in tokens)
+            {
+                if (ContainsDelimitedToken(searchText, token.Key))
                 {
                     return token.Value;
                 }
@@ -351,10 +388,12 @@ namespace StremioVideoCenter.Services
         // Hand-rolled, dependency-free checks against this pure function -
         // no test framework, no addon/network dependency. Constructs
         // synthetic StremioStream/PlaybackSource objects directly and
-        // asserts the expected normalized output. Exercised via a Settings
-        // button (RunSelfChecks_Click), separate from the live Big Buck
-        // Bunny regression test since these run instantly and need no
-        // network/addon at all.
+        // asserts the expected normalized output. Previously exercised via
+        // a Settings "Run Self-Checks" button, removed from that
+        // user-facing panel in a later correction pass (internal
+        // diagnostic UI, not something Zino's users need) - this method
+        // itself is left in place as a reusable, dependency-free
+        // diagnostic entry point on the production service.
 
         public static List<string> RunSelfChecks()
         {
@@ -386,6 +425,42 @@ namespace StremioVideoCenter.Services
                     NormalizedPlaybackSource normalized = NormalizeSynthetic(
                         normalizer, "1080p WEB-DL", null, null, null);
                     return normalized.ResolutionHeight == 1080;
+                }));
+
+            results.Add(RunCheck(
+                "1440p/2K token parses to ResolutionHeight 1440",
+                () =>
+                {
+                    NormalizedPlaybackSource normalized = NormalizeSynthetic(
+                        normalizer, "2K WEB-DL", null, null, null);
+                    return normalized.ResolutionHeight == 1440;
+                }));
+
+            results.Add(RunCheck(
+                "FHD token parses to ResolutionHeight 1080",
+                () =>
+                {
+                    NormalizedPlaybackSource normalized = NormalizeSynthetic(
+                        normalizer, "FHD WEB-DL", null, null, null);
+                    return normalized.ResolutionHeight == 1080;
+                }));
+
+            results.Add(RunCheck(
+                "Delimited HD token parses to ResolutionHeight 720",
+                () =>
+                {
+                    NormalizedPlaybackSource normalized = NormalizeSynthetic(
+                        normalizer, "Movie.2020.HD.WEB-DL", null, null, null);
+                    return normalized.ResolutionHeight == 720;
+                }));
+
+            results.Add(RunCheck(
+                "Bare HD token does NOT falsely match inside HDR10 (no resolution token present)",
+                () =>
+                {
+                    NormalizedPlaybackSource normalized = NormalizeSynthetic(
+                        normalizer, "HDR10 WEB-DL", null, null, null);
+                    return normalized.ResolutionHeight == null;
                 }));
 
             results.Add(RunCheck(

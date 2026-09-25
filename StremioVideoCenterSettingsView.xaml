@@ -79,83 +79,79 @@
                     FontSize="11"
                     TextWrapping="Wrap"/>
 
-
-                <!-- ========================================================= -->
-                <!-- TMDB DISCOVERY TEST                                        -->
-                <!-- ========================================================= -->
-
-                <Button
-                    x:Name="TestTmdbDiscoveryButton"
-                    Content="Test TMDB Discovery"
-                    Width="180"
-                    Height="30"
-                    HorizontalAlignment="Left"
-                    Margin="0,8,0,0"
-                    Click="TestTmdbDiscovery_Click"/>
-
-                <TextBlock
-                    x:Name="TmdbDiscoveryStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
             </StackPanel>
 
-
-            <!-- ========================================================= -->
-            <!-- OMDB SETTINGS                                              -->
-            <!-- ========================================================= -->
-
-            <TextBlock
-                Text="OMDb"
-                FontWeight="Bold"
-                FontSize="14"
-                Margin="0,0,0,8"/>
-
-            <TextBlock
-                Text="OMDb API Key"
-                Margin="0,0,0,5"/>
-
-            <PasswordBox
-                x:Name="OmdbApiKeyBox"
-                Height="28"
-                Margin="0,0,0,5"
-                PasswordChanged="OmdbApiKeyBox_PasswordChanged"/>
-
-            <StackPanel>
-
-                <TextBlock
-                    Text="Used for additional movie and TV metadata."
-                    Opacity="0.65"
-                    FontSize="11"
-                    Margin="0,0,0,8"/>
-
-                <Button
-                    x:Name="TestOmdbConnectionButton"
-                    Content="Test OMDb Connection"
-                    Width="180"
-                    Height="30"
-                    HorizontalAlignment="Left"
-                    Click="TestOmdbConnection_Click"/>
-
-                <TextBlock
-                    x:Name="OmdbConnectionStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
-            </StackPanel>
+            <!--
+                "Test TMDB Discovery" (a diagnostic button that exercised
+                HeroRecommendationService + GetBestTrailerOrTeaserAsync)
+                was removed here in Slice 13 (Cinemeta-First Provider &
+                Addon Architecture) - discovery is now validated through
+                the real Cinemeta-first catalogue/provider architecture
+                itself (Home loading, EpisodeBrowserView), not a separate
+                diagnostic control. "Test TMDB Connection" above is KEPT -
+                it proves the credential itself works, which is still a
+                legitimate, non-diagnostic setting now that TMDB is an
+                optional enhancement/fallback provider.
+            -->
 
 
             <!-- ========================================================= -->
             <!-- REAL-DEBRID SETTINGS                                       -->
             <!-- ========================================================= -->
+            <!--
+                OMDb's settings section was removed in the Cinemeta-First
+                Addon Settings Architecture slice - it was confirmed dead
+                beyond this panel's own test button (never read by
+                CatalogueService/HeroRecommendationService/Home). OmdbApiKey
+                and OmdbService.cs themselves are left completely intact in
+                the backend per project rule (do not delete working code
+                that isn't proven safe to remove) - only the user-facing
+                controls are gone.
+
+                This Real-Debrid section is KEPT, not removed, even though
+                Torrentio/Comet manifest URLs can carry their own baked-in
+                RD keys. Re-audited in a later correction pass, specifically
+                to check whether this standalone section was still
+                necessary now that Torrentio/Comet are configured via their
+                own manifest URLs. Findings (see
+                claude/Cinemeta_First_Addon_Settings_Architecture.md for the
+                full write-up):
+
+                1. RealDebridApiKey is the ONLY source of an RD credential
+                   anywhere in Zino's own code - nothing parses or reuses
+                   whatever RD key a user baked into a Torrentio/Comet
+                   manifest URL when configuring those addons on their own
+                   pages (and the addon protocol gives Zino no way to read
+                   that key even if it wanted to - it only ever sees each
+                   addon's resulting stream).
+                2. StreamResolverService.ResolveStreamAsync shows exactly
+                   when each credential matters: a stream that already
+                   arrives with a direct stream.Url (the addon resolved it
+                   server-side, using whatever RD key was in ITS manifest)
+                   plays with no Zino RD token involved at all. A stream
+                   that instead arrives as stream.InfoHash (a raw
+                   torrent/magnet Torrentio or Comet did not itself
+                   resolve) is handed to Zino's OWN RealDebridService,
+                   built from this RealDebridApiKey - and that call throws
+                   immediately if this field is empty.
+                3. This applies identically to Torrentio and Comet - both
+                   go through the exact same generic pipeline, with no
+                   provider-specific branching anywhere in
+                   StreamResolverService/RealDebridService.
+
+                So the addon's own manifest-level RD configuration cannot
+                substitute for this field: whether it's needed depends on
+                the individual stream, not on which addon returned it or
+                how that addon itself is configured. Removing this section
+                would break playback of every InfoHash-based stream from
+                either addon.
+            -->
 
             <TextBlock
                 Text="Real-Debrid"
                 FontWeight="Bold"
                 FontSize="14"
-                Margin="0,20,0,8"/>
+                Margin="0,0,0,8"/>
 
             <TextBlock
                 Text="Real-Debrid API Token"
@@ -170,9 +166,10 @@
             <StackPanel>
 
                 <TextBlock
-                    Text="Used to resolve torrent-based Stremio streams into direct playable links."
+                    Text="Used to resolve torrent/magnet-based Stremio streams into direct playable links. This is a separate credential from any Real-Debrid key you configured inside Torrentio or Comet's own manifest URL - it is still required here for any stream those addons return unresolved (as a torrent/magnet rather than a ready direct link)."
                     Opacity="0.65"
                     FontSize="11"
+                    TextWrapping="Wrap"
                     Margin="0,0,0,8"/>
 
                 <Button
@@ -192,182 +189,307 @@
             </StackPanel>
 
 
+            <!--
+                "Test Content Discovery" (a diagnostic button that proved
+                the TMDB -> Stremio content-id pipeline for a movie/TV
+                episode/anime episode against the local test addon) was
+                removed here in Slice 13 (Cinemeta-First Provider & Addon
+                Architecture) - inspection confirmed it was purely a
+                diagnostic control (never part of the real playback path;
+                PlaySelectedMediaAsync in StremioVideoCenterView.xaml.cs
+                builds its own ContentRequest directly from the selected
+                MediaItem, it never goes through this test's TMDB-lookup
+                code). Real content discovery is now exercised by the
+                actual Cinemeta-first catalogue/episode-browsing/playback
+                pipeline this slice implements, not a separate button.
+
+                The legacy "Stremio Addons" free-text section (a multiline
+                textbox of manifest URLs, defaulting to the local test
+                addon at 127.0.0.1:7000, plus a "Test Configured Addons"
+                button) was removed from this user-facing panel in an
+                earlier correction pass - the "Other Addons" installer
+                below is now the one user-facing way to add a manifest
+                URL, and having both was a duplicate configuration
+                mechanism.
+
+                Nothing about the underlying Settings.StremioAddonUrls
+                field or its default value was touched: it is still read
+                automatically (StremioVideoCenterSettings.SyncLegacyAddonUrls
+                migrates it into AddonInstances on load/save, and
+                StremioVideoCenterView.xaml.cs still falls back to it
+                directly at playback time). Only the dedicated free-text
+                editing UI, its own "test" button, and (this slice) the
+                Content Discovery diagnostic above are gone.
+            -->
+
             <!-- ========================================================= -->
-            <!-- CONTENT DISCOVERY TEST                                     -->
+            <!-- ADDON MANAGEMENT                                           -->
             <!-- ========================================================= -->
+            <!--
+                Structured addon instances (Models.AddonInstance), additive
+                to the legacy "Stremio Addons" section above - that section
+                and its StremioAddonUrls setting are left completely
+                untouched. Torrentio and Comet are "Recommended" here only
+                in the sense that Zino gives them a one-click path to their
+                own configuration page; every instance below (Recommended
+                or Custom) is installed through the exact same generic
+                "fetch + validate manifest.json" flow - there is no
+                addon-specific logic anywhere in this section.
+            -->
 
             <TextBlock
-                Text="Content Discovery"
+                Text="Addon Management"
                 FontWeight="Bold"
                 FontSize="14"
                 Margin="0,20,0,8"/>
 
-            <StackPanel>
-
-                <TextBlock
-                    Text="Proves the TMDB -&gt; Stremio content-id pipeline for a movie, a TV episode, and an anime episode. Requires a TMDB credential above; uses the local test addon."
-                    Opacity="0.65"
-                    FontSize="11"
-                    TextWrapping="Wrap"
-                    Margin="0,0,0,8"/>
-
-                <Button
-                    x:Name="TestContentDiscoveryButton"
-                    Content="Test Content Discovery"
-                    Width="180"
-                    Height="30"
-                    HorizontalAlignment="Left"
-                    Click="TestContentDiscovery_Click"/>
-
-                <TextBlock
-                    x:Name="ContentDiscoveryStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
-            </StackPanel>
-
-
-            <!-- ========================================================= -->
-            <!-- STREMIO ADDONS                                             -->
-            <!-- ========================================================= -->
-
             <TextBlock
-                Text="Stremio Addons"
-                FontWeight="Bold"
-                FontSize="14"
-                Margin="0,20,0,8"/>
-
-            <TextBlock
-                Text="One manifest/base addon URL per line."
-                Margin="0,0,0,5"/>
-
-            <TextBox
-                x:Name="StremioAddonUrlsBox"
-                Height="80"
-                Margin="0,0,0,5"
-                AcceptsReturn="True"
+                Text="Cinemeta, AnimeFLV, OpenSubtitles, OpenSubtitles v3 and Local Files are installed automatically as Zino's core addons - see the Installed Addon Instances list below. Torrentio and Comet are recommended stream providers configured entirely on their own page - Zino never reproduces that page. Open it, configure your preferences there, then paste the manifest URL it gives you back here. Re-pasting a new URL replaces the previous configuration; it never creates a duplicate entry."
+                Opacity="0.65"
+                FontSize="11"
                 TextWrapping="Wrap"
-                VerticalScrollBarVisibility="Auto"
-                TextChanged="StremioAddonUrlsBox_TextChanged"/>
+                Margin="0,0,0,14"/>
 
-            <StackPanel>
+            <!--
+                Torrentio/Comet button states (correction pass): the top
+                button reads "Configure & Install..." when nothing is
+                configured yet, or "Reconfigure" once an instance exists -
+                both open the provider's own configuration page, since
+                reconfiguring means going back there for a fresh manifest
+                URL. A "Remove" button appears alongside it only once
+                configured. Both are toggled from code-behind
+                (RefreshAddonInstancesList/ApplyProviderButtonState) since
+                this project does not use XAML triggers/converters for
+                this kind of state. Widths are shared between Torrentio
+                and Comet and sized so neither label is ever clipped.
+            -->
 
-                <TextBlock
-                    Text="The local test addon is included by default so existing regression testing continues to work."
-                    Opacity="0.65"
-                    FontSize="11"
-                    TextWrapping="Wrap"
-                    Margin="0,0,0,8"/>
-
-                <Button
-                    x:Name="TestConfiguredAddonsButton"
-                    Content="Test Configured Addons"
-                    Width="180"
-                    Height="30"
-                    HorizontalAlignment="Left"
-                    Click="TestConfiguredAddons_Click"/>
-
-                <TextBlock
-                    x:Name="AddonTestStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
-            </StackPanel>
-
-
-            <!-- ========================================================= -->
-            <!-- SOURCE AGGREGATION TEST                                    -->
-            <!-- ========================================================= -->
+            <!-- Torrentio -->
+            <TextBlock
+                Text="Torrentio"
+                FontWeight="SemiBold"
+                Margin="0,0,0,4"/>
 
             <TextBlock
-                Text="Source Aggregation"
-                FontWeight="Bold"
-                FontSize="14"
-                Margin="0,20,0,8"/>
+                x:Name="TorrentioCurrentStatus"
+                Text="Not configured."
+                Opacity="0.6"
+                FontSize="11"
+                Margin="0,0,0,6"/>
 
-            <StackPanel>
-
-                <TextBlock
-                    Text="Proves the full backend: configured addons -&gt; aggregated streams -&gt; resolved candidate playback sources (Direct and Real-Debrid), deduplicated, for a movie, a TV episode, and an anime episode."
-                    Opacity="0.65"
-                    FontSize="11"
-                    TextWrapping="Wrap"
-                    Margin="0,0,0,8"/>
-
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                 <Button
-                    x:Name="TestSourceAggregationButton"
-                    Content="Test Source Aggregation"
-                    Width="180"
-                    Height="30"
+                    x:Name="TorrentioConfigureButton"
+                    Content="Configure &amp; Install..."
+                    Width="190"
+                    Height="28"
                     HorizontalAlignment="Left"
-                    Click="TestSourceAggregation_Click"/>
-
-                <TextBlock
-                    x:Name="SourceAggregationStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
+                    Click="TorrentioConfigure_Click"/>
+                <Button
+                    x:Name="TorrentioRemoveButton"
+                    Content="Remove"
+                    Width="90"
+                    Height="28"
+                    Margin="6,0,0,0"
+                    Visibility="Collapsed"
+                    Click="TorrentioRemove_Click"/>
             </StackPanel>
 
-
-            <!-- ========================================================= -->
-            <!-- SOURCE NORMALISATION TEST                                  -->
-            <!-- ========================================================= -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                <TextBox
+                    x:Name="TorrentioManifestUrlBox"
+                    Width="380"
+                    Height="26"/>
+                <Button
+                    x:Name="TorrentioInstallButton"
+                    Content="Install"
+                    Width="90"
+                    Height="26"
+                    Margin="6,0,0,0"
+                    Click="TorrentioInstall_Click"/>
+            </StackPanel>
 
             <TextBlock
-                Text="Source Normalisation"
-                FontWeight="Bold"
-                FontSize="14"
-                Margin="0,20,0,8"/>
+                x:Name="TorrentioInstallStatus"
+                Margin="0,4,0,16"
+                FontSize="11"
+                TextWrapping="Wrap"/>
 
-            <StackPanel>
+            <!-- Comet -->
+            <TextBlock
+                Text="Comet"
+                FontWeight="SemiBold"
+                Margin="0,0,0,4"/>
 
-                <TextBlock
-                    Text="Proves normalisation of a resolved source into a consistent, addon-independent representation, using Big Buck Bunny (tt1254207) against the local test addon."
-                    Opacity="0.65"
-                    FontSize="11"
-                    TextWrapping="Wrap"
-                    Margin="0,0,0,8"/>
+            <TextBlock
+                x:Name="CometCurrentStatus"
+                Text="Not configured."
+                Opacity="0.6"
+                FontSize="11"
+                Margin="0,0,0,6"/>
 
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                 <Button
-                    x:Name="TestSourceNormalisationButton"
-                    Content="Test Source Normalisation"
-                    Width="220"
-                    Height="30"
+                    x:Name="CometConfigureButton"
+                    Content="Configure &amp; Install..."
+                    Width="190"
+                    Height="28"
                     HorizontalAlignment="Left"
-                    Click="TestSourceNormalisation_Click"/>
-
-                <TextBlock
-                    x:Name="SourceNormalisationStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
-                <TextBlock
-                    Text="Deterministic self-checks against the pure parsing logic - no network/addon required."
-                    Opacity="0.65"
-                    FontSize="11"
-                    TextWrapping="Wrap"
-                    Margin="0,16,0,8"/>
-
+                    Click="CometConfigure_Click"/>
                 <Button
-                    x:Name="RunSelfChecksButton"
-                    Content="Run Self-Checks"
-                    Width="180"
-                    Height="30"
-                    HorizontalAlignment="Left"
-                    Click="RunSelfChecks_Click"/>
-
-                <TextBlock
-                    x:Name="SelfCheckStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
+                    x:Name="CometRemoveButton"
+                    Content="Remove"
+                    Width="90"
+                    Height="28"
+                    Margin="6,0,0,0"
+                    Visibility="Collapsed"
+                    Click="CometRemove_Click"/>
             </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                <TextBox
+                    x:Name="CometManifestUrlBox"
+                    Width="380"
+                    Height="26"/>
+                <Button
+                    x:Name="CometInstallButton"
+                    Content="Install"
+                    Width="90"
+                    Height="26"
+                    Margin="6,0,0,0"
+                    Click="CometInstall_Click"/>
+            </StackPanel>
+
+            <TextBlock
+                x:Name="CometInstallStatus"
+                Margin="0,4,0,16"
+                FontSize="11"
+                TextWrapping="Wrap"/>
+
+            <!-- Custom -->
+            <TextBlock
+                Text="Other Addons"
+                FontWeight="SemiBold"
+                Margin="0,0,0,4"/>
+
+            <TextBlock
+                Text="Add any other Stremio-compatible addon by its manifest URL (base URL or the full .../manifest.json). Multiple instances are allowed here, unlike Torrentio/Comet above."
+                Opacity="0.65"
+                FontSize="11"
+                TextWrapping="Wrap"
+                Margin="0,0,0,4"/>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                <TextBox
+                    x:Name="CustomManifestUrlBox"
+                    Width="380"
+                    Height="26"/>
+                <Button
+                    x:Name="CustomInstallButton"
+                    Content="Add Addon"
+                    Width="90"
+                    Height="26"
+                    Margin="6,0,0,0"
+                    Click="CustomInstall_Click"/>
+            </StackPanel>
+
+            <TextBlock
+                x:Name="CustomInstallStatus"
+                Margin="0,4,0,16"
+                FontSize="11"
+                TextWrapping="Wrap"/>
+
+            <!-- Installed instances -->
+            <TextBlock
+                Text="Installed Addon Instances"
+                FontWeight="SemiBold"
+                Margin="0,4,0,4"/>
+
+            <TextBlock
+                x:Name="NoAddonInstancesText"
+                Text="No addons installed yet."
+                Opacity="0.5"
+                FontSize="11"
+                Margin="0,0,0,8"/>
+
+            <ItemsControl
+                x:Name="AddonInstancesItemsControl"
+                Margin="0,0,0,8">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border
+                            BorderBrush="#33FFFFFF"
+                            BorderThickness="0,0,0,1"
+                            Padding="0,6,0,6"
+                            Margin="0,0,0,2">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                    <TextBlock
+                                        Text="{Binding FriendlyName}"
+                                        FontWeight="SemiBold"
+                                        FontSize="12"/>
+                                    <!--
+                                        Category only - NEVER ManifestUrl. For
+                                        a Real-Debrid-configured addon
+                                        (Torrentio, Comet, or any manifest URL
+                                        with baked-in credentials) that URL is
+                                        a secret and must never be displayed
+                                        here (Cinemeta-First Addon Settings
+                                        Architecture slice, Part 9).
+                                    -->
+                                    <TextBlock
+                                        Text="{Binding Category}"
+                                        FontSize="10"
+                                        Opacity="0.6"
+                                        TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <CheckBox
+                                    Grid.Column="1"
+                                    Content="Enabled"
+                                    IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                    VerticalAlignment="Center"
+                                    Margin="8,0,8,0"/>
+
+                                <Button
+                                    Grid.Column="2"
+                                    Content="Remove"
+                                    Width="70"
+                                    Height="24"
+                                    VerticalAlignment="Center"
+                                    Tag="{Binding}"
+                                    Click="RemoveAddonInstance_Click"/>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!--
+                The internal diagnostic sections that used to appear here
+                (Source Aggregation, Source Normalisation, and the
+                dependency-free Self-Checks) were removed from this
+                user-facing Settings page in this correction pass - they
+                were development-only tools, not something Zino's actual
+                users need. Their code-behind handlers
+                (TestSourceAggregation_Click, FormatAggregationResult,
+                TestSourceNormalisation_Click, RedactUrlIfNeeded,
+                FormatFileSize, RunSelfChecks_Click) were unused anywhere
+                else and were removed with them.
+                PlaybackSourceAggregationService and
+                PlaybackSourceNormalizationService themselves - the actual
+                production services those buttons exercised - are
+                untouched; they remain in active use by the real
+                playback/browsing pipeline
+                (StremioVideoCenterView.xaml.cs, EpisodeBrowserView.xaml.cs,
+                CatalogueService.cs).
+            -->
 
         </StackPanel>
 

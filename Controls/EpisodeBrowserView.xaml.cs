@@ -3,11 +3,14 @@ using StremioVideoCenter.Models;
 using StremioVideoCenter.Services;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace StremioVideoCenterControls
@@ -22,15 +25,30 @@ namespace StremioVideoCenterControls
         }
     }
 
-    // Season -> episode browsing overlay. LoadAsync(show, tmdbService)
-    // fetches the show's seasons by reusing the existing TmdbService (no
-    // new HTTP client, no new TMDB service, no duplicate Stremio request
-    // logic anywhere in this class), lets the user pick a season, then an
-    // episode, and raises EpisodeSelected with a fully-built episode-shaped
-    // MediaItem. StremioId is set to the SHOW's IMDb id, with Season/
-    // Episode set separately - never a pre-combined "id:s:e" string, so
-    // ContentRequest.BuildStremioId() remains the single, authoritative
-    // place that assembles the Stremio episode id.
+    // Season -> episode browsing overlay. LoadAsync(show, cinemetaService,
+    // tmdbService) fetches the show's seasons/episodes, lets the user
+    // pick a season, then an episode, and raises EpisodeSelected with a
+    // fully-built episode-shaped MediaItem. StremioId is set to the
+    // SHOW's IMDb id, with Season/Episode set separately - never a
+    // pre-combined "id:s:e" string, so ContentRequest.BuildStremioId()
+    // remains the single, authoritative place that assembles the Stremio
+    // episode id.
+    //
+    // Slice 13 (Cinemeta-First Provider & Addon Architecture): this
+    // control is now Cinemeta-first. LoadAsync tries the show's IMDb id
+    // (MediaItem.StremioId) against CinemetaService.GetMetaAsync("series",
+    // ...) first - Cinemeta needs no credential and returns every
+    // episode/season for a series in one call (its "videos" array,
+    // grouped here by season). TmdbService is only used as a fallback
+    // when Cinemeta has no data for this show (unreachable, or no
+    // Cinemeta entry for this IMDb id) AND a TmdbService is configured -
+    // tmdbService is therefore nullable now, matching "TMDB is optional"
+    // everywhere else in this slice. Reuses the exact same TmdbSeasonSummary/
+    // TmdbEpisodeDetails display DTOs for both providers (they are plain,
+    // provider-agnostic display shapes already - see BuildSeasonButton/
+    // BuildEpisodeButton below, which are completely unchanged by this
+    // slice) so the UI-building code never needs to know which provider
+    // supplied the data - only the two LOAD methods differ.
     //
     // Slice 12 polish: seasons (left) and episodes (right) are now two
     // permanently visible, independently scrolling vertical panels rather
@@ -55,11 +73,19 @@ namespace StremioVideoCenterControls
         private readonly List<Border> _seasonActiveIndicators = new List<Border>();
         private readonly List<Button> _episodeButtons = new List<Button>();
 
+        private CinemetaService _cinemetaService;
         private TmdbService _tmdbService;
         private MediaItem _show;
         private string _showImdbId;
         private int _showTmdbId;
         private List<TmdbEpisodeDetails> _currentSeasonEpisodes;
+
+        // Non-null only when Cinemeta successfully supplied this show's
+        // episodes - the full flat "videos" list for the series, every
+        // season included. When set, season switches are a local filter
+        // (see LoadEpisodesFromCinemeta) rather than a new network call.
+        // Null when the TMDB fallback path is in use instead.
+        private List<CinemetaVideo> _cinemetaEpisodes;
 
         public event EventHandler<EpisodeSelectedEventArgs> EpisodeSelected;
         public event EventHandler BrowsingCancelled;
@@ -73,22 +99,126 @@ namespace StremioVideoCenterControls
         // LOAD
         // =========================================================
 
-        public async Task LoadAsync(MediaItem show, TmdbService tmdbService)
+        public async Task LoadAsync(
+            MediaItem show,
+            CinemetaService cinemetaService,
+            TmdbService tmdbService)
         {
             if (show == null)
             {
                 throw new ArgumentNullException(nameof(show));
             }
 
-            if (tmdbService == null)
+            if (cinemetaService == null)
             {
-                throw new ArgumentNullException(nameof(tmdbService));
+                throw new ArgumentNullException(nameof(cinemetaService));
             }
 
+            // tmdbService may be null - TMDB is optional (Slice 13). Only
+            // reached at all if Cinemeta has no data for this show.
             _show = show;
+            _cinemetaService = cinemetaService;
             _tmdbService = tmdbService;
+            _cinemetaEpisodes = null;
+            _showImdbId = null;
+            _showTmdbId = 0;
 
-            if (!show.TmdbId.HasValue)
+            bool loadedFromCinemeta = await TryLoadFromCinemetaAsync(show);
+
+            if (loadedFromCinemeta)
+            {
+                return;
+            }
+
+            await LoadFromTmdbAsync(show);
+        }
+
+        // =========================================================
+        // LOAD: CINEMETA (primary)
+        // =========================================================
+        //
+        // Returns true only when Cinemeta actually supplied usable
+        // season/episode data and the browser has already been
+        // populated - false means "Cinemeta had nothing for this show,
+        // try the TMDB fallback" (not itself an error state).
+        private async Task<bool> TryLoadFromCinemetaAsync(MediaItem show)
+        {
+            if (string.IsNullOrWhiteSpace(show.StremioId) ||
+                !show.StremioId.StartsWith("tt", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            CinemetaMeta meta;
+
+            try
+            {
+                meta = await _cinemetaService.GetMetaAsync("series", show.StremioId);
+            }
+            catch
+            {
+                // CinemetaService itself is fail-soft (never throws) - this
+                // is a defensive backstop only, not the expected path.
+                meta = null;
+            }
+
+            if (meta == null || meta.Videos == null || meta.Videos.Count == 0)
+            {
+                return false;
+            }
+
+            _showImdbId = show.StremioId;
+            _cinemetaEpisodes = meta.Videos;
+
+            List<TmdbSeasonSummary> seasons = BuildSeasonSummariesFromCinemeta(_cinemetaEpisodes);
+
+            if (seasons.Count == 0)
+            {
+                // Cinemeta returned a meta object but with no usable
+                // season/episode grouping - fall back to TMDB rather than
+                // showing an empty browser for a show TMDB might still be
+                // able to describe.
+                _cinemetaEpisodes = null;
+                _showImdbId = null;
+                return false;
+            }
+
+            UpdateShowInfoText();
+
+            BrowserContentGrid.Visibility = Visibility.Visible;
+            EmptyStatePanel.Visibility = Visibility.Collapsed;
+
+            BuildSeasonButtons(seasons);
+
+            if (_seasonButtons.Count > 0)
+            {
+                SetActiveSeasonIndex(0);
+
+                TmdbSeasonSummary firstSeason = _seasonButtons[0].Tag as TmdbSeasonSummary;
+
+                if (firstSeason != null)
+                {
+                    LoadEpisodesFromCinemeta(firstSeason.SeasonNumber);
+                }
+
+                Dispatcher.BeginInvoke(
+                    new Action(() => FocusElement(_seasonButtons[0])),
+                    DispatcherPriority.Input);
+            }
+
+            return true;
+        }
+
+        // =========================================================
+        // LOAD: TMDB (fallback, only when Cinemeta had no data)
+        // =========================================================
+        //
+        // Exactly the original (pre-Slice-13) TMDB-only flow, unchanged
+        // in behaviour - only reached when Cinemeta could not supply
+        // this show's seasons/episodes and a TmdbService is configured.
+        private async Task LoadFromTmdbAsync(MediaItem show)
+        {
+            if (_tmdbService == null || !show.TmdbId.HasValue)
             {
                 ShowEmptyState("Season information isn't available for this title.");
                 return;
@@ -275,11 +405,134 @@ namespace StremioVideoCenterControls
 
             SetActiveSeasonIndex(_seasonButtons.IndexOf(button));
 
-            await LoadEpisodesAsync(season);
+            // Cinemeta already delivered every season's episodes in one
+            // call (LoadAsync) - switching seasons is a local filter, not
+            // a new network request. Only the TMDB fallback path fetches
+            // per season.
+            if (_cinemetaEpisodes != null)
+            {
+                LoadEpisodesFromCinemeta(season.SeasonNumber);
+            }
+            else
+            {
+                await LoadEpisodesAsync(season);
+            }
         }
 
         // =========================================================
-        // EPISODE PANEL
+        // EPISODE PANEL - CINEMETA (local filter, no network call)
+        // =========================================================
+
+        private void LoadEpisodesFromCinemeta(int seasonNumber)
+        {
+            List<CinemetaVideo> episodesInSeason =
+                _cinemetaEpisodes
+                    .Where(video => video != null && video.Season == seasonNumber)
+                    .OrderBy(video => video.Number)
+                    .ToList();
+
+            if (episodesInSeason.Count == 0)
+            {
+                ShowEpisodePanelMessage("No episodes found for this season.");
+                return;
+            }
+
+            _currentSeasonEpisodes =
+                episodesInSeason
+                    .Select(BuildEpisodeDetailsFromCinemeta)
+                    .ToList();
+
+            BuildEpisodeButtons(_currentSeasonEpisodes);
+
+            if (_episodeButtons.Count > 0)
+            {
+                Dispatcher.BeginInvoke(
+                    new Action(() => FocusElement(_episodeButtons[0])),
+                    DispatcherPriority.Input);
+            }
+        }
+
+        // Groups Cinemeta's flat per-series "videos" list into one
+        // TmdbSeasonSummary per distinct season number. Name is
+        // deliberately left blank - BuildSeasonButton already falls back
+        // to "Season N" / "Specials" (season 0) when Name is empty,
+        // exactly the label Cinemeta has no equivalent field for, so no
+        // duplicate labelling logic is needed here.
+        private static List<TmdbSeasonSummary> BuildSeasonSummariesFromCinemeta(
+            List<CinemetaVideo> videos)
+        {
+            return videos
+                .Where(video => video != null)
+                .GroupBy(video => video.Season)
+                .OrderBy(group => group.Key)
+                .Select(group => new TmdbSeasonSummary
+                {
+                    SeasonNumber = group.Key,
+                    EpisodeCount = group.Count()
+                })
+                .ToList();
+        }
+
+        // Maps one Cinemeta episode into the same TmdbEpisodeDetails
+        // shape BuildEpisodeButton/BuildEpisodeMediaItem already consume -
+        // these are plain, provider-agnostic display DTOs (see class
+        // remarks), so no change to the UI-building code below is needed.
+        private static TmdbEpisodeDetails BuildEpisodeDetailsFromCinemeta(CinemetaVideo video)
+        {
+            double voteAverage;
+            double.TryParse(
+                video.Rating,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out voteAverage);
+
+            string overview = !string.IsNullOrWhiteSpace(video.Overview)
+                ? video.Overview
+                : video.Description;
+
+            string airDate = !string.IsNullOrWhiteSpace(video.FirstAired)
+                ? video.FirstAired
+                : video.Released;
+
+            return new TmdbEpisodeDetails
+            {
+                EpisodeNumber = video.Number,
+                SeasonNumber = video.Season,
+                Name = video.Name,
+                Overview = overview,
+                // Cinemeta thumbnails are already full, absolute URLs
+                // (episodes.metahub.space) - unlike TMDB's relative
+                // still_path. BuildEpisodeMediaItem below already handles
+                // both shapes (an "http..." value is used as-is).
+                StillPath = video.Thumbnail,
+                AirDate = NormalizeCinemetaDate(airDate),
+                // Runtime: Cinemeta doesn't expose a per-episode runtime -
+                // left null, exactly like a TMDB episode with none.
+                VoteAverage = voteAverage
+            };
+        }
+
+        // Cinemeta's firstAired/released values are full ISO 8601
+        // timestamps (e.g. "2011-04-18T00:00:00.000Z"); TMDB's air_date is
+        // a plain "yyyy-MM-dd". Truncated to the same shape so
+        // BuildEpisodeMediaItem's existing "AirDate.Substring(0, 4)" year
+        // extraction keeps working unchanged for either provider.
+        private static string NormalizeCinemetaDate(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+
+            int separatorIndex = value.IndexOf('T');
+
+            return separatorIndex > 0
+                ? value.Substring(0, separatorIndex)
+                : value;
+        }
+
+        // =========================================================
+        // EPISODE PANEL - TMDB (fallback)
         // =========================================================
 
         private async Task LoadEpisodesAsync(TmdbSeasonSummary season)
@@ -354,12 +607,32 @@ namespace StremioVideoCenterControls
             }
         }
 
+        // Slice 14 (Complete TV Experience): episode cards are now a
+        // landscape thumbnail + info layout instead of text-only, so the
+        // button's Content is a two-column Grid (thumbnail | text stack)
+        // rather than a single StackPanel. EpisodeCardButtonStyle itself
+        // (focus/hover/accent-bar template) is unchanged, so keyboard/
+        // controller focus and activation behaviour are unaffected -
+        // only what's inside the button changed.
         private Button BuildEpisodeButton(TmdbEpisodeDetails episode)
         {
-            StackPanel content = new StackPanel();
+            Grid rootGrid = new Grid();
+            rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-            string primaryLabel = "Episode " + episode.EpisodeNumber +
-                (!string.IsNullOrWhiteSpace(episode.Name) ? ": " + episode.Name : string.Empty);
+            Border thumbnail = BuildEpisodeThumbnail(episode);
+            Grid.SetColumn(thumbnail, 0);
+            rootGrid.Children.Add(thumbnail);
+
+            StackPanel content = new StackPanel { VerticalAlignment = VerticalAlignment.Top };
+            Grid.SetColumn(content, 1);
+
+            string episodeCode =
+                "S" + episode.SeasonNumber.ToString().PadLeft(2, '0') +
+                "E" + episode.EpisodeNumber.ToString().PadLeft(2, '0');
+
+            string primaryLabel = episodeCode +
+                (!string.IsNullOrWhiteSpace(episode.Name) ? " — " + episode.Name : string.Empty);
 
             content.Children.Add(new TextBlock
             {
@@ -410,16 +683,107 @@ namespace StremioVideoCenterControls
                 });
             }
 
+            rootGrid.Children.Add(content);
+
             Button button = new Button
             {
                 Style = (Style)Resources["EpisodeCardButtonStyle"],
-                Content = content,
+                Content = rootGrid,
                 Tag = episode
             };
 
             button.Click += EpisodeButton_Click;
 
             return button;
+        }
+
+        // Landscape (16:9) thumbnail with a graceful fallback glyph
+        // underneath - the fallback is always added first (bottom layer),
+        // so a missing StillPath, a malformed URL, or a failed download
+        // all just leave the fallback visible rather than showing a
+        // broken-image control. Cinemeta's thumbnail is already an
+        // absolute URL; TMDB's still_path needs TmdbImageBaseUrl
+        // prepended - handled the same way BuildEpisodeMediaItem already
+        // handles PosterPath below.
+        private const string EpisodeThumbnailFallbackGlyph = "🎬";
+
+        private static Border BuildEpisodeThumbnail(TmdbEpisodeDetails episode)
+        {
+            Border container = new Border
+            {
+                Width = 160,
+                Height = 90,
+                Background = new SolidColorBrush(Color.FromRgb(0x25, 0x25, 0x29)),
+                CornerRadius = new CornerRadius(6),
+                ClipToBounds = true,
+                Margin = new Thickness(0, 0, 16, 0),
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            Grid grid = new Grid();
+
+            grid.Children.Add(new TextBlock
+            {
+                Text = EpisodeThumbnailFallbackGlyph,
+                FontSize = 26,
+                Opacity = 0.35,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+
+            string thumbnailUrl = !string.IsNullOrWhiteSpace(episode.StillPath)
+                ? (episode.StillPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                    ? episode.StillPath
+                    : TmdbImageBaseUrl + episode.StillPath)
+                : null;
+
+            if (!string.IsNullOrWhiteSpace(thumbnailUrl))
+            {
+                BitmapImage bitmap = TryCreateBitmapImage(thumbnailUrl);
+
+                if (bitmap != null)
+                {
+                    grid.Children.Add(new Image
+                    {
+                        Source = bitmap,
+                        Stretch = Stretch.UniformToFill
+                    });
+                }
+            }
+
+            container.Child = grid;
+
+            return container;
+        }
+
+        // WPF downloads a BitmapImage with a remote UriSource
+        // asynchronously and simply renders nothing if the download
+        // fails - no "broken image" glyph is ever shown natively, so a
+        // malformed URL (caught here) or a failed download (left to WPF)
+        // both degrade to the fallback glyph behind it. Never throws.
+        private static BitmapImage TryCreateBitmapImage(string url)
+        {
+            try
+            {
+                Uri uri;
+
+                if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+                {
+                    return null;
+                }
+
+                BitmapImage bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.UriSource = uri;
+                bitmap.CacheOption = BitmapCacheOption.OnDemand;
+                bitmap.EndInit();
+
+                return bitmap;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private void EpisodeButton_Click(object sender, RoutedEventArgs e)
@@ -470,7 +834,13 @@ namespace StremioVideoCenterControls
                     (!string.IsNullOrWhiteSpace(episode.Name)
                         ? " - " + episode.Name
                         : " - S" + episode.SeasonNumber + "E" + episode.EpisodeNumber),
-                Subtitle = "Season " + episode.SeasonNumber + " \u00B7 Episode " + episode.EpisodeNumber
+                Subtitle = "Season " + episode.SeasonNumber + " \u00B7 Episode " + episode.EpisodeNumber,
+                // Slice 14: carries the episode's overview/air-date through
+                // the existing ContentRequest/MediaItem pipeline so the
+                // Source Selector can show full episode context without a
+                // second network request - see SourceSelectorView.Populate.
+                Overview = episode.Overview,
+                ReleaseDate = episode.AirDate
             };
 
             if (!string.IsNullOrWhiteSpace(episode.AirDate) && episode.AirDate.Length >= 4)
@@ -485,7 +855,17 @@ namespace StremioVideoCenterControls
 
             if (!string.IsNullOrWhiteSpace(episode.StillPath))
             {
-                episodeItem.PosterPath = TmdbImageBaseUrl + episode.StillPath;
+                // Slice 13: episode.StillPath may now come from either
+                // provider - TMDB's still_path is a relative path segment
+                // (needs TmdbImageBaseUrl prepended), while Cinemeta's
+                // thumbnail is already a full, absolute URL. Used as-is
+                // when it already looks absolute, exactly like
+                // CatalogueService.BuildMediaItemsFromCinemeta already
+                // does for poster URLs.
+                episodeItem.PosterPath =
+                    episode.StillPath.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                        ? episode.StillPath
+                        : TmdbImageBaseUrl + episode.StillPath;
             }
             else if (!string.IsNullOrWhiteSpace(_show.PosterPath))
             {

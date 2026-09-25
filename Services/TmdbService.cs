@@ -132,6 +132,227 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
+        // TOP RATED MOVIES (Slice: Real Catalogue & Content Foundation)
+        // =========================================================
+        //
+        // Genuine TMDB "top rated" resource - distinct from
+        // GetMovieCandidatesAsync's popularity-sorted discover query.
+        // Used as the Home "Top 10 Movies" source.
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetTopRatedMoviesAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "movie/top_rated" +
+                "?language=en-US" +
+                "&page=" +
+                page;
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // TRENDING MOVIES
+        // =========================================================
+        //
+        // Genuine TMDB "trending" resource (week window, a reasonable
+        // default that avoids Home content churning every single day).
+        // There is no discover/search equivalent for this - it is a
+        // real, distinct TMDB concept, not something approximated from
+        // popularity.
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetTrendingMoviesAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "trending/movie/week" +
+                "?language=en-US" +
+                "&page=" +
+                page;
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // RECENTLY RELEASED MOVIES
+        // =========================================================
+        //
+        // Genuine TMDB "now playing" resource - titles TMDB itself
+        // considers currently/recently in theatrical release. This is
+        // the honest "Recently Released" mapping; it is not a
+        // discover query sorted by date (which would surface titles
+        // dated in the future or with negligible vote counts).
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetNowPlayingMoviesAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "movie/now_playing" +
+                "?language=en-US" +
+                "&page=" +
+                page;
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // TOP RATED TV
+        // =========================================================
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetTopRatedTvAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "tv/top_rated" +
+                "?language=en-US" +
+                "&page=" +
+                page;
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // TRENDING TV
+        // =========================================================
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetTrendingTvAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "trending/tv/week" +
+                "?language=en-US" +
+                "&page=" +
+                page;
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // RECENTLY RELEASED TV ("ON THE AIR")
+        // =========================================================
+        //
+        // Genuine TMDB "on the air" resource - shows with an episode
+        // airing in the current window. The closest honest TMDB
+        // equivalent of "recently released" for episodic content.
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetOnTheAirTvAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "tv/on_the_air" +
+                "?language=en-US" +
+                "&page=" +
+                page;
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // TOP RATED ANIME
+        // =========================================================
+        //
+        // TMDB has no anime-specific "top rated" resource - anime is a
+        // genre(16)+origin(JP) combination, not a distinct TMDB content
+        // type (same premise GetAnimeCandidatesAsync above already
+        // establishes). This applies that same genre/origin filter to
+        // TMDB's genuine vote_average sort, which is the honest way to
+        // ask discover/tv for "the best-rated anime" without inventing
+        // a category TMDB doesn't have.
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetTopRatedAnimeAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "discover/tv" +
+                "?include_adult=false" +
+                "&language=en-US" +
+                "&page=" +
+                page +
+                "&sort_by=vote_average.desc" +
+                "&vote_count.gte=50" +
+                "&with_genres=16" +
+                "&with_origin_country=JP";
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
+        // RECENTLY RELEASED ANIME
+        // =========================================================
+        //
+        // Same rationale as GetTopRatedAnimeAsync - TMDB's tv/on_the_air
+        // resource has no genre filter, so this applies the genre(16)+
+        // origin(JP) filter to a first_air_date-descending discover
+        // query instead, the closest honest equivalent.
+
+        public async Task<List<TmdbDiscoveryItem>>
+            GetRecentlyAiredAnimeAsync(
+                int page = 1)
+        {
+            string endpoint =
+                "discover/tv" +
+                "?include_adult=false" +
+                "&language=en-US" +
+                "&page=" +
+                page +
+                "&sort_by=first_air_date.desc" +
+                "&vote_count.gte=5" +
+                "&with_genres=16" +
+                "&with_origin_country=JP" +
+                "&first_air_date.lte=" +
+                DateTime.UtcNow.ToString("yyyy-MM-dd");
+
+            TmdbDiscoveryResponse response =
+                await GetDiscoveryResponseAsync(
+                    endpoint);
+
+            return response?.Results ??
+                   new List<TmdbDiscoveryItem>();
+        }
+
+        // =========================================================
         // MOVIE SEARCH
         // =========================================================
         //

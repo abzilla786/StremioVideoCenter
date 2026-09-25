@@ -372,17 +372,38 @@
                             <Button x:Name="MoviesButton"
                                     Content="MOVIES"
                                     Style="{DynamicResource NavigationButtonStyle}"
-                                    IsTabStop="True"/>
+                                    IsTabStop="True"
+                                    Click="MoviesButton_Click"/>
 
                             <Button x:Name="TvShowsButton"
                                     Content="TV SHOWS"
                                     Style="{DynamicResource NavigationButtonStyle}"
-                                    IsTabStop="True"/>
+                                    IsTabStop="True"
+                                    Click="TvShowsButton_Click"/>
 
                             <Button x:Name="AnimeButton"
                                     Content="ANIME"
                                     Style="{DynamicResource NavigationButtonStyle}"
-                                    IsTabStop="True"/>
+                                    IsTabStop="True"
+                                    Click="AnimeButton_Click"/>
+
+                            <!--
+                                Local Media navigation foundation (Cinemeta-
+                                First Addon Settings Architecture slice
+                                addendum). Local Files is now a core/default
+                                addon (see CoreAddonSeedingService), so this
+                                entry point exists on every fresh install
+                                regardless of TMDB/Torrentio/Comet
+                                configuration. Click-wired in
+                                StremioVideoCenterView.xaml.cs like every
+                                other overlay host below (PlaybackTestHost/
+                                SourceSelectorHost/EpisodeBrowserHost).
+                            -->
+                            <Button x:Name="LocalMediaButton"
+                                    Content="LOCAL MEDIA"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"
+                                    Click="LocalMediaButton_Click"/>
 
                             <Button x:Name="NavigationMyListButton"
                                     Content="MY LIST"
@@ -397,7 +418,8 @@
                             <Button x:Name="SearchButton"
                                     Content="SEARCH"
                                     Style="{DynamicResource NavigationButtonStyle}"
-                                    IsTabStop="True"/>
+                                    IsTabStop="True"
+                                    Click="SearchButton_Click"/>
 
                         </StackPanel>
 
@@ -410,10 +432,22 @@
                 <!-- HERO                                                    -->
                 <!-- ===================================================== -->
 
+                <!--
+                    Slice 15 hero layout fix: HeroContainer no longer has a
+                    fixed Height (was 925, MaxHeight 1000) - a fixed-height
+                    Grid clipped/overflowed whenever the synopsis or title
+                    needed more than the old HeroContentPanel's fixed 227px
+                    (see below), and MaxHeight made that worse by capping
+                    growth outright. HeroContainer's height is now driven
+                    entirely by its children (HeroCanvas's fixed 698px media
+                    frame + HeroContentPanel's own Auto-sized content) -
+                    MinHeight keeps the original look for short synopses,
+                    but a long title/description now pushes the container
+                    (and everything below it, since Home already scrolls in
+                    MainScrollViewer) taller instead of being cut off.
+                -->
                 <Grid x:Name="HeroContainer"
-                      Height="925"
                       MinHeight="750"
-                      MaxHeight="1000"
                       Margin="0,0,0,25"
                       Background="#0D0D0F">
 
@@ -500,21 +534,42 @@
                     <!-- HERO INFORMATION PANEL                                -->
                     <!-- ===================================================== -->
 
+                    <!--
+                        Slice 15 hero layout fix: fixed Height="227" removed
+                        (replaced with MinHeight="227", preserving the
+                        original look for short synopses) - this is what let
+                        a long synopsis/title get silently clipped, since a
+                        fixed-height Grid never grows for its content. The
+                        inner Grid's first row changed from "*" (stretch-to-
+                        fill-and-clip a fixed parent) to "Auto" (size to
+                        content) for the same reason - see below.
+                    -->
                     <Grid x:Name="HeroContentPanel"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Top"
-                          Height="227"
+                          MinHeight="227"
                           Margin="0,698,0,0"
                           Background="#151225">
 
 
                         <Grid Width="1240"
                               HorizontalAlignment="Center"
-                              VerticalAlignment="Stretch">
+                              VerticalAlignment="Top">
 
                             <Grid.RowDefinitions>
 
-                                <RowDefinition Height="*"/>
+                                <!--
+                                    Auto (was "*"): the title/metadata/
+                                    synopsis/buttons row now sizes to its own
+                                    content instead of being squeezed into
+                                    whatever space happened to be left in a
+                                    fixed-height parent. Combined with the
+                                    indicators row directly below it also
+                                    being Auto, the two can never overlap -
+                                    each only ever occupies the space it
+                                    actually needs, stacked top-to-bottom.
+                                -->
+                                <RowDefinition Height="Auto"/>
 
                                 <RowDefinition Height="Auto"/>
 
@@ -740,67 +795,125 @@
                 <!-- MEDIA CONTENT                                           -->
                 <!-- ===================================================== -->
 
+                <!--
+                    ===================================================
+                    Slice 15 Home restructure.
+                    ===================================================
+                    Order: HERO (above) -> MY LIST (conditional) ->
+                    CONTINUE WATCHING (conditional) -> FEATURED MOVIES ->
+                    POPULAR MOVIES -> FEATURED TV -> POPULAR TV ->
+                    FEATURED ANIME -> POPULAR ANIME. Replaces the old
+                    nine Top10/Trending/RecentlyReleased rows plus the
+                    unrelated "Recently Added" row (which was never wired
+                    to real data and carried a hardcoded dummy item) -
+                    all removed. "New"/Recently-Released content no
+                    longer appears on Home at all; it lives only on the
+                    dedicated Movies/TV pages (see CatalogueBrowseView).
+
+                    MyListSection/ContinueWatchingSection bind Visibility
+                    to HomeViewModel.HasMyList/HasContinueWatching via the
+                    built-in BooleanToVisibilityConverter, so an empty
+                    collection collapses the section entirely - no empty
+                    carousel, no placeholder cards, no reserved vertical
+                    space (the StackPanel layout means a Collapsed
+                    sibling takes zero height). Both collections start
+                    empty this slice (see HomeViewModel remarks) - Slice
+                    16 (Watch State) and Slice 17 (My List) are what will
+                    ever populate them.
+
+                    Every row below sets MoreButtonVisibility=Visible +
+                    MoreLabel="See More →", wired in code-behind to real
+                    navigation into the dedicated Movies/TV/Anime pages
+                    (StremioVideoCenterView.xaml.cs) - no more
+                    placeholder MessageBoxes.
+                -->
                 <StackPanel Margin="45,0,45,60">
 
-
-                    <!-- ================================================= -->
-                    <!-- CONTINUE WATCHING                                  -->
-                    <!-- ================================================= -->
-
-                    <controls:MediaSection
-                        x:Name="ContinueWatchingSection"
-                        Title="CONTINUE WATCHING"
-                        Items="{Binding ContinueWatching}"/>
+                    <StackPanel.Resources>
+                        <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+                    </StackPanel.Resources>
 
 
                     <!-- ================================================= -->
-                    <!-- MY LIST                                             -->
+                    <!-- MY LIST (conditional)                              -->
                     <!-- ================================================= -->
 
                     <controls:MediaSection
                         x:Name="MyListSection"
                         Title="MY LIST"
-                        Items="{Binding MyList}"/>
+                        Items="{Binding MyList}"
+                        Visibility="{Binding HasMyList, Converter={StaticResource BoolToVisibilityConverter}}"/>
 
 
                     <!-- ================================================= -->
-                    <!-- RECENTLY ADDED                                      -->
-                    <!-- ================================================= -->
-
-                    <controls:MediaSection
-                        x:Name="RecentlyAddedSection"
-                        Title="RECENTLY ADDED"
-                        Items="{Binding RecentlyAdded}"/>
-
-
-                    <!-- ================================================= -->
-                    <!-- TOP MOVIES                                          -->
+                    <!-- CONTINUE WATCHING (conditional)                    -->
                     <!-- ================================================= -->
 
                     <controls:MediaSection
-                        x:Name="TopMoviesSection"
-                        Title="TOP 10 MOVIES"
-                        Items="{Binding TopMovies}"/>
+                        x:Name="ContinueWatchingSection"
+                        Title="CONTINUE WATCHING"
+                        Items="{Binding ContinueWatching}"
+                        Visibility="{Binding HasContinueWatching, Converter={StaticResource BoolToVisibilityConverter}}"/>
 
 
                     <!-- ================================================= -->
-                    <!-- TOP TV SHOWS                                        -->
-                    <!-- ================================================= -->
-
-                    <controls:MediaSection
-                        x:Name="TopShowsSection"
-                        Title="TOP 10 TV SHOWS"
-                        Items="{Binding TopShows}"/>
-
-
-                    <!-- ================================================= -->
-                    <!-- TOP ANIME                                           -->
+                    <!-- FEATURED MOVIES                                    -->
                     <!-- ================================================= -->
 
                     <controls:MediaSection
-                        x:Name="TopAnimeSection"
-                        Title="TOP 10 ANIME"
-                        Items="{Binding TopAnime}"/>
+                        x:Name="FeaturedMoviesSection"
+                        Title="FEATURED MOVIES"
+                        Items="{Binding FeaturedMovies}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- POPULAR MOVIES                                     -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="PopularMoviesSection"
+                        Title="POPULAR MOVIES"
+                        Items="{Binding PopularMovies}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- FEATURED TV SHOWS                                  -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="FeaturedShowsSection"
+                        Title="FEATURED TV SHOWS"
+                        Items="{Binding FeaturedShows}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- POPULAR TV SHOWS                                   -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="PopularShowsSection"
+                        Title="POPULAR TV SHOWS"
+                        Items="{Binding PopularShows}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- FEATURED ANIME                                     -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="FeaturedAnimeSection"
+                        Title="FEATURED ANIME"
+                        Items="{Binding FeaturedAnime}"/>
+
+
+                    <!-- ================================================= -->
+                    <!-- POPULAR ANIME                                      -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="PopularAnimeSection"
+                        Title="POPULAR ANIME"
+                        Items="{Binding PopularAnime}"/>
 
                 </StackPanel>
 
@@ -843,6 +956,63 @@
         -->
         <Grid
             x:Name="EpisodeBrowserHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <!-- ========================================================= -->
+        <!-- LOCAL MEDIA HOST (Cinemeta-First Addon Settings Architecture -->
+        <!-- slice addendum - navigation foundation only)               -->
+        <!-- ========================================================= -->
+        <!--
+            Same overlay-host pattern as PlaybackTestHost/
+            SourceSelectorHost/EpisodeBrowserHost above: a dedicated Grid
+            populated dynamically in code-behind (LocalMediaView added/
+            removed as a child, Visibility toggled), rather than sharing
+            an existing host, since it has its own independent lifecycle.
+            This slice adds ONLY the navigation entry point and an empty-
+            state view - a full local-media browsing UI depends on Local
+            Files catalogue/scan functionality that does not exist yet in
+            this codebase (see LocalMediaView.xaml.cs remarks) and is left
+            for a dedicated future Local Media slice.
+        -->
+        <Grid
+            x:Name="LocalMediaHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <!-- ========================================================= -->
+        <!-- MOVIES / TV / ANIME / SEARCH PAGE HOSTS (Slice 15)         -->
+        <!-- ========================================================= -->
+        <!--
+            Same overlay-host pattern as every host above: a dedicated
+            Grid populated dynamically in code-behind (the page view
+            added/removed as a child, Visibility toggled), each with its
+            own independent lifecycle - see StremioVideoCenterView.xaml.cs
+            ShowMoviesPageAsync/ShowTvPageAsync/ShowAnimePageAsync/
+            ShowSearchPageAsync.
+        -->
+        <Grid
+            x:Name="MoviesPageHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <Grid
+            x:Name="TvPageHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <Grid
+            x:Name="AnimePageHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <Grid
+            x:Name="SearchPageHost"
             Panel.ZIndex="1000"
             Background="Black"
             Visibility="Collapsed" />

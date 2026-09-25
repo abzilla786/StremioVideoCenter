@@ -95,6 +95,7 @@ namespace StremioVideoCenter.Services
             }
 
             HashSet<string> seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> seenInfoHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int realDebridAttemptsRemaining = _maxRealDebridAttempts;
 
             foreach (StremioStream stream in streams)
@@ -132,6 +133,35 @@ namespace StremioVideoCenter.Services
                 // being present too.
                 if (!hasDirectUrl && hasInfoHash)
                 {
+                    // Deduplicate by InfoHash (+ FileIdx, since the same
+                    // torrent can be a multi-file season pack where
+                    // different FileIdx values are genuinely different
+                    // episodes) before spending any Real-Debrid budget.
+                    // Multiple addons - Torrentio and Comet in
+                    // particular - frequently return the exact same
+                    // torrent, and resolving the same InfoHash+FileIdx
+                    // twice would burn two Real-Debrid resolutions (and
+                    // two budget slots) on what is ultimately the same
+                    // underlying file. First occurrence wins, same
+                    // convention as the final Url-based dedup below - a
+                    // later duplicate is skipped outright rather than
+                    // resolved again. This never affects streams that
+                    // also have a direct Url (never budgeted or
+                    // InfoHash-deduplicated) or two torrents that merely
+                    // share a title/hash-prefix but have distinct
+                    // InfoHash+FileIdx combinations - those are
+                    // legitimately distinct and both proceed.
+                    string infoHashKey =
+                        stream.InfoHash + "|" +
+                        (stream.FileIdx.HasValue
+                            ? stream.FileIdx.Value.ToString()
+                            : "null");
+
+                    if (!seenInfoHashes.Add(infoHashKey))
+                    {
+                        continue;
+                    }
+
                     if (realDebridAttemptsRemaining <= 0)
                     {
                         result.Unresolved.Add(new UnresolvedSource
@@ -190,6 +220,7 @@ namespace StremioVideoCenter.Services
                 // mislabel a stream that has both Url and InfoHash.
                 source.Name = stream.Name;
                 source.SourceAddonUrl = stream.SourceAddonUrl;
+                source.SourceAddonName = stream.SourceAddonName;
                 source.OriginatingStream = stream;
 
                 // Deduplicate genuinely identical playback sources: the same

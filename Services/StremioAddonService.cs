@@ -6,6 +6,7 @@ using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using StremioVideoCenter.Models;
 
 namespace StremioVideoCenter.Services
@@ -38,7 +39,20 @@ namespace StremioVideoCenter.Services
             string json =
                 await DownloadStringAsync(url);
 
-            return Deserialize<StremioAddonManifest>(json);
+            StremioAddonManifest manifest =
+                Deserialize<StremioAddonManifest>(json);
+
+            // "resources" is parsed separately below because it can mix
+            // plain strings and objects in the same array (see
+            // ParseResources for details) - a shape
+            // DataContractJsonSerializer cannot handle for a single
+            // List<T> property.
+            if (manifest != null)
+            {
+                manifest.Resources = ParseResources(json);
+            }
+
+            return manifest;
         }
 
         // =========================================================
@@ -172,6 +186,89 @@ namespace StremioVideoCenter.Services
                 return (T)serializer.ReadObject(stream);
             }
         }
+
+        // =========================================================
+        // PARSE RESOURCES (manifest "resources" field)
+        // =========================================================
+        //
+        // Per the Stremio addon protocol, each entry of the manifest's
+        // "resources" array may be either a bare string (e.g. "stream")
+        // or an object carrying resource-specific overrides (e.g.
+        // {"name":"stream","types":["movie","series"],"idPrefixes":["tt"]}).
+        // Real-world manifests (confirmed live against Comet and
+        // MediaFusion) mix both shapes in the same array.
+        // DataContractJsonSerializer requires one static shape per
+        // array and cannot deserialize that directly, so this field is
+        // intentionally left off the [DataContract] on
+        // StremioAddonManifest and populated here instead, using
+        // Newtonsoft.Json (already a project dependency - see
+        // MpvIpcClient.cs) for a small, targeted second pass over the
+        // same raw manifest JSON.
+        private List<StremioManifestResource> ParseResources(string json)
+        {
+            var result = new List<StremioManifestResource>();
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return result;
+            }
+
+            JObject root;
+
+            try
+            {
+                root = JObject.Parse(json);
+            }
+            catch
+            {
+                // The primary DataContractJsonSerializer pass in
+                // GetManifestAsync already succeeded by the time this
+                // runs, so a failure here means something unexpected
+                // about this specific field - fail soft rather than
+                // taking down manifest parsing entirely.
+                return result;
+            }
+
+            JToken resourcesToken = root["resources"];
+
+            if (resourcesToken == null ||
+                resourcesToken.Type != JTokenType.Array)
+            {
+                return result;
+            }
+
+            foreach (JToken entry in (JArray)resourcesToken)
+            {
+                if (entry.Type == JTokenType.String)
+                {
+                    result.Add(new StremioManifestResource
+                    {
+                        Name = entry.Value<string>()
+                    });
+                }
+                else if (entry.Type == JTokenType.Object)
+                {
+                    result.Add(new StremioManifestResource
+                    {
+                        Name = entry.Value<string>("name"),
+
+                        Types = entry["types"] != null
+                            ? entry["types"].ToObject<List<string>>()
+                            : null,
+
+                        IdPrefixes = entry["idPrefixes"] != null
+                            ? entry["idPrefixes"].ToObject<List<string>>()
+                            : null
+                    });
+                }
+
+                // Any other shape (number, null, nested array) is not
+                // part of the Stremio protocol - skip it rather than
+                // throwing.
+            }
+
+            return result;
+        }
     }
 
     // =============================================================
@@ -193,14 +290,51 @@ namespace StremioVideoCenter.Services
         [DataMember(Name = "description")]
         public string Description { get; set; }
 
-        [DataMember(Name = "resources")]
-        public List<string> Resources { get; set; }
+        [DataMember(Name = "logo")]
+        public string Logo { get; set; }
+
+        // Not a [DataMember] - populated separately by
+        // StremioAddonService.ParseResources(). See that method for why
+        // DataContractJsonSerializer cannot be used for this field.
+        public List<StremioManifestResource> Resources { get; set; }
 
         [DataMember(Name = "types")]
         public List<string> Types { get; set; }
 
         [DataMember(Name = "idPrefixes")]
         public List<string> IdPrefixes { get; set; }
+
+        [DataMember(Name = "behaviorHints")]
+        public StremioManifestBehaviorHints BehaviorHints { get; set; }
+    }
+
+    // =============================================================
+    // STREMIO MANIFEST RESOURCE
+    // =============================================================
+    //
+    // One entry of a manifest's "resources" array. See
+    // StremioAddonService.ParseResources() for why this is populated
+    // via a separate Newtonsoft.Json pass rather than as a
+    // [DataMember] on StremioAddonManifest.
+    public class StremioManifestResource
+    {
+        public string Name { get; set; }
+        public List<string> Types { get; set; }
+        public List<string> IdPrefixes { get; set; }
+    }
+
+    // =============================================================
+    // STREMIO MANIFEST BEHAVIOR HINTS
+    // =============================================================
+
+    [DataContract]
+    public class StremioManifestBehaviorHints
+    {
+        [DataMember(Name = "configurable")]
+        public bool? Configurable { get; set; }
+
+        [DataMember(Name = "configurationRequired")]
+        public bool? ConfigurationRequired { get; set; }
     }
 
     // =============================================================

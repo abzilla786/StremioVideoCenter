@@ -56,7 +56,23 @@ namespace StremioVideoCenter.Models
         // StremioAddonRegistry.GetAllStreamsAsync after deserialization, so
         // that a list aggregated across multiple addons can still be traced
         // back to its source. Null for a stream constructed any other way.
+        //
+        // This is the addon's manifest URL and, for a Real-Debrid-configured
+        // addon like Torrentio, has the user's Real-Debrid key baked into it.
+        // It must stay available internally (Zino needs it to talk to the
+        // addon), but nothing user-facing should ever display it - see
+        // SourceAddonName below for the display-safe counterpart.
         public string SourceAddonUrl { get; set; }
+
+        // The originating addon's friendly display name (AddonInstance.
+        // FriendlyName, falling back to AddonInstance.AddonId - see
+        // StremioAddonRegistry.FromAddonInstances), set alongside
+        // SourceAddonUrl by StremioAddonRegistry.GetAllStreamsAsync. This is
+        // what any UI or diagnostic output should show instead of
+        // SourceAddonUrl. Null/empty when the addon has neither a friendly
+        // name nor an id - callers should fall back to a generic label
+        // ("Unknown addon"), never to SourceAddonUrl.
+        public string SourceAddonName { get; set; }
     }
 
     // =============================================================

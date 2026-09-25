@@ -1,0 +1,286 @@
+<UserControl x:Class="StremioVideoCenterControls.AnimeBrowseView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:StremioVideoCenterControls"
+             Focusable="True"
+             KeyboardNavigation.IsTabStop="True"
+             PreviewKeyDown="AnimeBrowseView_PreviewKeyDown">
+
+    <UserControl.Resources>
+
+        <!-- Same CloseButtonStyle/FilterComboStyle/LoadMoreButtonStyle
+             convention as CatalogueBrowseView - duplicated rather than
+             shared, matching this project's existing per-overlay style
+             convention (see EpisodeBrowserView/LocalMediaView remarks). -->
+        <Style x:Key="CloseButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#99000000" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="CloseBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CloseBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="CloseBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CloseBorder" Property="Background" Value="#DD333333" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Same dark ComboBoxItem popup fix as CatalogueBrowseView - the
+             default ComboBoxItem template doesn't inherit the ComboBox's
+             own Background/Foreground (it renders in a separate popup). -->
+        <Style x:Key="FilterComboItemStyle" TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Padding" Value="10,6" />
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="#E91E63" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="FilterComboStyle" TargetType="ComboBox">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="MinWidth" Value="150" />
+            <Setter Property="Margin" Value="0,0,12,0" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="ItemContainerStyle" Value="{StaticResource FilterComboItemStyle}" />
+        </Style>
+
+        <Style x:Key="SearchBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="MinWidth" Value="220" />
+            <Setter Property="CaretBrush" Value="White" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        </Style>
+
+        <Style x:Key="SearchButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#25252B" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="16,6" />
+            <Setter Property="Margin" Value="8,0,0,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#35353D" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="#E91E63" />
+                    <Setter Property="BorderThickness" Value="2" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="LoadMoreButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#25252B" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="24,10" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#35353D" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="#E91E63" />
+                    <Setter Property="BorderThickness" Value="2" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+    </UserControl.Resources>
+
+    <Grid Background="#EE0D0D0F">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ========================================================= -->
+        <!-- HEADER                                                     -->
+        <!-- ========================================================= -->
+
+        <StackPanel Grid.Row="0" Margin="32,28,32,16">
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="5" Height="26" Background="#E91E63" CornerRadius="2" Margin="0,0,14,0" />
+                    <TextBlock Text="Anime"
+                               Foreground="White"
+                               FontSize="26"
+                               FontWeight="Bold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <Button x:Name="CloseButton"
+                        Style="{StaticResource CloseButtonStyle}"
+                        Content="&#x2715;"
+                        ToolTip="Close"
+                        Click="CloseButton_Click"
+                        HorizontalAlignment="Right"
+                        Width="40"
+                        Height="40"
+                        FontSize="18" />
+            </Grid>
+        </StackPanel>
+
+        <!-- ========================================================= -->
+        <!-- CONTENT (single scroll - TMDB rows, then AnimeFLV browse)  -->
+        <!-- ========================================================= -->
+
+        <ScrollViewer Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="32,0,32,40">
+
+                <!-- =====================================================
+                     TMDB-DERIVED FEATURED / POPULAR / NEW ANIME
+                     =====================================================
+                     Exactly the same TMDB-backed anime rows Home already
+                     shows (CatalogueService.GetFeaturedAnimeAsync/
+                     GetPopularAnimeAsync/GetNewAnimeAsync - unchanged
+                     logic, only reused here) - genuinely ranked rows, not
+                     fabricated. Honestly empty (TmdbEmptyText) when no
+                     TmdbService is configured, exactly like Home's own
+                     rows are in that case. -->
+
+                <controls:MediaSection x:Name="FeaturedAnimeSection" Title="FEATURED" />
+                <controls:MediaSection x:Name="PopularAnimeSection" Title="POPULAR" />
+                <controls:MediaSection x:Name="NewAnimeSection" Title="NEW RELEASES" />
+
+                <TextBlock x:Name="TmdbEmptyText"
+                           Text="TMDB isn't configured, so ranked Featured/Popular/New Anime rows aren't available. Browse AnimeFLV directly below instead."
+                           Foreground="#AAAAAA"
+                           FontSize="14"
+                           TextWrapping="Wrap"
+                           Visibility="Collapsed"
+                           Margin="8,4,8,24" />
+
+                <!-- =====================================================
+                     ANIMEFLV BROWSE (genre or search - live-verified this
+                     slice, see AnimeFlvCatalogueService's class remarks)
+                     =====================================================
+                     AnimeFLV exposes no unfiltered/ranked catalog at all
+                     - every one of its 13 real catalogs requires either a
+                     "search" or a "genre" extra (live-verified against
+                     its manifest.json this slice). That is why this
+                     section is a genre/search BROWSER rather than another
+                     "Featured"/"Popular" row - a ranked row here would
+                     have to be invented, which this project's own
+                     instructions forbid. -->
+
+                <Border Height="1" Background="#22222A" Margin="0,8,0,20" />
+
+                <TextBlock Text="Browse AnimeFLV"
+                           Foreground="White"
+                           FontSize="18"
+                           FontWeight="Bold"
+                           Margin="0,0,0,6" />
+
+                <TextBlock Text="AnimeFLV has no ranked or unfiltered catalogue - every request needs a genre or a search term. Pick a genre, or search by title."
+                           Foreground="#666670"
+                           FontSize="12"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,14" />
+
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+
+                    <TextBlock Text="Genre:" Foreground="#AAAAAA" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ComboBox x:Name="GenreCombo"
+                              Style="{StaticResource FilterComboStyle}"
+                              SelectionChanged="GenreCombo_SelectionChanged" />
+
+                    <TextBox x:Name="SearchBox"
+                             Style="{StaticResource SearchBoxStyle}"
+                             Margin="16,0,0,0"
+                             VerticalContentAlignment="Center"
+                             KeyDown="SearchBox_KeyDown" />
+
+                    <Button x:Name="SearchButton"
+                            Content="Search"
+                            Style="{StaticResource SearchButtonStyle}"
+                            Click="SearchButton_Click" />
+
+                </StackPanel>
+
+                <TextBlock x:Name="AnimeFlvLoadingText"
+                           Text="Loading..."
+                           Foreground="#CCCCCC"
+                           FontSize="14"
+                           Margin="8,0,8,12"
+                           Visibility="Collapsed" />
+
+                <ItemsControl x:Name="AnimeFlvItemsControl" Focusable="False">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <controls:MediaCard Focusable="True"
+                                                 IsTabStop="False"
+                                                 FocusVisualStyle="{x:Null}"
+                                                 DataContext="{Binding}" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock x:Name="AnimeFlvEmptyText"
+                           Text="No AnimeFLV results right now - this addon scrapes its source live, so an empty or slow result can happen even for a valid genre or search term."
+                           Foreground="#AAAAAA"
+                           FontSize="14"
+                           TextWrapping="Wrap"
+                           Visibility="Collapsed"
+                           Margin="8,20,8,0" />
+
+                <Button x:Name="AnimeFlvLoadMoreButton"
+                        Content="Load More"
+                        Style="{StaticResource LoadMoreButtonStyle}"
+                        Click="AnimeFlvLoadMoreButton_Click"
+                        HorizontalAlignment="Center"
+                        Margin="0,20,0,0"
+                        Visibility="Collapsed" />
+
+            </StackPanel>
+        </ScrollViewer>
+
+    </Grid>
+
+</UserControl>

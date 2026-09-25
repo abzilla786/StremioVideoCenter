@@ -38,7 +38,17 @@ namespace StremioVideoCenter.Models
 
         public string Url { get; set; }
 
+        // Manifest URL of the originating addon - carries the user's
+        // Real-Debrid key for an RD-configured addon. Kept here because
+        // Source is the disconnected-DTO-avoidance escape hatch this type
+        // documents itself as not being, but nothing should display this
+        // directly - see SourceAddonName.
         public string SourceAddonUrl { get; set; }
+
+        // Display-safe addon identity (AddonInstance.FriendlyName, falling
+        // back to AddonId) - what a source-selection UI or diagnostic
+        // output should show instead of SourceAddonUrl.
+        public string SourceAddonName { get; set; }
 
         public PlaybackSourceKind Kind { get; set; }
 

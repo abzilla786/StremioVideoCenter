@@ -1,0 +1,136 @@
+<UserControl x:Class="StremioVideoCenterControls.LocalMediaView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Focusable="True"
+             KeyboardNavigation.IsTabStop="True"
+             PreviewKeyDown="LocalMediaView_PreviewKeyDown">
+
+    <UserControl.Resources>
+
+        <!--
+            Same CloseButtonStyle as EpisodeBrowserView.xaml (duplicated
+            rather than shared, matching this project's existing
+            per-overlay style convention - see that file's own remarks).
+        -->
+        <Style x:Key="CloseButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#99000000" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="CloseBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CloseBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="CloseBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CloseBorder" Property="Background" Value="#DD333333" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </UserControl.Resources>
+
+    <Grid Background="#EE0D0D0F">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ========================================================= -->
+        <!-- HEADER                                                     -->
+        <!-- ========================================================= -->
+
+        <StackPanel Grid.Row="0" Margin="32,28,32,20">
+
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="5"
+                            Height="26"
+                            Background="#E91E63"
+                            CornerRadius="2"
+                            Margin="0,0,14,0" />
+                    <TextBlock Text="Local Media"
+                               Foreground="White"
+                               FontSize="26"
+                               FontWeight="Bold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <Button x:Name="CloseButton"
+                        Style="{StaticResource CloseButtonStyle}"
+                        Content="&#x2715;"
+                        ToolTip="Close"
+                        Click="CloseButton_Click"
+                        HorizontalAlignment="Right"
+                        Width="40"
+                        Height="40"
+                        FontSize="18" />
+            </Grid>
+
+        </StackPanel>
+
+        <!-- ========================================================= -->
+        <!-- CONTENT                                                    -->
+        <!-- ========================================================= -->
+        <!--
+            Navigation foundation only (Cinemeta-First Addon Settings
+            Architecture slice addendum) - see LocalMediaView.xaml.cs
+            remarks. No fabricated catalogue is shown here: this is an
+            honest status/empty-state view, not a preview of unbuilt
+            functionality.
+        -->
+
+        <StackPanel Grid.Row="1"
+                    Margin="32,0,32,32"
+                    VerticalAlignment="Center"
+                    HorizontalAlignment="Left"
+                    MaxWidth="640">
+
+            <TextBlock x:Name="StatusText"
+                       Foreground="White"
+                       FontSize="18"
+                       FontWeight="SemiBold"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,10" />
+
+            <!--
+                Slice 15: a minimal, honest proof that the Local Media
+                architecture foundation (LocalLibraryService reading
+                StremioVideoCenterSettings.LibraryLocations) is wired
+                end-to-end - not a library-locations management UI.
+                Adding/removing locations is not exposed here this slice.
+            -->
+            <TextBlock x:Name="LibraryLocationsText"
+                       Foreground="#CCCCCC"
+                       FontSize="15"
+                       FontWeight="SemiBold"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,10" />
+
+            <TextBlock Text="Browsing local files by title, folder, or recently added is not yet available - it will arrive in a dedicated Local Media slice. This addon is used automatically wherever your existing library already provides a playable local stream."
+                       Foreground="#AAAAAA"
+                       FontSize="14"
+                       TextWrapping="Wrap" />
+
+        </StackPanel>
+
+    </Grid>
+
+</UserControl>

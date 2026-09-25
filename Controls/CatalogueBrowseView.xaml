@@ -1,0 +1,246 @@
+<UserControl x:Class="StremioVideoCenterControls.CatalogueBrowseView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="clr-namespace:StremioVideoCenterControls"
+             Focusable="True"
+             KeyboardNavigation.IsTabStop="True"
+             PreviewKeyDown="CatalogueBrowseView_PreviewKeyDown">
+
+    <UserControl.Resources>
+
+        <!-- Same CloseButtonStyle convention as every other overlay in
+             this project (EpisodeBrowserView/LocalMediaView) - duplicated
+             rather than shared, matching the project's existing
+             per-overlay style convention. -->
+        <Style x:Key="CloseButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#99000000" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="CloseBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CloseBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="CloseBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CloseBorder" Property="Background" Value="#DD333333" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- The default ComboBoxItem template doesn't inherit the
+             ComboBox's own Background/Foreground (it renders in a
+             separate popup) - without this, the dropdown list would
+             fall back to the OS theme's light popup rather than this
+             app's dark visual language. -->
+        <Style x:Key="FilterComboItemStyle" TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Padding" Value="10,6" />
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="#E91E63" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="FilterComboStyle" TargetType="ComboBox">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="MinWidth" Value="150" />
+            <Setter Property="Margin" Value="0,0,12,0" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="ItemContainerStyle" Value="{StaticResource FilterComboItemStyle}" />
+        </Style>
+
+        <Style x:Key="LoadMoreButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#25252B" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="24,10" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#35353D" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="#E91E63" />
+                    <Setter Property="BorderThickness" Value="2" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+    </UserControl.Resources>
+
+    <Grid Background="#EE0D0D0F">
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ========================================================= -->
+        <!-- HEADER                                                     -->
+        <!-- ========================================================= -->
+
+        <StackPanel Grid.Row="0" Margin="32,28,32,16">
+            <Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="5" Height="26" Background="#E91E63" CornerRadius="2" Margin="0,0,14,0" />
+                    <TextBlock x:Name="HeaderText"
+                               Text="Movies"
+                               Foreground="White"
+                               FontSize="26"
+                               FontWeight="Bold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <Button x:Name="CloseButton"
+                        Style="{StaticResource CloseButtonStyle}"
+                        Content="&#x2715;"
+                        ToolTip="Close"
+                        Click="CloseButton_Click"
+                        HorizontalAlignment="Right"
+                        Width="40"
+                        Height="40"
+                        FontSize="18" />
+            </Grid>
+        </StackPanel>
+
+        <!-- ========================================================= -->
+        <!-- FILTER BAR                                                 -->
+        <!-- ========================================================= -->
+        <!--
+            Rating filter is deliberately not offered - Cinemeta declares
+            no rating/minimum-rating extra on any catalog (live-verified
+            this slice), so a rating control here would either be fake
+            client-side filtering over a partial page or a dead control -
+            neither acceptable per this slice's own instructions. See
+            CatalogueService's class remarks.
+        -->
+
+        <StackPanel Grid.Row="1"
+                    Orientation="Horizontal"
+                    Margin="32,0,32,16">
+
+            <TextBlock Text="Genre:" Foreground="#AAAAAA" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0" />
+            <ComboBox x:Name="GenreCombo"
+                      Style="{StaticResource FilterComboStyle}"
+                      SelectionChanged="Filter_SelectionChanged" />
+
+            <TextBlock Text="Year:" Foreground="#AAAAAA" FontSize="13" VerticalAlignment="Center" Margin="16,0,8,0" />
+            <ComboBox x:Name="YearCombo"
+                      Style="{StaticResource FilterComboStyle}"
+                      SelectionChanged="Filter_SelectionChanged" />
+
+            <TextBlock x:Name="FilterLimitationText"
+                       Text="No rating filter - Cinemeta doesn't support one."
+                       Foreground="#666670"
+                       FontSize="12"
+                       VerticalAlignment="Center"
+                       Margin="16,0,0,0" />
+
+        </StackPanel>
+
+        <!-- ========================================================= -->
+        <!-- CONTENT                                                    -->
+        <!-- ========================================================= -->
+
+        <Grid Grid.Row="2" Margin="0,0,0,0">
+
+            <!-- DEFAULT VIEW: Featured / Popular / New rows -->
+            <ScrollViewer x:Name="DefaultScrollViewer"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="32,0,32,40">
+                    <controls:MediaSection x:Name="FeaturedSection" Title="FEATURED" />
+                    <controls:MediaSection x:Name="PopularSection" Title="POPULAR" />
+                    <controls:MediaSection x:Name="NewSection" Title="NEW RELEASES" />
+                    <TextBlock x:Name="DefaultEmptyText"
+                               Text="No catalogue results are available right now."
+                               Foreground="#AAAAAA"
+                               FontSize="14"
+                               Visibility="Collapsed"
+                               Margin="8,20,8,0" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- FILTERED VIEW: single grid + Load More -->
+            <ScrollViewer x:Name="FilteredScrollViewer"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Visibility="Collapsed">
+                <StackPanel Margin="24,0,24,40">
+
+                    <ItemsControl x:Name="FilteredItemsControl" Focusable="False">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <controls:MediaCard Focusable="True"
+                                                     IsTabStop="False"
+                                                     FocusVisualStyle="{x:Null}"
+                                                     DataContext="{Binding}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock x:Name="FilteredEmptyText"
+                               Text="No results for this filter."
+                               Foreground="#AAAAAA"
+                               FontSize="14"
+                               Visibility="Collapsed"
+                               Margin="8,20,8,0" />
+
+                    <Button x:Name="LoadMoreButton"
+                            Content="Load More"
+                            Style="{StaticResource LoadMoreButtonStyle}"
+                            Click="LoadMoreButton_Click"
+                            HorizontalAlignment="Center"
+                            Margin="0,20,0,0"
+                            Visibility="Collapsed" />
+
+                </StackPanel>
+            </ScrollViewer>
+
+            <TextBlock x:Name="LoadingText"
+                       Text="Loading..."
+                       Foreground="#CCCCCC"
+                       FontSize="16"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Visibility="Collapsed" />
+
+        </Grid>
+
+    </Grid>
+
+</UserControl>

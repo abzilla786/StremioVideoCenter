@@ -7,14 +7,38 @@
     <StackPanel Margin="0,0,0,35">
 
         <!-- ===================================================== -->
-        <!-- SECTION TITLE                                         -->
+        <!-- SECTION TITLE + OPTIONAL "MORE" LINK                  -->
         <!-- ===================================================== -->
+        <!--
+            The More button is opt-in per instance (MoreButtonVisibility
+            defaults to Collapsed on MediaSection itself - see
+            MediaSection.xaml.cs), so every section that doesn't set it
+            renders exactly as before this addition.
+        -->
 
-        <TextBlock Text="{Binding Title, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                   FontSize="22"
-                   FontWeight="Bold"
-                   Foreground="White"
-                   Margin="8,0,0,12"/>
+        <DockPanel LastChildFill="True"
+                   Margin="8,0,8,12">
+
+            <Button x:Name="MoreButton"
+                    DockPanel.Dock="Right"
+                    Content="{Binding MoreLabel, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                    Visibility="{Binding MoreButtonVisibility, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                    Click="MoreButton_Click"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Foreground="#B3B3B3"
+                    FontSize="14"
+                    Cursor="Hand"
+                    FocusVisualStyle="{x:Null}"
+                    VerticalAlignment="Bottom"
+                    Padding="6,0"/>
+
+            <TextBlock Text="{Binding Title, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                       FontSize="22"
+                       FontWeight="Bold"
+                       Foreground="White"/>
+
+        </DockPanel>
 
 
         <!-- ===================================================== -->

@@ -24,7 +24,19 @@ namespace StremioVideoCenter.Services
         private sealed class AddonEntry
         {
             public string Url;
+            public string FriendlyName;
             public StremioAddonService Service;
+
+            // Capability-aware addon architecture (Cinemeta-First Addon
+            // Settings Architecture slice). Null/empty means "capability
+            // unknown" (e.g. a legacy entry from FromConfiguredUrls,
+            // which never captured a manifest) - GetAllStreamsAsync
+            // treats unknown capabilities as "query it anyway", exactly
+            // preserving prior behaviour for every pre-existing entry.
+            // Only an entry with a KNOWN resource list that does NOT
+            // include "stream" (e.g. Cinemeta: catalog/meta/addon_catalog
+            // only) is skipped.
+            public List<string> ResourceNames;
         }
 
         private readonly List<AddonEntry> _entries = new List<AddonEntry>();
@@ -70,6 +82,50 @@ namespace StremioVideoCenter.Services
             return registry;
         }
 
+        // Builds a registry from structured addon instances (the
+        // AddonInstances setting), added alongside FromConfiguredUrls
+        // above rather than replacing it - both remain valid ways to
+        // build a registry. Only enabled instances with a non-empty
+        // ManifestUrl are registered; disabled instances are skipped
+        // entirely rather than being added and immediately excluded, so
+        // a disabled/malformed instance can never affect discovery.
+        // Duplicate manifest URLs across instances are still
+        // deduplicated by AddAddon exactly as for the legacy path.
+        public static StremioAddonRegistry FromAddonInstances(
+            IEnumerable<AddonInstance> addonInstances)
+        {
+            var registry = new StremioAddonRegistry();
+
+            if (addonInstances == null)
+            {
+                return registry;
+            }
+
+            foreach (AddonInstance instance in addonInstances)
+            {
+                if (instance == null || !instance.Enabled)
+                {
+                    continue;
+                }
+
+                // Display-safe identity for this addon: prefer the
+                // user-facing FriendlyName (e.g. "Torrentio RD"), falling
+                // back to the addon's own manifest id if the instance was
+                // never given a friendly name. Never the manifest URL -
+                // for a Real-Debrid-configured addon that URL carries the
+                // user's RD key, and it must never reach a UI or log
+                // through this path (see SourceSelectorView/AddonEntry).
+                string displayName =
+                    !string.IsNullOrWhiteSpace(instance.FriendlyName)
+                        ? instance.FriendlyName
+                        : instance.AddonId;
+
+                registry.AddAddon(instance.ManifestUrl, displayName, instance.ResourceNames);
+            }
+
+            return registry;
+        }
+
         public IReadOnlyList<string> AddonUrls
         {
             get
@@ -85,7 +141,19 @@ namespace StremioVideoCenter.Services
             }
         }
 
-        public void AddAddon(string addonUrl)
+        // friendlyName is optional (defaults to null) so existing callers
+        // that only ever had a bare URL - e.g. FromConfiguredUrls, the
+        // legacy StremioAddonUrls path - keep working unchanged. A null/
+        // empty friendly name just means GetAllStreamsAsync tags streams
+        // from this addon with no display name; callers reading it back
+        // (Source Selector, diagnostics) fall back to a generic label,
+        // never to the URL itself.
+        //
+        // resourceNames is optional too (defaults to null, meaning
+        // "capability unknown"). Only FromAddonInstances currently
+        // passes it - see AddonEntry.ResourceNames remarks above for how
+        // GetAllStreamsAsync treats it.
+        public void AddAddon(string addonUrl, string friendlyName = null, List<string> resourceNames = null)
         {
             if (string.IsNullOrWhiteSpace(addonUrl))
             {
@@ -106,7 +174,9 @@ namespace StremioVideoCenter.Services
             _entries.Add(new AddonEntry
             {
                 Url = trimmed,
-                Service = new StremioAddonService(trimmed)
+                FriendlyName = friendlyName,
+                Service = new StremioAddonService(trimmed),
+                ResourceNames = resourceNames
             });
         }
 
@@ -121,6 +191,22 @@ namespace StremioVideoCenter.Services
 
             foreach (AddonEntry entry in _entries)
             {
+                // Capability-aware skip: only skip when this addon's
+                // resource list is KNOWN (non-null/non-empty) and does
+                // NOT include "stream" - e.g. Cinemeta (catalog/meta/
+                // addon_catalog only), which would otherwise 404 on
+                // every single stream request. An entry with unknown
+                // capabilities (null/empty ResourceNames - every legacy
+                // FromConfiguredUrls entry, and any AddonInstance saved
+                // before this slice) is always queried, exactly
+                // preserving prior behaviour.
+                if (entry.ResourceNames != null &&
+                    entry.ResourceNames.Count > 0 &&
+                    !entry.ResourceNames.Contains("stream"))
+                {
+                    continue;
+                }
+
                 try
                 {
                     List<StremioStream> streams = await entry.Service.GetStreamsAsync(type, id);
@@ -132,6 +218,7 @@ namespace StremioVideoCenter.Services
                             if (stream != null)
                             {
                                 stream.SourceAddonUrl = entry.Url;
+                                stream.SourceAddonName = entry.FriendlyName;
                             }
 
                             combined.Add(stream);

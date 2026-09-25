@@ -33,9 +33,17 @@ namespace StremioVideoCenter.Models
         public string Name { get; set; }
 
         // Which configured addon produced the underlying stream, carried
-        // over from StremioStream.SourceAddonUrl for display purposes once
-        // a source-selection UI exists.
+        // over from StremioStream.SourceAddonUrl. Needed internally so Zino
+        // can keep talking to the right addon - this is the addon's
+        // manifest URL and, for a Real-Debrid-configured addon, carries the
+        // user's RD key. Never display this directly - see SourceAddonName.
         public string SourceAddonUrl { get; set; }
+
+        // Display-safe counterpart to SourceAddonUrl, carried over from
+        // StremioStream.SourceAddonName (ultimately AddonInstance.
+        // FriendlyName, falling back to AddonInstance.AddonId). This is
+        // what a source-selection UI or diagnostic output should show.
+        public string SourceAddonName { get; set; }
 
         // Direct URL vs Real-Debrid-resolved - see PlaybackSourceKind.
         // Unresolved/unsupported streams never become a PlaybackSource at

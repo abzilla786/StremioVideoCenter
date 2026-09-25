@@ -2,10 +2,12 @@ using Playnite.SDK.Events;
 using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace StremioVideoCenterControls
@@ -78,24 +80,16 @@ namespace StremioVideoCenterControls
 
         public void Populate(List<NormalizedPlaybackSource> sources, MediaItem mediaItem = null)
         {
-            string mediaInfo = BuildMediaInfoLine(mediaItem);
-
-            if (!string.IsNullOrWhiteSpace(mediaInfo))
-            {
-                MediaInfoText.Text = mediaInfo;
-                MediaInfoText.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                MediaInfoText.Visibility = Visibility.Collapsed;
-            }
+            PopulateHeader(mediaItem);
 
             SourceListPanel.Children.Clear();
             _sourceButtons.Clear();
 
-            if (sources != null)
+            List<NormalizedPlaybackSource> orderedSources = SortByDescendingQuality(sources);
+
+            if (orderedSources != null)
             {
-                foreach (NormalizedPlaybackSource source in sources)
+                foreach (NormalizedPlaybackSource source in orderedSources)
                 {
                     if (source == null)
                     {
@@ -115,6 +109,177 @@ namespace StremioVideoCenterControls
             else
             {
                 ShowSourceList();
+            }
+        }
+
+        // =========================================================
+        // QUALITY ORDERING (Slice 14 correction)
+        // =========================================================
+        //
+        // Presentation-only display ordering: sources are shown in
+        // descending video quality using ResolutionHeight, which
+        // PlaybackSourceNormalizationService already parses from every
+        // source's Name/Title/Description (see that service's
+        // KnownResolutionTokens/KnownDelimitedResolutionTokens) - no new
+        // quality parser is introduced here. A source with no recognisable
+        // quality (ResolutionHeight == null) sorts after every
+        // known-quality source rather than being dropped or rejected.
+        //
+        // LINQ's OrderByDescending is a documented stable sort, so two
+        // sources with the same quality (or both unknown) keep their
+        // original relative order exactly as the aggregator/discovery
+        // pipeline produced it - this deliberately introduces no
+        // provider/addon ranking, no RD-vs-direct preference, and no
+        // codec/HDR/audio/file-size/seed weighting. Those remain future
+        // work (see PlaybackSourceAggregationService's own remarks on not
+        // picking a "best" source). This is purely how the existing,
+        // unreordered source list is displayed - the underlying `sources`
+        // list passed in is never mutated.
+        private static List<NormalizedPlaybackSource> SortByDescendingQuality(
+            List<NormalizedPlaybackSource> sources)
+        {
+            if (sources == null)
+            {
+                return null;
+            }
+
+            return sources
+                .OrderByDescending(source =>
+                    source != null && source.ResolutionHeight.HasValue
+                        ? source.ResolutionHeight.Value
+                        : -1)
+                .ToList();
+        }
+
+        // =========================================================
+        // HEADER (media info line, or the richer episode context panel)
+        // =========================================================
+        //
+        // Slice 14 (Complete TV Experience): an episode-shaped MediaItem
+        // (Season and Episode both populated - the same test
+        // PlaySelectedMediaAsync/EpisodeBrowserView.BuildEpisodeMediaItem
+        // already use elsewhere) gets EpisodeContextPanel instead of the
+        // original single MediaInfoText line - thumbnail, SxxExx, title,
+        // rating/air date, and overview, all read from fields
+        // EpisodeBrowserView already populated on the MediaItem (no new
+        // network request). A movie or null MediaItem keeps the original
+        // single-line header, completely unchanged.
+        private void PopulateHeader(MediaItem mediaItem)
+        {
+            bool isEpisode = mediaItem != null &&
+                mediaItem.Season.HasValue &&
+                mediaItem.Episode.HasValue;
+
+            if (!isEpisode)
+            {
+                EpisodeContextPanel.Visibility = Visibility.Collapsed;
+                EpisodeThumbnailImage.Source = null;
+
+                string mediaInfo = BuildMediaInfoLine(mediaItem);
+
+                if (!string.IsNullOrWhiteSpace(mediaInfo))
+                {
+                    MediaInfoText.Text = mediaInfo;
+                    MediaInfoText.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    MediaInfoText.Visibility = Visibility.Collapsed;
+                }
+
+                return;
+            }
+
+            MediaInfoText.Visibility = Visibility.Collapsed;
+            EpisodeContextPanel.Visibility = Visibility.Visible;
+
+            EpisodeCodeText.Text =
+                "S" + mediaItem.Season.Value.ToString().PadLeft(2, '0') +
+                "E" + mediaItem.Episode.Value.ToString().PadLeft(2, '0');
+
+            EpisodeTitleText.Text =
+                !string.IsNullOrWhiteSpace(mediaItem.Title) ? mediaItem.Title : "Episode";
+
+            List<string> metaParts = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(mediaItem.Rating))
+            {
+                metaParts.Add("★ " + mediaItem.Rating);
+            }
+
+            if (!string.IsNullOrWhiteSpace(mediaItem.ReleaseDate))
+            {
+                metaParts.Add(mediaItem.ReleaseDate);
+            }
+            else if (!string.IsNullOrWhiteSpace(mediaItem.Year))
+            {
+                metaParts.Add(mediaItem.Year);
+            }
+
+            if (metaParts.Count > 0)
+            {
+                EpisodeMetaText.Text = string.Join("   ·   ", metaParts);
+                EpisodeMetaText.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                EpisodeMetaText.Visibility = Visibility.Collapsed;
+            }
+
+            if (!string.IsNullOrWhiteSpace(mediaItem.Overview))
+            {
+                EpisodeOverviewText.Text = mediaItem.Overview;
+                EpisodeOverviewText.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                EpisodeOverviewText.Visibility = Visibility.Collapsed;
+            }
+
+            EpisodeThumbnailImage.Source = null;
+
+            if (!string.IsNullOrWhiteSpace(mediaItem.PosterPath))
+            {
+                BitmapImage bitmap = TryCreateBitmapImage(mediaItem.PosterPath);
+
+                if (bitmap != null)
+                {
+                    EpisodeThumbnailImage.Source = bitmap;
+                }
+            }
+        }
+
+        // WPF downloads a BitmapImage with a remote UriSource
+        // asynchronously and simply renders nothing if the download
+        // fails - no "broken image" glyph is ever shown natively, so a
+        // malformed URL (caught here) or a failed download (left to WPF)
+        // both degrade to the fallback glyph behind it. Never throws.
+        // Duplicated from EpisodeBrowserView rather than shared, matching
+        // this project's existing convention (see CinemetaService's own
+        // remarks on duplicating DownloadStringAsync) of not introducing
+        // shared infrastructure for a same-slice need.
+        private static BitmapImage TryCreateBitmapImage(string url)
+        {
+            try
+            {
+                Uri uri;
+
+                if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+                {
+                    return null;
+                }
+
+                BitmapImage bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.UriSource = uri;
+                bitmap.CacheOption = BitmapCacheOption.OnDemand;
+                bitmap.EndInit();
+
+                return bitmap;
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -264,9 +429,20 @@ namespace StremioVideoCenterControls
             }
 
             // ---- Addon origin (only if present) ----
+            // Shows the originating addon's friendly display name
+            // (AddonInstance.FriendlyName, e.g. "Torrentio RD") rather than
+            // its manifest URL. For a Real-Debrid-configured addon, that
+            // URL carries the user's RD key - it must never reach this UI.
+            // A safe generic fallback is used if no friendly name is
+            // available; the URL itself is never shown, by design.
             if (!string.IsNullOrWhiteSpace(source.SourceAddonUrl))
             {
-                TextBlock addonText = BuildInfoLine("Addon: " + source.SourceAddonUrl, 13, 0x77, 0x77, 0x77);
+                string addonDisplayName =
+                    !string.IsNullOrWhiteSpace(source.SourceAddonName)
+                        ? source.SourceAddonName
+                        : "Unknown addon";
+
+                TextBlock addonText = BuildInfoLine("Addon: " + addonDisplayName, 13, 0x77, 0x77, 0x77);
                 addonText.Margin = new Thickness(0, 8, 0, 0);
                 content.Children.Add(addonText);
             }
