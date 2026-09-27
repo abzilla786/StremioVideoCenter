@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -460,10 +461,26 @@ namespace StremioVideoCenterControls
                     return true;
 
                 case ControllerInput.A:
-                    return ActivateFocusedCard();
+                    return ActivateFocusedElement();
             }
 
             return false;
+        }
+
+        // Dedicated-page Back navigation task: lets controller A activate
+        // the Back button when it has focus - see CatalogueBrowseView's
+        // identical remark on its own ActivateFocusedElement for why this
+        // page's own HandleControllerInput (not the generic keyboard
+        // Enter/Space path) needs this.
+        private bool ActivateFocusedElement()
+        {
+            if (Keyboard.FocusedElement is ButtonBase focusedButton)
+            {
+                focusedButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                return true;
+            }
+
+            return ActivateFocusedCard();
         }
 
         private bool ActivateFocusedCard()
@@ -538,10 +555,24 @@ namespace StremioVideoCenterControls
 
         private void MoveVertical(int direction)
         {
+            // Dedicated-page Back navigation task: same top-layer <->
+            // content chaining as CatalogueBrowseView/AnimeBrowseView -
+            // see those files' identical remark on their own MoveVertical.
+            if (CloseButton.IsKeyboardFocused)
+            {
+                if (direction > 0)
+                {
+                    FocusFirstAvailableSection();
+                }
+
+                return;
+            }
+
             MediaSection[] sections = GetVisibleSections();
 
             if (sections.Length == 0)
             {
+                CloseButton.Focus();
                 return;
             }
 
@@ -554,7 +585,18 @@ namespace StremioVideoCenterControls
                 return;
             }
 
-            int target = Math.Max(0, Math.Min(index + direction, sections.Length - 1));
+            int target = index + direction;
+
+            if (target < 0)
+            {
+                // Dedicated-page Back navigation task: moving up out of
+                // the topmost section reaches the Back button instead of
+                // clamping in place.
+                CloseButton.Focus();
+                return;
+            }
+
+            target = Math.Min(target, sections.Length - 1);
             sections[target].FocusFirstCard();
         }
 

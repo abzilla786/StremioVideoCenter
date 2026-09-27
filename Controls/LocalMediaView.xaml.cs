@@ -1,6 +1,8 @@
 using Playnite.SDK.Events;
 using System;
+using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 
 namespace StremioVideoCenterControls
@@ -47,6 +49,22 @@ namespace StremioVideoCenterControls
         public LocalMediaView()
         {
             InitializeComponent();
+
+            // Dedicated-page Back navigation task: this view has no
+            // other focusable content besides the Back (Close) button -
+            // it's a status page, not a browsable catalogue - so
+            // keyboard/controller users need it focused by default
+            // rather than left with nothing reachable via arrow keys.
+            // Loaded (not the constructor) because the button isn't
+            // arrangeable/focusable until the control is actually in the
+            // visual tree - mirrors MediaCard's own Loaded-based pattern
+            // elsewhere in this project.
+            Loaded += LocalMediaView_Loaded;
+        }
+
+        private void LocalMediaView_Loaded(object sender, RoutedEventArgs e)
+        {
+            CloseButton.Focus();
         }
 
         // Sets the status text from real, already-known facts (whether
@@ -111,6 +129,17 @@ namespace StremioVideoCenterControls
             if (button == ControllerInput.B)
             {
                 RaiseClosed();
+                return true;
+            }
+
+            // Dedicated-page Back navigation task: lets controller A
+            // activate the Back button (the only focusable control on
+            // this page) - same generic focused-ButtonBase reuse as
+            // every other dedicated page's own ActivateFocusedElement.
+            if (button == ControllerInput.A &&
+                Keyboard.FocusedElement is ButtonBase focusedButton)
+            {
+                focusedButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 return true;
             }
 

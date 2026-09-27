@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -552,10 +553,30 @@ namespace StremioVideoCenterControls
                     return true;
 
                 case ControllerInput.A:
-                    return ActivateFocusedCard();
+                    return ActivateFocusedElement();
             }
 
             return false;
+        }
+
+        // Dedicated-page Back navigation task: lets controller A activate
+        // the Back button when it has focus. StremioVideoCenterView's own
+        // Enter/Space handling already does this generically for any
+        // focused ButtonBase, but StremioVideoCenterView.HandleControllerInput
+        // fully delegates controller input to this page's own
+        // HandleControllerInput while it's open ("most specific overlay
+        // wins"), so without this, controller A here would only ever
+        // reach ActivateFocusedCard (MediaCard-only) and never the Back
+        // button.
+        private bool ActivateFocusedElement()
+        {
+            if (Keyboard.FocusedElement is ButtonBase focusedButton)
+            {
+                focusedButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                return true;
+            }
+
+            return ActivateFocusedCard();
         }
 
         private bool ActivateFocusedCard()
@@ -609,8 +630,31 @@ namespace StremioVideoCenterControls
 
         private void MoveVertical(int direction)
         {
+            // Dedicated-page Back navigation task: the Back (Close)
+            // button sits directly above this page's content, mirroring
+            // the same top-layer <-> content chaining Home's own
+            // navigation already uses (top nav <-> hero <-> content
+            // rows) - Down from Back enters the first available content,
+            // Up from the topmost content reaches Back, and Up from Back
+            // is a no-op (Back is already the topmost control).
+            if (CloseButton.IsKeyboardFocused)
+            {
+                if (direction > 0)
+                {
+                    FocusFirstAvailableAnyView();
+                }
+
+                return;
+            }
+
             if (IsFilteredViewActive())
             {
+                if (direction < 0 && IsFocusedFilteredCardInTopRow())
+                {
+                    CloseButton.Focus();
+                    return;
+                }
+
                 MoveFilteredGrid(0, direction);
             }
             else
@@ -657,6 +701,7 @@ namespace StremioVideoCenterControls
 
             if (sections.Length == 0)
             {
+                CloseButton.Focus();
                 return;
             }
 
@@ -669,7 +714,18 @@ namespace StremioVideoCenterControls
                 return;
             }
 
-            int target = Math.Max(0, Math.Min(index + direction, sections.Length - 1));
+            int target = index + direction;
+
+            if (target < 0)
+            {
+                // Dedicated-page Back navigation task: moving up out of
+                // the topmost section reaches the Back button instead of
+                // clamping in place.
+                CloseButton.Focus();
+                return;
+            }
+
+            target = Math.Min(target, sections.Length - 1);
             sections[target].FocusFirstCard();
         }
 
@@ -688,6 +744,35 @@ namespace StremioVideoCenterControls
             }
 
             CloseButton.Focus();
+        }
+
+        // Dedicated-page Back navigation task: Down from the Back button
+        // needs to reach whichever content view is actually showing
+        // (default or filtered) - FocusFirstAvailable above only ever
+        // knew about the default view's three MediaSections.
+        private void FocusFirstAvailableAnyView()
+        {
+            if (IsFilteredViewActive())
+            {
+                if (FilteredItemsControl.Items.Count > 0)
+                {
+                    FocusFilteredCard(0);
+                }
+                else
+                {
+                    CloseButton.Focus();
+                }
+
+                return;
+            }
+
+            FocusFirstAvailable();
+        }
+
+        private bool IsFocusedFilteredCardInTopRow()
+        {
+            int index = GetFocusedFilteredCardIndex();
+            return index >= 0 && index < GetFilteredColumnsPerRow();
         }
 
         // =========================================================

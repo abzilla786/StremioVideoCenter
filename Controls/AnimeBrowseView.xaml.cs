@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -527,10 +528,26 @@ namespace StremioVideoCenterControls
                     return true;
 
                 case ControllerInput.A:
-                    return ActivateFocusedCard();
+                    return ActivateFocusedElement();
             }
 
             return false;
+        }
+
+        // Dedicated-page Back navigation task: lets controller A activate
+        // the Back button when it has focus - see CatalogueBrowseView's
+        // identical remark on its own ActivateFocusedElement for why this
+        // page's own HandleControllerInput (not the generic keyboard
+        // Enter/Space path) needs this.
+        private bool ActivateFocusedElement()
+        {
+            if (Keyboard.FocusedElement is ButtonBase focusedButton)
+            {
+                focusedButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                return true;
+            }
+
+            return ActivateFocusedCard();
         }
 
         private bool ActivateFocusedCard()
@@ -618,12 +635,26 @@ namespace StremioVideoCenterControls
 
         private void MoveVertical(int direction)
         {
+            // Dedicated-page Back navigation task: same top-layer <->
+            // content chaining as CatalogueBrowseView/SearchView - see
+            // those files' identical remark on their own MoveVertical.
+            if (CloseButton.IsKeyboardFocused)
+            {
+                if (direction > 0)
+                {
+                    FocusFirstAvailable();
+                }
+
+                return;
+            }
+
             if (IsFocusInAnimeFlvGrid())
             {
                 if (direction < 0 && GetFocusedAnimeFlvCardIndex() < GetAnimeFlvColumnsPerRow())
                 {
                     // Moving up out of the grid's first row - land back on
-                    // the last visible TMDB section, if there is one.
+                    // the last visible TMDB section, if there is one, or
+                    // on the Back button if there isn't.
                     MediaSection[] sections = GetVisibleTmdbSections();
 
                     if (sections.Length > 0)
@@ -631,6 +662,9 @@ namespace StremioVideoCenterControls
                         sections[sections.Length - 1].FocusFirstCard();
                         return;
                     }
+
+                    CloseButton.Focus();
+                    return;
                 }
 
                 MoveAnimeFlvGrid(0, direction);
@@ -643,15 +677,7 @@ namespace StremioVideoCenterControls
 
             if (index < 0)
             {
-                if (visibleSections.Length > 0)
-                {
-                    visibleSections[0].FocusFirstCard();
-                }
-                else
-                {
-                    FocusAnimeFlvCard(0);
-                }
-
+                FocusFirstAvailable();
                 return;
             }
 
@@ -659,7 +685,10 @@ namespace StremioVideoCenterControls
 
             if (target < 0)
             {
-                visibleSections[0].FocusFirstCard();
+                // Dedicated-page Back navigation task: moving up out of
+                // the topmost TMDB section reaches the Back button
+                // instead of clamping in place.
+                CloseButton.Focus();
                 return;
             }
 
@@ -672,6 +701,24 @@ namespace StremioVideoCenterControls
             }
 
             visibleSections[target].FocusFirstCard();
+        }
+
+        // Dedicated-page Back navigation task: Down from the Back button
+        // needs to reach whichever content actually comes first - a
+        // visible TMDB section, or the AnimeFLV grid if none are visible
+        // (same fallback order the "no focus yet" branch above uses).
+        private void FocusFirstAvailable()
+        {
+            MediaSection[] sections = GetVisibleTmdbSections();
+
+            if (sections.Length > 0)
+            {
+                sections[0].FocusFirstCard();
+            }
+            else
+            {
+                FocusAnimeFlvCard(0);
+            }
         }
 
         private void MoveHorizontal(int direction)

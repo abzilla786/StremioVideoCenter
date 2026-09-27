@@ -73,15 +73,21 @@
                                VerticalAlignment="Center" />
                 </StackPanel>
 
+                <!--
+                    Dedicated-page Back navigation task: same control/
+                    event/style as before - only the visible label
+                    changed to a clearly-readable "Back" affordance.
+                -->
                 <Button x:Name="CloseButton"
                         Style="{StaticResource CloseButtonStyle}"
-                        Content="&#x2715;"
-                        ToolTip="Close"
+                        Content="&#x2190; Back"
+                        ToolTip="Back to Home"
                         Click="CloseButton_Click"
                         HorizontalAlignment="Right"
-                        Width="40"
+                        MinWidth="92"
                         Height="40"
-                        FontSize="18" />
+                        FontSize="14"
+                        FontWeight="SemiBold" />
             </Grid>
 
         </StackPanel>
