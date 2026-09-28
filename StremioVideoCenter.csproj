@@ -134,6 +134,7 @@
     <Compile Include="Services\CinemetaService.cs" />
     <Compile Include="Services\AnimeFlvCatalogueService.cs" />
     <Compile Include="Services\CoreAddonSeedingService.cs" />
+    <Compile Include="Services\KitsuService.cs" />
     <Compile Include="Models\LocalMediaModels.cs" />
     <Compile Include="Services\LocalMediaIdentificationService.cs" />
     <Compile Include="Services\LocalMediaScanService.cs" />

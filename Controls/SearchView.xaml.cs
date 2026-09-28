@@ -29,11 +29,15 @@ namespace StremioVideoCenterControls
     //     live-verified this slice (previously only assumed "by
     //     symmetry" with movie/top - see CatalogueService/Cinemeta_
     //     Capability_Audit.md).
-    //   - AnimeFLV's primary "animeflv" search catalog (its own
-    //     required "search" extra) - the same single-source choice
-    //     AnimeFlvCatalogueService.GetSearchCatalogAsync already makes
-    //     for this exact "don't fan out 6x against a slow scraping
-    //     backend" reason.
+    //   - Kitsu's own "filter[text]" search on its anime collection
+    //     (KitsuService.SearchAnimeAsync) - Slice 15 (Anime Architecture
+    //     Audit + Kitsu Migration + Provider Role Correction) replaces
+    //     the earlier AnimeFLV-backed anime search with this, because
+    //     AnimeFLV's own native ids could never be resolved by a
+    //     StreamProvider addon (Torrentio/Comet understand "tt" and
+    //     "kitsu" ids, not AnimeFLV's own catalogue-slug ids) - see
+    //     KitsuService's own remarks for the id convention this now
+    //     produces.
     //
     // All three are queried concurrently on submit and shown as up to
     // three separate MediaSections (Movies/TV Shows/Anime), each only
@@ -56,7 +60,7 @@ namespace StremioVideoCenterControls
         public event EventHandler<MediaItemSelectedEventArgs> MediaSelected;
 
         private CinemetaService _cinemetaService;
-        private AnimeFlvCatalogueService _animeFlvCatalogueService;
+        private KitsuService _kitsuService;
 
         private readonly ObservableCollection<MediaItem> _movieItems = new ObservableCollection<MediaItem>();
         private readonly ObservableCollection<MediaItem> _tvItems = new ObservableCollection<MediaItem>();
@@ -80,20 +84,20 @@ namespace StremioVideoCenterControls
         // INITIALIZE
         // =========================================================
 
-        public void Initialize(CinemetaService cinemetaService, AnimeFlvCatalogueService animeFlvCatalogueService)
+        public void Initialize(CinemetaService cinemetaService, KitsuService kitsuService)
         {
             if (cinemetaService == null)
             {
                 throw new ArgumentNullException(nameof(cinemetaService));
             }
 
-            if (animeFlvCatalogueService == null)
+            if (kitsuService == null)
             {
-                throw new ArgumentNullException(nameof(animeFlvCatalogueService));
+                throw new ArgumentNullException(nameof(kitsuService));
             }
 
             _cinemetaService = cinemetaService;
-            _animeFlvCatalogueService = animeFlvCatalogueService;
+            _kitsuService = kitsuService;
 
             MoviesSection.Items = _movieItems;
             TvSection.Items = _tvItems;
@@ -144,7 +148,7 @@ namespace StremioVideoCenterControls
 
             Task<List<MediaItem>> moviesTask = SafeSearchCinemetaAsync("movie", query, "Movie");
             Task<List<MediaItem>> tvTask = SafeSearchCinemetaAsync("series", query, "TV");
-            Task<List<MediaItem>> animeTask = SafeSearchAnimeFlvAsync(query);
+            Task<List<MediaItem>> animeTask = SafeSearchKitsuAsync(query);
 
             await Task.WhenAll(moviesTask, tvTask, animeTask);
 
@@ -198,14 +202,14 @@ namespace StremioVideoCenterControls
             }
         }
 
-        private async Task<List<MediaItem>> SafeSearchAnimeFlvAsync(string query)
+        private async Task<List<MediaItem>> SafeSearchKitsuAsync(string query)
         {
             try
             {
-                List<AnimeFlvCatalogItem> items = await _animeFlvCatalogueService.GetSearchCatalogAsync(query);
+                List<KitsuAnimeResource> items = await _kitsuService.SearchAnimeAsync(query);
 
-                return items
-                    .Select(MapAnimeFlvItem)
+                return (items ?? new List<KitsuAnimeResource>())
+                    .Select(MapKitsuItem)
                     .Where(item => item != null)
                     .Take(SearchResultTake)
                     .ToList();
@@ -275,31 +279,47 @@ namespace StremioVideoCenterControls
             return result;
         }
 
-        // Same mapping AnimeBrowseView.MapToMediaItem uses - duplicated
-        // per this project's existing per-view convention rather than
-        // shared (see that method's own remarks on StremioId/
-        // ExplicitStremioId).
-        private static MediaItem MapAnimeFlvItem(AnimeFlvCatalogItem item)
+        // Same mapping AnimeBrowseView.MapKitsuToMediaItem uses -
+        // duplicated per this project's existing per-view convention
+        // rather than shared (see that method's own remarks on
+        // StremioId's "kitsu:<id>" shape).
+        private static MediaItem MapKitsuItem(KitsuAnimeResource item)
         {
-            if (item == null ||
-                string.IsNullOrWhiteSpace(item.Id) ||
-                string.IsNullOrWhiteSpace(item.Name))
+            if (item == null || string.IsNullOrWhiteSpace(item.Id) || item.Attributes == null)
             {
                 return null;
             }
 
-            return new MediaItem
+            string title = !string.IsNullOrWhiteSpace(item.Attributes.CanonicalTitle)
+                ? item.Attributes.CanonicalTitle
+                : item.Attributes.Titles?.En;
+
+            if (string.IsNullOrWhiteSpace(title))
             {
-                StremioId = item.Id,
-                Title = item.Name,
-                Overview = item.Description,
-                Year = item.ReleaseInfo,
-                Rating = item.ImdbRating,
+                return null;
+            }
+
+            string poster = item.Attributes.PosterImage?.Large ?? item.Attributes.PosterImage?.Medium;
+
+            var mediaItem = new MediaItem
+            {
+                StremioId = "kitsu:" + item.Id,
+                Title = title,
+                Overview = item.Attributes.Synopsis,
+                ReleaseDate = item.Attributes.StartDate,
+                Rating = item.Attributes.AverageRating,
                 Type = "Anime",
-                Genres = item.Genres ?? new List<string>(),
-                PosterPath = item.Poster,
-                BackdropUrl = string.Empty
+                Genres = new List<string>(),
+                PosterPath = poster ?? string.Empty,
+                BackdropUrl = item.Attributes.CoverImage?.Large ?? string.Empty
             };
+
+            if (!string.IsNullOrWhiteSpace(item.Attributes.StartDate) && item.Attributes.StartDate.Length >= 4)
+            {
+                mediaItem.Year = item.Attributes.StartDate.Substring(0, 4);
+            }
+
+            return mediaItem;
         }
 
         private static void ReplaceCollection(ObservableCollection<MediaItem> target, List<MediaItem> source)

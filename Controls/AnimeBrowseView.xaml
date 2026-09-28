@@ -190,6 +190,33 @@
                 <controls:MediaSection x:Name="PopularAnimeSection" Title="POPULAR" />
                 <controls:MediaSection x:Name="NewAnimeSection" Title="NEW RELEASES" />
 
+                <!-- =====================================================
+                     KITSU-DERIVED POPULAR ROW (Slice 15 Kitsu Migration)
+                     =====================================================
+                     Real, ranked catalogue row from Kitsu (Zino's anime
+                     metadata/catalogue source) sorted by Kitsu's own
+                     userCount attribute - a confirmed, real sortable
+                     field, not an invented "trending" endpoint (see
+                     KitsuService's own remarks). Unlike the AnimeFLV
+                     browse grid below, every item here carries a real
+                     "kitsu:" id that a StreamProvider addon declaring
+                     the kitsu idPrefix (Comet - live-verified; Torrentio,
+                     documented but not independently re-verified this
+                     slice) can actually resolve streams for. Independent
+                     of the TMDB rows above - honestly empty
+                     (KitsuEmptyText) if Kitsu can't be reached, never
+                     mixed with TMDB/AnimeFLV data. -->
+
+                <controls:MediaSection x:Name="KitsuPopularSection" Title="POPULAR ON KITSU" />
+
+                <TextBlock x:Name="KitsuEmptyText"
+                           Text="Couldn't load Kitsu's Popular Anime row right now."
+                           Foreground="#AAAAAA"
+                           FontSize="14"
+                           TextWrapping="Wrap"
+                           Visibility="Collapsed"
+                           Margin="8,4,8,24" />
+
                 <TextBlock x:Name="TmdbEmptyText"
                            Text="TMDB isn't configured, so ranked Featured/Popular/New Anime rows aren't available. Browse AnimeFLV directly below instead."
                            Foreground="#AAAAAA"

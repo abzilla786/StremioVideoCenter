@@ -458,6 +458,20 @@ namespace StremioVideoCenter
                     return;
                 }
 
+                // Slice 15 (Anime Architecture Audit + Kitsu Migration +
+                // Provider Role Correction): generic Roles inference,
+                // applied uniformly regardless of provider name (no
+                // per-addon branch here - see AddonRole.
+                // InferFromResourceNames's own remarks). For Torrentio/
+                // Comet/Custom this simply makes explicit what was
+                // already true implicitly (their manifests declare
+                // "stream", so they get StreamProvider and remain
+                // queried for stream discovery exactly as before) -
+                // unlike the five core addons (CoreAddonSeedingService),
+                // none of which are installed through this generic flow.
+                List<string> resourceNames = ExtractResourceNames(manifest.Resources);
+                List<string> roles = AddonRole.InferFromResourceNames(resourceNames);
+
                 var instance = new AddonInstance
                 {
                     // Never fall back to baseUrl here: for a Real-Debrid-
@@ -486,7 +500,8 @@ namespace StremioVideoCenter
                     Logo = manifest.Logo ?? string.Empty,
                     Types = manifest.Types ?? new List<string>(),
                     IdPrefixes = manifest.IdPrefixes ?? new List<string>(),
-                    ResourceNames = ExtractResourceNames(manifest.Resources)
+                    ResourceNames = resourceNames,
+                    Roles = roles
                 };
 
                 if (isReplacePolicy)

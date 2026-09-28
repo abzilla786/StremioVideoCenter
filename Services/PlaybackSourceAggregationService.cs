@@ -2,6 +2,7 @@ using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace StremioVideoCenter.Services
 {
@@ -75,8 +76,15 @@ namespace StremioVideoCenter.Services
             _maxRealDebridAttempts = maxRealDebridAttempts;
         }
 
+        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
+        // - sequence counter for the Aggr# log lines below. Purely
+        // observational - no behaviour here is changed.
+        private static int _diagAggrSeq;
+
         public async Task<PlaybackSourceSet> AggregateAsync(ContentRequest request)
         {
+            int diagSeq = Interlocked.Increment(ref _diagAggrSeq);
+
             if (request == null)
             {
                 throw new ArgumentNullException(nameof(request));
@@ -84,7 +92,20 @@ namespace StremioVideoCenter.Services
 
             PlaybackSourceSet result = new PlaybackSourceSet();
 
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} awaiting _discovery.ResolveStreamsAsync (fan-out across all registered addons)",
+                    diagSeq,
+                    DateTime.UtcNow));
+
             List<StremioStream> streams = await _discovery.ResolveStreamsAsync(request);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _discovery.ResolveStreamsAsync returned {2} stream(s)",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    streams != null ? streams.Count : 0));
 
             if (streams == null || streams.Count == 0)
             {
@@ -184,12 +205,52 @@ namespace StremioVideoCenter.Services
 
                 PlaybackSource source;
 
+                string diagStreamIdentity =
+                    !string.IsNullOrWhiteSpace(stream.Url)
+                        ? "Url"
+                        : (!string.IsNullOrWhiteSpace(stream.InfoHash)
+                            ? "InfoHash=" + stream.InfoHash + " fileIdx=" +
+                              (stream.FileIdx.HasValue ? stream.FileIdx.Value.ToString() : "null")
+                            : "(neither)");
+
+                // SECURITY: log the addon's FriendlyName only, never
+                // SourceAddonUrl - per StremioAddonRegistry's own
+                // remarks, a Real-Debrid-configured addon's URL can
+                // carry the user's RD key embedded in it, and callers
+                // must always fall back to a generic label instead of
+                // the URL.
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} awaiting _resolver.ResolveStreamAsync stream=[{2}] addon={3}",
+                        diagSeq,
+                        DateTime.UtcNow,
+                        diagStreamIdentity,
+                        !string.IsNullOrWhiteSpace(stream.SourceAddonName)
+                            ? stream.SourceAddonName
+                            : "(unnamed addon)"));
+
                 try
                 {
                     source = await _resolver.ResolveStreamAsync(stream);
+
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync returned stream=[{2}] kind={3}",
+                            diagSeq,
+                            DateTime.UtcNow,
+                            diagStreamIdentity,
+                            source != null ? source.Kind.ToString() : "(null)"));
                 }
                 catch (Exception ex)
                 {
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync threw stream=[{2}] ex={3}",
+                            diagSeq,
+                            DateTime.UtcNow,
+                            diagStreamIdentity,
+                            ex.Message));
+
                     // One stream failing (Real-Debrid not configured, a
                     // specific torrent failing to resolve, a timeout, etc.)
                     // never fails the whole batch - recorded and skipped.
@@ -237,6 +298,14 @@ namespace StremioVideoCenter.Services
 
                 result.Sources.Add(source);
             }
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} end sources={2} unresolved={3}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    result.Sources.Count,
+                    result.Unresolved.Count));
 
             return result;
         }

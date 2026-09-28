@@ -52,10 +52,12 @@ namespace StremioVideoCenterControls
 
         private CatalogueService _catalogueService;
         private AnimeFlvCatalogueService _animeFlvCatalogueService;
+        private KitsuService _kitsuService;
 
         private readonly ObservableCollection<MediaItem> _featuredItems = new ObservableCollection<MediaItem>();
         private readonly ObservableCollection<MediaItem> _popularItems = new ObservableCollection<MediaItem>();
         private readonly ObservableCollection<MediaItem> _newItems = new ObservableCollection<MediaItem>();
+        private readonly ObservableCollection<MediaItem> _kitsuPopularItems = new ObservableCollection<MediaItem>();
         private readonly ObservableCollection<MediaItem> _animeFlvItems = new ObservableCollection<MediaItem>();
 
         private bool _suppressGenreEvents;
@@ -86,13 +88,14 @@ namespace StremioVideoCenterControls
             FeaturedAnimeSection.MediaSelected += Section_MediaSelected;
             PopularAnimeSection.MediaSelected += Section_MediaSelected;
             NewAnimeSection.MediaSelected += Section_MediaSelected;
+            KitsuPopularSection.MediaSelected += Section_MediaSelected;
         }
 
         // =========================================================
         // INITIALIZE
         // =========================================================
 
-        public void Initialize(CatalogueService catalogueService, AnimeFlvCatalogueService animeFlvCatalogueService)
+        public void Initialize(CatalogueService catalogueService, AnimeFlvCatalogueService animeFlvCatalogueService, KitsuService kitsuService)
         {
             if (catalogueService == null)
             {
@@ -104,20 +107,28 @@ namespace StremioVideoCenterControls
                 throw new ArgumentNullException(nameof(animeFlvCatalogueService));
             }
 
+            if (kitsuService == null)
+            {
+                throw new ArgumentNullException(nameof(kitsuService));
+            }
+
             _catalogueService = catalogueService;
             _animeFlvCatalogueService = animeFlvCatalogueService;
+            _kitsuService = kitsuService;
 
             FeaturedAnimeSection.Items = _featuredItems;
             PopularAnimeSection.Items = _popularItems;
             NewAnimeSection.Items = _newItems;
+            KitsuPopularSection.Items = _kitsuPopularItems;
             AnimeFlvItemsControl.ItemsSource = _animeFlvItems;
 
             PopulateGenreCombo();
 
-            // Both areas load independently and concurrently - neither
-            // waits on the other, matching Home's own fail-soft,
+            // All three areas load independently and concurrently - none
+            // waits on another, matching Home's own fail-soft,
             // independent-row loading approach.
             BeginLoadTmdbRows();
+            BeginLoadKitsuPopular();
             BeginLoadAnimeFlv();
         }
 
@@ -134,6 +145,90 @@ namespace StremioVideoCenterControls
         private async void BeginLoadAnimeFlv()
         {
             await LoadAnimeFlvPageAsync(focusFirstResult: false);
+        }
+
+        private async void BeginLoadKitsuPopular()
+        {
+            await LoadKitsuPopularAsync();
+        }
+
+        // =========================================================
+        // KITSU-BACKED POPULAR ROW (Slice 15 Kitsu Migration)
+        // =========================================================
+        //
+        // Independent of both the TMDB rows and the AnimeFLV browse grid
+        // below - a third, separate data source, never blended with
+        // either. Fail-soft: an unreachable Kitsu just leaves this row
+        // empty (KitsuEmptyText), exactly like the TMDB rows' own
+        // TmdbEmptyText behaviour when TMDB isn't configured.
+        private async Task LoadKitsuPopularAsync()
+        {
+            List<KitsuAnimeResource> results;
+
+            try
+            {
+                results = await _kitsuService.GetPopularAnimeAsync();
+            }
+            catch
+            {
+                results = new List<KitsuAnimeResource>();
+            }
+
+            List<MediaItem> mapped = (results ?? new List<KitsuAnimeResource>())
+                .Select(MapKitsuToMediaItem)
+                .Where(item => item != null)
+                .ToList();
+
+            ReplaceCollection(_kitsuPopularItems, mapped);
+
+            KitsuPopularSection.Visibility = mapped.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            KitsuEmptyText.Visibility = mapped.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        // Maps a KitsuAnimeResource into the same MediaItem shape every
+        // other catalogue source in this project already produces.
+        // StremioId is "kitsu:<id>" - the real, documented Kitsu/Stremio
+        // id convention (see KitsuService's own remarks) - NOT the raw
+        // numeric Kitsu id alone, so ContentRequest/PlaySelectedMediaAsync
+        // can recognise it by prefix alongside the existing "tt"-prefixed
+        // convention without any additional per-item flag.
+        private static MediaItem MapKitsuToMediaItem(KitsuAnimeResource item)
+        {
+            if (item == null || string.IsNullOrWhiteSpace(item.Id) || item.Attributes == null)
+            {
+                return null;
+            }
+
+            string title = !string.IsNullOrWhiteSpace(item.Attributes.CanonicalTitle)
+                ? item.Attributes.CanonicalTitle
+                : item.Attributes.Titles?.En;
+
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return null;
+            }
+
+            string poster = item.Attributes.PosterImage?.Large ?? item.Attributes.PosterImage?.Medium;
+
+            var mediaItem = new MediaItem
+            {
+                StremioId = "kitsu:" + item.Id,
+                Title = title,
+                Overview = item.Attributes.Synopsis,
+                ReleaseDate = item.Attributes.StartDate,
+                Rating = item.Attributes.AverageRating,
+                Type = "Anime",
+                Genres = new List<string>(),
+                PosterPath = poster ?? string.Empty,
+                BackdropUrl = item.Attributes.CoverImage?.Large ?? string.Empty
+            };
+
+            if (!string.IsNullOrWhiteSpace(item.Attributes.StartDate) && item.Attributes.StartDate.Length >= 4)
+            {
+                mediaItem.Year = item.Attributes.StartDate.Substring(0, 4);
+            }
+
+            return mediaItem;
         }
 
         // =========================================================
@@ -608,9 +703,14 @@ namespace StremioVideoCenterControls
         // movement simply tries the TMDB sections first, then falls
         // through to the AnimeFLV grid.
 
+        // Despite the name (kept for minimal diff against the rest of
+        // this file's existing remarks/method chain), this now also
+        // includes KitsuPopularSection (Slice 15 Kitsu Migration) - the
+        // stacked-MediaSection chain above the AnimeFLV browse grid,
+        // regardless of which provider backs each row.
         private MediaSection[] GetVisibleTmdbSections()
         {
-            return new[] { FeaturedAnimeSection, PopularAnimeSection, NewAnimeSection }
+            return new[] { FeaturedAnimeSection, PopularAnimeSection, NewAnimeSection, KitsuPopularSection }
                 .Where(section => section.Visibility == Visibility.Visible)
                 .ToArray();
         }

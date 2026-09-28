@@ -696,15 +696,31 @@ namespace StremioVideoCenterControls
         // FOCUS MOVEMENT
         // =========================================================
         //
-        // A simple single-column model: Up/Down cycles through the source
-        // buttons only (wrapping first<->last), independent of the
-        // always-visible, always-clickable Close button. Deliberately not
+        // A simple single-column model: Up/Down moves through the source
+        // buttons, with the always-visible, always-clickable Close button
+        // treated as one more stop at the top of that same chain rather
+        // than a separate control - Up from the topmost source reaches
+        // Close, and Down from Close reaches the first source, instead
+        // of the previous cyclic wrap-around (Up from the top used to
+        // skip straight to the bottom, and vice versa). Deliberately not
         // using PlayerFocusController - that class exists specifically for
         // MpvPlayer's multi-row control layout; a flat vertical list is a
         // simpler case that doesn't need that machinery.
 
         private void MoveFocus(int direction)
         {
+            if (CloseButton.IsKeyboardFocused)
+            {
+                if (direction > 0 && _sourceButtons.Count > 0)
+                {
+                    FocusElement(_sourceButtons[0]);
+                }
+
+                // Up while already on Close is a no-op - there is
+                // nothing above it to move to.
+                return;
+            }
+
             if (_sourceButtons.Count == 0)
             {
                 return;
@@ -723,11 +739,19 @@ namespace StremioVideoCenterControls
 
                 if (index < 0)
                 {
-                    index = _sourceButtons.Count - 1;
+                    // Up from the topmost source reaches the
+                    // always-visible Close control instead of wrapping
+                    // to the bottom of the list.
+                    FocusElement(CloseButton);
+                    return;
                 }
-                else if (index >= _sourceButtons.Count)
+
+                if (index >= _sourceButtons.Count)
                 {
-                    index = 0;
+                    // Down from the bottom-most source stays put -
+                    // there is no further target below the list, so no
+                    // wrap-around happens.
+                    return;
                 }
             }
 

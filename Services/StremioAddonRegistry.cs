@@ -1,6 +1,7 @@
 using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
@@ -37,6 +38,17 @@ namespace StremioVideoCenter.Services
             // include "stream" (e.g. Cinemeta: catalog/meta/addon_catalog
             // only) is skipped.
             public List<string> ResourceNames;
+
+            // Addon-role architecture (Slice 15 Anime Architecture Audit +
+            // Kitsu Migration + Provider Role Correction) - see
+            // AddonRole's remarks in AddonInstance.cs. Null/empty means
+            // "no explicit role assigned" (every legacy/
+            // FromConfiguredUrls entry, and any AddonInstance that never
+            // set Roles) - GetAllStreamsAsync treats that the same way
+            // it already treats an unknown ResourceNames list: fall back
+            // to prior behaviour (query it, subject to the ResourceNames
+            // check) rather than excluding it.
+            public List<string> Roles;
         }
 
         private readonly List<AddonEntry> _entries = new List<AddonEntry>();
@@ -120,7 +132,7 @@ namespace StremioVideoCenter.Services
                         ? instance.FriendlyName
                         : instance.AddonId;
 
-                registry.AddAddon(instance.ManifestUrl, displayName, instance.ResourceNames);
+                registry.AddAddon(instance.ManifestUrl, displayName, instance.ResourceNames, instance.Roles);
             }
 
             return registry;
@@ -153,7 +165,18 @@ namespace StremioVideoCenter.Services
         // "capability unknown"). Only FromAddonInstances currently
         // passes it - see AddonEntry.ResourceNames remarks above for how
         // GetAllStreamsAsync treats it.
-        public void AddAddon(string addonUrl, string friendlyName = null, List<string> resourceNames = null)
+        //
+        // roles is optional too (defaults to null, meaning "no explicit
+        // role assigned") - see AddonRole's remarks in AddonInstance.cs.
+        // Only FromAddonInstances currently passes a non-empty value
+        // (e.g. AnimeFLV's [Metadata, Catalogue]); every other caller -
+        // including the legacy FromConfiguredUrls path, which has no
+        // AddonInstance to read Roles from at all - gets an empty list,
+        // which GetAllStreamsAsync's Roles-based check treats as
+        // "unknown, fall back to the ResourceNames check", exactly
+        // preserving "queried for every request it's capable of" prior
+        // behaviour.
+        public void AddAddon(string addonUrl, string friendlyName = null, List<string> resourceNames = null, List<string> roles = null)
         {
             if (string.IsNullOrWhiteSpace(addonUrl))
             {
@@ -176,7 +199,8 @@ namespace StremioVideoCenter.Services
                 Url = trimmed,
                 FriendlyName = friendlyName,
                 Service = new StremioAddonService(trimmed),
-                ResourceNames = resourceNames
+                ResourceNames = resourceNames,
+                Roles = roles
             });
         }
 
@@ -185,9 +209,33 @@ namespace StremioVideoCenter.Services
         // addon that fails (unreachable, bad manifest, malformed response,
         // etc.) is skipped rather than failing the whole request - one
         // broken addon should never block streams from the others.
+        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
+        // - sequence counter for the Addon# log lines below. Purely
+        // observational - no behaviour here is changed.
+        private static int _diagAddonCallSeq;
+
+        // Slice 15 (Anime Architecture Audit + Kitsu Migration + Provider
+        // Role Correction): no longer takes an isAnimeRequest flag. The
+        // earlier Workstream B design scoped AnimeFLV's stream
+        // eligibility to "only when the request is Anime" - explicitly
+        // rejected by this slice: AnimeFLV must never be queried for
+        // streams for ANY content type, unconditionally. Eligibility is
+        // now decided purely by each addon's own Roles (see the
+        // StreamProvider check below) - no content-type input is needed
+        // at all, and none of this method's logic branches on the
+        // request's content type.
         public async Task<List<StremioStream>> GetAllStreamsAsync(string type, string id)
         {
-            List<StremioStream> combined = new List<StremioStream>();
+            int diagOuterSeq = Interlocked.Increment(ref _diagAddonCallSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} begin (concurrent fan-out over {2} registered addon(s))",
+                    diagOuterSeq,
+                    DateTime.UtcNow,
+                    _entries.Count));
+
+            List<Task<List<StremioStream>>> tasks = new List<Task<List<StremioStream>>>();
 
             foreach (AddonEntry entry in _entries)
             {
@@ -204,34 +252,155 @@ namespace StremioVideoCenter.Services
                     entry.ResourceNames.Count > 0 &&
                     !entry.ResourceNames.Contains("stream"))
                 {
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (known capabilities do not include \"stream\")",
+                            diagOuterSeq,
+                            DateTime.UtcNow,
+                            entry.FriendlyName ?? "(unnamed)"));
+
                     continue;
                 }
 
-                try
+                // Addon-role skip (Slice 15 Anime Architecture Audit +
+                // Kitsu Migration + Provider Role Correction): an addon
+                // may genuinely declare "stream" capability in its
+                // manifest (the check above does not exclude it) while
+                // Zino still deliberately never wants it used for stream
+                // discovery - AnimeFLV is the concrete case (Metadata +
+                // Catalogue only, per its CoreAddonSeedingService
+                // definition). Only an entry with a KNOWN, non-empty
+                // Roles list that does NOT include StreamProvider is
+                // skipped - unconditionally, for every content type,
+                // with no isAnimeRequest/content-type input at all. An
+                // entry with unknown Roles (null/empty - every legacy
+                // FromConfiguredUrls entry, and any AddonInstance that
+                // never set Roles, including Torrentio/Comet/custom
+                // addons installed before this slice) falls through
+                // unaffected, exactly preserving "queried for every
+                // request it's capable of" prior behaviour.
+                if (entry.Roles != null &&
+                    entry.Roles.Count > 0 &&
+                    !entry.Roles.Contains(AddonRole.StreamProvider))
                 {
-                    List<StremioStream> streams = await entry.Service.GetStreamsAsync(type, id);
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (known Roles do not include StreamProvider)",
+                            diagOuterSeq,
+                            DateTime.UtcNow,
+                            entry.FriendlyName ?? "(unnamed)"));
 
-                    if (streams != null)
-                    {
-                        foreach (StremioStream stream in streams)
-                        {
-                            if (stream != null)
-                            {
-                                stream.SourceAddonUrl = entry.Url;
-                                stream.SourceAddonName = entry.FriendlyName;
-                            }
-
-                            combined.Add(stream);
-                        }
-                    }
+                    continue;
                 }
-                catch
+
+                // Independent StreamProvider addons are queried
+                // concurrently rather than sequentially (Slice 15
+                // Workstream B) - a single slow/scraping-based provider
+                // can no longer delay every other provider's results.
+                // Each addon's own request remains fully independent -
+                // its own try/catch, its own timing/logging, and its own
+                // SourceAddonUrl/SourceAddonName tagging, all unchanged
+                // from before this slice and still performed inside
+                // QueryAddonAsync below - only WHEN the requests are
+                // issued changes, not any per-addon behaviour.
+                tasks.Add(QueryAddonAsync(entry, type, id, diagOuterSeq));
+            }
+
+            List<StremioStream>[] perAddonResults = await Task.WhenAll(tasks);
+
+            List<StremioStream> combined = new List<StremioStream>();
+
+            foreach (List<StremioStream> streams in perAddonResults)
+            {
+                if (streams != null)
                 {
-                    // Skip this addon; others may still succeed.
+                    combined.AddRange(streams);
                 }
             }
 
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} end combinedStreamCount={2}",
+                    diagOuterSeq,
+                    DateTime.UtcNow,
+                    combined.Count));
+
             return combined;
+        }
+
+        // Extracted from GetAllStreamsAsync's old inline sequential loop
+        // body so each eligible addon's request can be launched
+        // concurrently via Task.WhenAll above. The try/catch, logging,
+        // and SourceAddonUrl/SourceAddonName tagging below are otherwise
+        // completely unchanged from before this slice - including
+        // unconditionally adding a null stream entry to the returned
+        // list exactly as the original inline loop did (only the tagging
+        // assignment was ever conditional on non-null), since downstream
+        // consumers (PlaybackSourceAggregationService.AggregateAsync)
+        // already guard against a null stream entry.
+        private async Task<List<StremioStream>> QueryAddonAsync(
+            AddonEntry entry,
+            string type,
+            string id,
+            int diagOuterSeq)
+        {
+            DateTime diagAddonCallStart = DateTime.UtcNow;
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} awaiting entry.Service.GetStreamsAsync addon={2}",
+                    diagOuterSeq,
+                    diagAddonCallStart,
+                    entry.FriendlyName ?? "(unnamed)"));
+
+            try
+            {
+                List<StremioStream> streams = await entry.Service.GetStreamsAsync(type, id);
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} entry.Service.GetStreamsAsync returned addon={2} streamCount={3} elapsedMs={4}",
+                        diagOuterSeq,
+                        DateTime.UtcNow,
+                        entry.FriendlyName ?? "(unnamed)",
+                        streams != null ? streams.Count : 0,
+                        (DateTime.UtcNow - diagAddonCallStart).TotalMilliseconds));
+
+                List<StremioStream> tagged = new List<StremioStream>();
+
+                if (streams != null)
+                {
+                    foreach (StremioStream stream in streams)
+                    {
+                        if (stream != null)
+                        {
+                            stream.SourceAddonUrl = entry.Url;
+                            stream.SourceAddonName = entry.FriendlyName;
+                        }
+
+                        tagged.Add(stream);
+                    }
+                }
+
+                return tagged;
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} entry.Service.GetStreamsAsync threw addon={2} elapsedMs={3} ex={4}",
+                        diagOuterSeq,
+                        DateTime.UtcNow,
+                        entry.FriendlyName ?? "(unnamed)",
+                        (DateTime.UtcNow - diagAddonCallStart).TotalMilliseconds,
+                        ex.Message));
+
+                // Skip this addon; others may still succeed - same
+                // fail-soft contract as before this slice, just returning
+                // an empty list instead of relying on the caller's shared
+                // "combined" accumulator never being touched.
+                return new List<StremioStream>();
+            }
         }
 
         // Tests every registered addon's manifest independently. One addon

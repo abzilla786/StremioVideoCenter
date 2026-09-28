@@ -48,7 +48,13 @@
              ComboBox's own Background/Foreground (it renders in a
              separate popup) - without this, the dropdown list would
              fall back to the OS theme's light popup rather than this
-             app's dark visual language. -->
+             app's dark visual language. IsSelected (in addition to the
+             existing IsHighlighted, which only tracks mouse-hover/
+             arrow-navigated position within an open dropdown) keeps the
+             currently-applied filter visibly marked even when it was
+             set programmatically (controller/keyboard Up/Down in
+             FilterComboStyle's template below moves SelectedIndex
+             directly, which never raises a mouse-driven "highlight"). -->
         <Style x:Key="FilterComboItemStyle" TargetType="ComboBoxItem">
             <Setter Property="Background" Value="#1A1A1F" />
             <Setter Property="Foreground" Value="White" />
@@ -57,9 +63,26 @@
                 <Trigger Property="IsHighlighted" Value="True">
                     <Setter Property="Background" Value="#E91E63" />
                 </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#E91E63" />
+                </Trigger>
             </Style.Triggers>
         </Style>
 
+        <!-- Controller navigation stabilisation (filter controls task):
+             the default OS ComboBox template does NOT template-bind its
+             visible "closed" chrome (the ToggleButton part) to the
+             Background/Foreground/BorderBrush setters below - only the
+             dropdown popup honours them, which is why FilterComboItem
+             Style above already had to solve this same problem for the
+             popup. Without an explicit ControlTemplate here, the closed
+             box renders with the OS theme's own light chrome regardless
+             of the setters, which is what made it unreadable against
+             this app's dark background. This template reuses every
+             existing setter value unchanged (same colours/sizes as
+             before) via TemplateBinding - nothing about the visual
+             design changes, it simply makes the control actually honour
+             the values already specified for it. -->
         <Style x:Key="FilterComboStyle" TargetType="ComboBox">
             <Setter Property="Background" Value="#1A1A1F" />
             <Setter Property="Foreground" Value="White" />
@@ -70,6 +93,98 @@
             <Setter Property="Margin" Value="0,0,12,0" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="ItemContainerStyle" Value="{StaticResource FilterComboItemStyle}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <!-- FilterBorder is the only visible chrome -
+                                 declared directly in this (outer)
+                                 template's own namescope (not inside a
+                                 further nested template), so
+                                 ControlTemplate.Triggers below can target
+                                 it by name. FilterToggle beneath is the
+                                 mouse hit-target that opens/closes the
+                                 dropdown (Opacity 0 - the default
+                                 ToggleButton chrome is never seen, but
+                                 stays hit-testable, so no separate
+                                 template is needed for it). -->
+                            <Border x:Name="FilterBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="3">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter Grid.Column="0"
+                                                      Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      Margin="{TemplateBinding Padding}"
+                                                      HorizontalAlignment="Left"
+                                                      VerticalAlignment="Center"
+                                                      IsHitTestVisible="False"
+                                                      TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="&#x25BC;"
+                                               Foreground="{TemplateBinding Foreground}"
+                                               FontSize="9"
+                                               Margin="0,0,10,0"
+                                               VerticalAlignment="Center" />
+                                </Grid>
+                            </Border>
+
+                            <ToggleButton x:Name="FilterToggle"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          Opacity="0"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
+
+                            <Popup x:Name="FilterPopup"
+                                   Placement="Bottom"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   PopupAnimation="Slide"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}">
+                                <Border Background="#1A1A1F"
+                                        BorderBrush="#55555F"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent, AncestorType=ComboBox}}"
+                                        MaxHeight="240"
+                                        Margin="0,2,0,0">
+                                    <ScrollViewer SnapsToDevicePixels="True"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="FilterBorder" Property="Background" Value="#2A2A32" />
+                            </Trigger>
+                            <!-- Obvious focused-state affordance, matching
+                                 the same pink-accent focus convention
+                                 CloseButtonStyle/LoadMoreButtonStyle in
+                                 this file already use, so a controller
+                                 user can always tell the filter bar has
+                                 focus. Kept while the dropdown is open
+                                 too (IsDropDownOpen), since focus remains
+                                 logically on the ComboBox throughout. -->
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="FilterBorder" Property="BorderBrush" Value="#E91E63" />
+                                <Setter TargetName="FilterBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter TargetName="FilterBorder" Property="BorderBrush" Value="#E91E63" />
+                                <Setter TargetName="FilterBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="LoadMoreButtonStyle" TargetType="Button">

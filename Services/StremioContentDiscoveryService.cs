@@ -1,6 +1,7 @@
 using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
@@ -32,14 +33,29 @@ namespace StremioVideoCenter.Services
             _registry = registry;
         }
 
+        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
+        // - sequence counter for the Discover# log lines below. Purely
+        // observational - no behaviour here is changed.
+        private static int _diagDiscoverSeq;
+
         public async Task<List<StremioStream>> ResolveStreamsAsync(ContentRequest request)
         {
+            int diagSeq = Interlocked.Increment(ref _diagDiscoverSeq);
+
             if (request == null)
             {
                 throw new ArgumentNullException(nameof(request));
             }
 
             string stremioId = request.BuildStremioId();
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Discover#{0} time={1:HH:mm:ss.fff} begin type={2} stremioId={3}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    request.StremioType,
+                    stremioId ?? "(null)"));
 
             if (string.IsNullOrWhiteSpace(stremioId))
             {
@@ -48,12 +64,38 @@ namespace StremioVideoCenter.Services
                 // mapping for this title (common for some anime), or a
                 // TV/anime request missing season or episode. Report it as
                 // an empty result rather than guessing or throwing.
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Discover#{0} time={1:HH:mm:ss.fff} end reason=NoStremioId",
+                        diagSeq,
+                        DateTime.UtcNow));
+
                 return new List<StremioStream>();
             }
 
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Discover#{0} time={1:HH:mm:ss.fff} awaiting _registry.GetAllStreamsAsync",
+                    diagSeq,
+                    DateTime.UtcNow));
+
+            // Slice 15 (Anime Architecture Audit + Kitsu Migration +
+            // Provider Role Correction): GetAllStreamsAsync no longer
+            // takes a content-type flag - stream-provider eligibility is
+            // decided entirely by each addon's own Roles (see
+            // StremioAddonRegistry.GetAllStreamsAsync and AddonRole's
+            // own remarks in AddonInstance.cs), never by whether this
+            // particular request happens to be Anime.
             List<StremioStream> streams = await _registry.GetAllStreamsAsync(
                 request.StremioType,
                 stremioId);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Discover#{0} time={1:HH:mm:ss.fff} end streams={2}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    streams != null ? streams.Count : 0));
 
             return streams ?? new List<StremioStream>();
         }

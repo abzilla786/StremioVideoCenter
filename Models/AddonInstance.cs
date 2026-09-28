@@ -39,6 +39,7 @@ namespace StremioVideoCenter.Models
         private string providerKey = string.Empty;
         private bool isCore = false;
         private string installPolicy = AddonInstallPolicy.AllowMultiple;
+        private List<string> roles = new List<string>();
 
         // Display name shown in the Settings UI. Falls back to the
         // manifest's own "name" field (copied in on import) when the
@@ -172,6 +173,36 @@ namespace StremioVideoCenter.Models
             get => installPolicy;
             set => SetValue(ref installPolicy, value);
         }
+
+        // =========================================================
+        // ROLES (Zino's own intended-usage assignment, generic)
+        // =========================================================
+        //
+        // Slice 15 (Anime Architecture Audit + Kitsu Migration + Provider
+        // Role Correction) - replaces the earlier single Role(string)
+        // field (and its AddonRole.AnimeScopedStream value, now removed
+        // entirely - see AddonRole's own remarks below for why). An
+        // addon can hold more than one role at once (e.g. AnimeFLV is
+        // both Metadata and Catalogue, but never StreamProvider) - a
+        // single string could not express that, so this is a list.
+        //
+        // Empty/null (the default, and what every pre-existing
+        // AddonInstance deserializes as, since the old "Role" field is
+        // no longer read) means "no explicit role assigned" - callers
+        // that gate on a specific role (StremioAddonRegistry.
+        // GetAllStreamsAsync's StreamProvider check) must treat an
+        // empty/null Roles list as "role unknown, fall back to prior
+        // behaviour" (the existing ResourceNames-capability check),
+        // exactly like AddonEntry.ResourceNames already does for an
+        // unknown capability list. This preserves every pre-existing
+        // and future Torrentio/Comet/custom addon's "always queried for
+        // stream discovery" behaviour unchanged unless Roles is
+        // explicitly populated for it.
+        public List<string> Roles
+        {
+            get => roles;
+            set => SetValue(ref roles, value);
+        }
     }
 
     // =============================================================
@@ -189,6 +220,124 @@ namespace StremioVideoCenter.Models
     {
         public const string ReplaceExisting = "ReplaceExisting";
         public const string AllowMultiple = "AllowMultiple";
+    }
+
+    // =============================================================
+    // ADDON ROLE (generic capability/usage model)
+    // =============================================================
+    //
+    // Slice 15 (Anime Architecture Audit + Kitsu Migration + Provider
+    // Role Correction) - supersedes the earlier Workstream B design,
+    // which introduced a single, provider-shaped AddonRole.
+    // AnimeScopedStream value (content-type-conditional stream
+    // eligibility for AnimeFLV specifically). That design is REMOVED
+    // entirely per this slice's explicit correction: AnimeFLV must
+    // never be queried for playable stream URLs, for ANY content type
+    // (Movie, TV, Anime alike) - not "only outside Anime requests".
+    // There is deliberately no provider-named role of any kind here -
+    // only generic capability/usage categories that any addon, present
+    // or future, can carry:
+    //
+    //   Metadata        - the addon can supply title/overview/artwork/
+    //                      episode metadata (Stremio's "meta" resource).
+    //   Catalogue       - the addon can supply browsable/searchable
+    //                      catalogue rows (Stremio's "catalog" resource).
+    //   StreamProvider  - the addon's stream results should be included
+    //                      in ordinary stream discovery
+    //                      (StremioAddonRegistry.GetAllStreamsAsync).
+    //   SubtitleProvider - the addon supplies subtitles (Stremio's
+    //                      "subtitles" resource). Not yet consulted by
+    //                      any discovery code this slice (subtitle
+    //                      discovery/UI is a later slice) - recorded
+    //                      now so the capability model is complete and
+    //                      a future subtitle-provider addon (anime or
+    //                      otherwise) never needs another role redesign.
+    //   LocalMedia      - the addon (or a future dedicated local-
+    //                      library feature) sources content from the
+    //                      local filesystem rather than a remote addon
+    //                      backend.
+    //
+    // An addon can carry more than one of these at once (e.g. AnimeFLV
+    // = Metadata + Catalogue, never StreamProvider) - see
+    // AddonInstance.Roles. Narrows WHEN an addon's already-declared
+    // "stream" resource capability (AddonCapabilities.Streams below)
+    // should actually be exercised during stream discovery - it does
+    // not change what an addon IS capable of per its manifest
+    // (ResourceNames remains the single source of truth for that),
+    // only when Zino chooses to ask it for streams. Checked in addition
+    // to - never instead of - the pre-existing ResourceNames-based skip
+    // in GetAllStreamsAsync: that check answers "can this addon serve
+    // streams at all" (e.g. Cinemeta cannot); this model answers "does
+    // Zino intend to use this addon for streams at all" (e.g. AnimeFLV
+    // can, per its manifest, but Zino deliberately never asks it to).
+    //
+    // Free-form string constants, matching this project's existing
+    // Category/InstallPolicy convention (see their own remarks above),
+    // so a future role never requires a settings migration. No addon
+    // name appears anywhere in this class or in the code that consults
+    // it (StremioAddonRegistry.GetAllStreamsAsync) - see
+    // InferFromResourceNames below for how a role is derived generically
+    // from a manifest's own declared resources, with no per-provider
+    // special-casing.
+    public static class AddonRole
+    {
+        public const string Metadata = "Metadata";
+        public const string Catalogue = "Catalogue";
+        public const string StreamProvider = "StreamProvider";
+        public const string SubtitleProvider = "SubtitleProvider";
+        public const string LocalMedia = "LocalMedia";
+
+        // =====================================================
+        // INFER FROM RESOURCE NAMES (generic manifest -> Roles)
+        // =====================================================
+        //
+        // Used by the generic addon-install flow (Torrentio/Comet/
+        // Custom - see StremioVideoCenterSettingsView.
+        // InstallAddonFromManifestUrlAsync) to populate a newly
+        // installed instance's Roles directly from its own fetched
+        // manifest's resource names - the same AddonCapabilities.*
+        // constants (below) already derived from that manifest, so
+        // this is a pure relabeling, not a second source of truth.
+        // Applied uniformly regardless of provider name - there is no
+        // per-addon branch here. This is deliberately NOT used for the
+        // five core addons (CoreAddonSeedingService assigns their
+        // Roles explicitly) because at least one of them - AnimeFLV -
+        // needs its assigned Roles to intentionally differ from what
+        // this generic inference would produce from its manifest (its
+        // manifest genuinely declares "stream", but Zino must never
+        // treat it as a StreamProvider) - exactly the distinction the
+        // class remarks above describe.
+        public static List<string> InferFromResourceNames(List<string> resourceNames)
+        {
+            var inferred = new List<string>();
+
+            if (resourceNames == null || resourceNames.Count == 0)
+            {
+                return inferred;
+            }
+
+            if (resourceNames.Contains(AddonCapabilities.Streams))
+            {
+                inferred.Add(StreamProvider);
+            }
+
+            if (resourceNames.Contains(AddonCapabilities.Metadata))
+            {
+                inferred.Add(Metadata);
+            }
+
+            if (resourceNames.Contains(AddonCapabilities.Catalogue))
+            {
+                inferred.Add(Catalogue);
+            }
+
+            if (resourceNames.Contains(AddonCapabilities.Subtitles))
+            {
+                inferred.Add(SubtitleProvider);
+            }
+
+            return inferred;
+        }
     }
 
     // =============================================================

@@ -1006,10 +1006,34 @@ namespace StremioVideoCenter
         // controller path already used, so there is exactly one place
         // that defines Home's directional navigation.
 
+        // TEMPORARY DIAGNOSTIC (controller double-input investigation,
+        // phase 2 - downstream trace) - logs every PreviewKeyDown this
+        // view receives, whatever the source. The point of this one is to
+        // catch a case the phase-1 diagnostic could not see: if a single
+        // physical controller press produces a synthesized keyboard
+        // KeyDown in addition to the direct OnControllerButtonStateChanged
+        // callback already proven 1:1, that synthesized key would arrive
+        // here and independently re-enter HandleHomeDirectionalNavigation
+        // - a second logical move from what looks like one physical
+        // press, without either of the phase-1 counters ever seeing two
+        // events. Remove once the root cause is confirmed.
+        private static int _diagKeyCallSeq;
+        private static int _diagNavCallSeq;
+
         private void StremioVideoCenterView_PreviewKeyDown(
             object sender,
             KeyEventArgs e)
         {
+            int diagKeySeq =
+                Interlocked.Increment(ref _diagKeyCallSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Key#{0} key={1} alreadyHandled={2}",
+                    diagKeySeq,
+                    e.Key,
+                    e.Handled));
+
             // Runtime regression fix: SelectFocusedMediaCard() already
             // existed (reused below) and was already wired to the
             // controller's A button, but nothing ever called it for a
@@ -1039,10 +1063,123 @@ namespace StremioVideoCenter
                 return;
             }
 
+            // Controller navigation stabilisation fix (root cause
+            // confirmed via the CTRL-DIAG Nav#/Key#/MoveH#/MoveV# trace,
+            // then conclusively narrowed by the WH_KEYBOARD_LL diagnostic
+            // pass): a physical controller D-pad press is already
+            // handled directly by HandleControllerInput. Playnite's own
+            // Fullscreen shell separately raises a synthetic arrow-key
+            // PreviewKeyDown for generic keyboard-based focus navigation
+            // a few milliseconds later, carrying the identical direction
+            // - but the diagnostic hook proved this synthetic event never
+            // becomes an OS-level keyboard message at all (zero
+            // WM_KEYDOWN/WM_SYSKEYDOWN observed for it, injected or not,
+            // while genuine physical typing was captured correctly), so
+            // it is generated entirely inside Playnite/WPF's managed
+            // input pipeline. An OS-level hook can never see it, which is
+            // why the earlier LLKHF_INJECTED-based InjectedKeyDetector
+            // approach had no effect and has been removed.
+            //
+            // The fix instead lives entirely at this WPF boundary:
+            // HandleControllerInput records, in _pendingControllerEcho
+            // Key/_pendingControllerEchoAt, the exact direction it just
+            // handled - regardless of whether that direction was routed
+            // to Home navigation or to an overlay (Episode Browser,
+            // Source Selector, etc.), since the synthetic echo still
+            // arrives here either way and must not be allowed to fall
+            // through into Home's (possibly hidden) navigation. This is
+            // an input-path coordination marker, not a timing debounce:
+            // it is direction-specific (a Left echo can never consume a
+            // Right press) and is consumed at most once, by the first
+            // PreviewKeyDown that matches it. IsControllerEchoEvent below
+            // also enforces a short staleness bound purely as a safety
+            // net against a marker that never gets consumed (e.g. the
+            // echo never arriving) - not as the detection mechanism
+            // itself, exactly as the removed hook's own staleness bound
+            // was documented. A genuine keyboard arrow pressed by the
+            // user is never preceded by a matching HandleControllerInput
+            // call, so it always falls through to HandleHomeDirectional
+            // Navigation exactly as before.
+            if (IsControllerEchoEvent(e.Key))
+            {
+                e.Handled = true;
+
+                return;
+            }
+
             if (HandleHomeDirectionalNavigation(e.Key))
             {
                 e.Handled = true;
             }
+        }
+
+        // =========================================================
+        // CONTROLLER-ECHO COORDINATION (D-pad double-navigation fix)
+        // =========================================================
+        //
+        // See the remarks above StremioVideoCenterView_PreviewKeyDown's
+        // call to IsControllerEchoEvent for the full rationale. This
+        // pairs with the marker set in HandleControllerInput below.
+
+        // A short, generous staleness bound - not a debounce window.
+        // The diagnostic trace showed the real gap between a controller-
+        // handled direction and its synthesized PreviewKeyDown echo is
+        // consistently 8-13ms; this only guards against the marker
+        // outliving an echo that, for whatever reason, never arrives, so
+        // it can never suppress a later, unrelated real keypress.
+        private static readonly TimeSpan ControllerEchoStaleAfter =
+            TimeSpan.FromMilliseconds(500);
+
+        private Key? _pendingControllerEchoKey;
+        private DateTime _pendingControllerEchoAt;
+
+        // Converts a D-pad ControllerInput into the matching directional
+        // Key, or null for anything else (A/B/etc.). Shared by
+        // HandleControllerInput (to record the pending echo) - there is
+        // no other caller, so this never needs to agree with any other
+        // button-to-key mapping elsewhere in the codebase.
+        private static Key? DirectionalKeyFromControllerInput(
+            ControllerInput button)
+        {
+            switch (button)
+            {
+                case ControllerInput.DPadLeft:
+                    return Key.Left;
+
+                case ControllerInput.DPadRight:
+                    return Key.Right;
+
+                case ControllerInput.DPadUp:
+                    return Key.Up;
+
+                case ControllerInput.DPadDown:
+                    return Key.Down;
+
+                default:
+                    return null;
+            }
+        }
+
+        // Returns true, and consumes the marker, exactly when this key
+        // matches the direction HandleControllerInput most recently
+        // handled and the marker has not gone stale. Direction-specific
+        // and one-shot by construction: a Left echo cannot consume a
+        // Right press, and consuming it clears it immediately so it can
+        // never also consume a later, unrelated press of the same
+        // direction.
+        private bool IsControllerEchoEvent(Key key)
+        {
+            if (_pendingControllerEchoKey.HasValue &&
+                _pendingControllerEchoKey.Value == key &&
+                (DateTime.UtcNow - _pendingControllerEchoAt) <=
+                    ControllerEchoStaleAfter)
+            {
+                _pendingControllerEchoKey = null;
+
+                return true;
+            }
+
+            return false;
         }
 
 
@@ -1065,16 +1202,59 @@ namespace StremioVideoCenter
         // navigation step. It also preserves the focused column position
         // across rows where practical, falling back to the first card
         // when the target row has fewer items.
+        // TEMPORARY DIAGNOSTIC (controller double-input investigation,
+        // phase 2) - describes whatever currently has keyboard focus, for
+        // the Nav#/MoveH#/MoveV# before/after log lines. Remove once the
+        // root cause is confirmed.
+        private string DescribeCurrentFocusForDiagnostics()
+        {
+            MediaSection section = GetFocusedSection();
+
+            if (section != null)
+            {
+                return string.Format(
+                    "MediaCard[section={0},index={1}]",
+                    section.Title,
+                    section.GetFocusedIndex());
+            }
+
+            FrameworkElement element =
+                Keyboard.FocusedElement as FrameworkElement;
+
+            if (element != null)
+            {
+                return string.Format(
+                    "{0}[{1}]",
+                    element.GetType().Name,
+                    element.Name);
+            }
+
+            return "none";
+        }
+
+        private static int _diagMoveVCallSeq;
+
         private void MoveVertical(
             MediaSection currentSection,
             Key key)
         {
+            int diagMoveVSeq =
+                Interlocked.Increment(ref _diagMoveVCallSeq);
+
             List<MediaSection> populatedSections =
                 GetPopulatedSections();
 
             int currentIndex =
                 populatedSections.IndexOf(
                     currentSection);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] MoveV#{0} key={1} fromSection={2} fromIndex={3}",
+                    diagMoveVSeq,
+                    key,
+                    currentSection != null ? currentSection.Title : "null",
+                    currentIndex));
 
             if (currentIndex < 0)
             {
@@ -1113,6 +1293,14 @@ namespace StremioVideoCenter
             {
                 columnIndex = 0;
             }
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] MoveV#{0} result toSection={1} toIndex={2} column={3}",
+                    diagMoveVSeq,
+                    targetSection.Title,
+                    targetIndex,
+                    columnIndex));
 
             targetSection.FocusCardAt(columnIndex);
 
@@ -1229,8 +1417,51 @@ namespace StremioVideoCenter
         // CONTROLLER INPUT
         // =========================================================
 
+        // TEMPORARY DIAGNOSTIC (controller double-input investigation) -
+        // logs every call this method receives from
+        // StremioVideoCenter.OnControllerButtonStateChanged, and which
+        // overlay (if any) is currently active, to confirm whether one
+        // Playnite callback ever results in this method itself being
+        // entered more than once for the same button. Remove once the
+        // root cause is confirmed.
+        private static int _diagViewCallSeq;
+
         public bool HandleControllerInput(ControllerInput button)
         {
+            int seq = Interlocked.Increment(ref _diagViewCallSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activePlayer={9}",
+                    seq,
+                    button,
+                    _activeEpisodeBrowser != null,
+                    _activeSourceSelector != null,
+                    _activeLocalMediaView != null,
+                    _activeMoviesPage != null,
+                    _activeTvPage != null,
+                    _activeAnimePage != null,
+                    _activeSearchPage != null,
+                    _stremioPlayer != null));
+
+            // Controller navigation stabilisation fix: record the exact
+            // D-pad direction this call is about to handle, before any
+            // overlay routing below. Playnite's Fullscreen shell raises a
+            // synthetic arrow-key PreviewKeyDown for the same physical
+            // press regardless of which overlay (if any) currently owns
+            // controller input, so the marker must be set here - at the
+            // single point every D-pad press passes through - rather
+            // than only inside the Home-navigation switch further down.
+            // See IsControllerEchoEvent's remarks (above StremioVideoCenter
+            // View_PreviewKeyDown) for how this is consumed.
+            Key? directionalKey = DirectionalKeyFromControllerInput(button);
+
+            if (directionalKey.HasValue)
+            {
+                _pendingControllerEchoKey = directionalKey;
+                _pendingControllerEchoAt = DateTime.UtcNow;
+            }
+
             // Episode browser owns controller input while season/episode
             // selection is in progress - checked first, since it's the
             // "most specific" overlay when present (mirrors how the source
@@ -1320,13 +1551,35 @@ namespace StremioVideoCenter
         // Click event here reuses the existing click/selection path
         // (every Click="..." handler already wired in XAML) instead of
         // introducing a second activation system.
+        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
+        // - sequence counter for the SelCard# log lines below. Purely
+        // observational - no behaviour here is changed.
+        private static int _diagSelCardSeq;
+
         private bool SelectFocusedMediaCard()
         {
+            int diagSeq = Interlocked.Increment(ref _diagSelCardSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} begin focusedElement={2}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    Keyboard.FocusedElement != null
+                        ? Keyboard.FocusedElement.GetType().Name
+                        : "(null)"));
+
             if (Keyboard.FocusedElement is ButtonBase focusedButton)
             {
                 focusedButton.RaiseEvent(
                     new RoutedEventArgs(
                         ButtonBase.ClickEvent));
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=Button (Click raised synchronously)",
+                        diagSeq,
+                        DateTime.UtcNow));
 
                 return true;
             }
@@ -1335,6 +1588,12 @@ namespace StremioVideoCenter
 
             if (currentSection == null)
             {
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=NoFocusedSection result=false",
+                        diagSeq,
+                        DateTime.UtcNow));
+
                 return false;
             }
 
@@ -1344,12 +1603,31 @@ namespace StremioVideoCenter
             if (focusedCard == null)
             {
                 currentSection.FocusFirstCard();
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=NoFocusedCard->FocusFirstCard",
+                        diagSeq,
+                        DateTime.UtcNow));
+
                 return true;
             }
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} raising MediaCard.SelectedEvent (synchronous - MediaSection_MediaSelected fires from inside this call)",
+                    diagSeq,
+                    DateTime.UtcNow));
 
             focusedCard.RaiseEvent(
                 new RoutedEventArgs(
                     MediaCard.SelectedEvent));
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=MediaCard result=true (note: MediaSelected handler is async void - this end may log before that handler's own work finishes)",
+                    diagSeq,
+                    DateTime.UtcNow));
 
             return true;
         }
@@ -1399,6 +1677,25 @@ namespace StremioVideoCenter
         private bool HandleHomeDirectionalNavigation(
             Key key)
         {
+            // TEMPORARY DIAGNOSTIC (controller double-input investigation,
+            // phase 2) - this is the single shared method both the
+            // controller path (HandleControllerInput) and the keyboard
+            // path (StremioVideoCenterView_PreviewKeyDown) call. Logging
+            // every entry here, correlated by timestamp against the
+            // View#/Key# sequence numbers already logged by its two
+            // callers, shows whether a single physical press results in
+            // this method running once or twice. Remove once the root
+            // cause is confirmed.
+            int diagNavSeq =
+                Interlocked.Increment(ref _diagNavCallSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Nav#{0} HandleHomeDirectionalNavigation key={1} focusBefore={2}",
+                    diagNavSeq,
+                    key,
+                    DescribeCurrentFocusForDiagnostics()));
+
             if (HeroPreviousButton.IsKeyboardFocusWithin ||
                 HeroNextButton.IsKeyboardFocusWithin)
             {
@@ -1418,20 +1715,17 @@ namespace StremioVideoCenter
 
                 if (key == Key.Down)
                 {
-                    // Navigation-hierarchy correction: the Hero control
-                    // layer sits directly above Home's content rows -
-                    // Down from here goes straight to the first card of
-                    // the first POPULATED row (mirrors the identical
-                    // populated-section lookup the Watch Now/My List
-                    // block below already uses), not through Watch Now/
-                    // My List as an intermediate stop.
-                    List<MediaSection> populatedSections =
-                        GetPopulatedSections();
-
-                    if (populatedSections.Count > 0)
-                    {
-                        populatedSections[0].FocusFirstCard();
-                    }
+                    // Home vertical nav fix: the Hero control layer sits
+                    // directly above the Hero's own action controls
+                    // (Watch Now/My List), which in turn sit above
+                    // Home's content rows. Down from here must enter
+                    // that action-control layer at its first/default
+                    // control, Watch Now - not skip past it straight to
+                    // the first content row. This mirrors HeroWatchNow
+                    // Button/HeroMyListButton's own Up case below
+                    // targeting HeroPreviousButton, confirming this is
+                    // the intended two-way link between the two layers.
+                    HeroWatchNowButton.Focus();
 
                     return true;
                 }
@@ -1476,18 +1770,45 @@ namespace StremioVideoCenter
 
                 if (key == Key.Up)
                 {
-                    HeroPreviousButton.Focus();
+                    // Home vertical nav fix: My List's Up goes back to
+                    // Watch Now (mirroring Watch Now's own Down going to
+                    // My List, immediately below); only Watch Now's Up
+                    // continues on up to the Hero control layer above
+                    // it, exactly as before this fix.
+                    if (HeroMyListButton.IsKeyboardFocusWithin)
+                    {
+                        HeroWatchNowButton.Focus();
+                    }
+                    else
+                    {
+                        HeroPreviousButton.Focus();
+                    }
+
                     return true;
                 }
 
                 if (key == Key.Down)
                 {
-                    // Navigation stabilization pass: was sections[0]
-                    // directly - if MyList/ContinueWatching (or any
-                    // earlier row) is present but empty, index 0 is not
-                    // actually focusable and this silently did nothing.
-                    // First POPULATED section is the correct target per
-                    // the intended Home design.
+                    // Home vertical nav fix: Watch Now and My List are
+                    // two separate stops in the vertical chain (Hero ->
+                    // Watch Now -> My List -> first content row), not a
+                    // single combined layer that both drop straight
+                    // through to content. Watch Now's Down now goes to
+                    // My List; only My List's Down continues on to the
+                    // first populated content row.
+                    if (HeroWatchNowButton.IsKeyboardFocusWithin)
+                    {
+                        HeroMyListButton.Focus();
+
+                        return true;
+                    }
+
+                    // Navigation stabilization pass (preserved): was
+                    // sections[0] directly - if MyList/ContinueWatching
+                    // (or any earlier row) is present but empty, index 0
+                    // is not actually focusable and this silently did
+                    // nothing. First POPULATED section is the correct
+                    // target per the intended Home design.
                     List<MediaSection> populatedSections =
                         GetPopulatedSections();
 
@@ -1651,16 +1972,37 @@ namespace StremioVideoCenter
         // MEDIA CARD SELECTION
         // =========================================================
 
+        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
+        // - sequence counters for the MediaSel#/HandleSel# log lines
+        // below. Purely observational - no behaviour here is changed.
+        private static int _diagMediaSelSeq;
+        private static int _diagHandleSelSeq;
+
         private async void MediaSection_MediaSelected(
             object sender,
             MediaItemSelectedEventArgs e)
         {
+            int diagSeq = Interlocked.Increment(ref _diagMediaSelSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] MediaSel#{0} time={1:HH:mm:ss.fff} fired item={2}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    (e != null && e.Item != null) ? e.Item.Title : "(null)"));
+
             if (e == null || e.Item == null)
             {
                 return;
             }
 
             await HandleMediaSelectedAsync(e.Item);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] MediaSel#{0} time={1:HH:mm:ss.fff} HandleMediaSelectedAsync returned",
+                    diagSeq,
+                    DateTime.UtcNow));
         }
 
         // =========================================================
@@ -1676,6 +2018,16 @@ namespace StremioVideoCenter
         // no duplicated selection-handling logic per page.
         private async Task HandleMediaSelectedAsync(MediaItem selectedItem)
         {
+            int diagSeq = Interlocked.Increment(ref _diagHandleSelSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} begin item={2} isResolvingMediaSelection={3}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    selectedItem != null ? selectedItem.Title : "(null)",
+                    _isResolvingMediaSelection));
+
             if (selectedItem == null)
             {
                 return;
@@ -1686,6 +2038,12 @@ namespace StremioVideoCenter
             // Selection's remarks for why.
             if (_isResolvingMediaSelection)
             {
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} end reason=AlreadyResolving (re-entrant call ignored)",
+                        diagSeq,
+                        DateTime.UtcNow));
+
                 return;
             }
 
@@ -1693,19 +2051,44 @@ namespace StremioVideoCenter
 
             try
             {
-                // Slice 12: only ContentType.TvShow opens the episode
-                // browser. Anime deliberately does NOT go through
-                // EpisodeBrowserView - it continues through its existing
-                // content/playback path unchanged. Movies are unaffected
-                // either way, since GetContentType never returns TvShow
-                // for them. An item that already carries Season/Episode
-                // is treated as already-resolved and skips browsing,
-                // going straight to playback.
-                if (GetContentType(selectedItem) == ContentType.TvShow &&
+                // Slice 12: only ContentType.TvShow opened the episode
+                // browser originally. Slice 15 (Anime Architecture Audit
+                // + Kitsu Migration + Provider Role Correction) extends
+                // this to ContentType.Anime too, per this slice's own
+                // architectural goal ("Anime Series -> Season -> Episode
+                // -> Source Selector -> MPV", the same hierarchy as TV) -
+                // previously an Anime-typed MediaItem (from either the
+                // TMDB-backed rows or the AnimeFLV/Kitsu browse/search
+                // paths) skipped episode browsing entirely and went
+                // straight to playback as if it were a single show-level
+                // lookup. EpisodeBrowserView.LoadAsync itself already
+                // handles all three id shapes this can now reach it with
+                // (tt-based via Cinemeta/TMDB, kitsu-based via Kitsu -
+                // see its own remarks). Movies are unaffected either
+                // way, since GetContentType never returns TvShow or
+                // Anime for them. An item that already carries Season/
+                // Episode is treated as already-resolved and skips
+                // browsing, going straight to playback.
+                ContentType selectedContentType = GetContentType(selectedItem);
+
+                if ((selectedContentType == ContentType.TvShow || selectedContentType == ContentType.Anime) &&
                     !(selectedItem.Season.HasValue && selectedItem.Episode.HasValue))
                 {
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} awaiting ShowEpisodeBrowserAsync",
+                            diagSeq,
+                            DateTime.UtcNow));
+
                     MediaItem episode =
                         await ShowEpisodeBrowserAsync(selectedItem);
+
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} ShowEpisodeBrowserAsync returned episode={2}",
+                            diagSeq,
+                            DateTime.UtcNow,
+                            episode != null ? episode.Title : "(null - cancelled)"));
 
                     if (episode == null)
                     {
@@ -1717,12 +2100,30 @@ namespace StremioVideoCenter
                     selectedItem = episode;
                 }
 
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} awaiting PlaySelectedMediaAsync",
+                        diagSeq,
+                        DateTime.UtcNow));
+
                 await PlaySelectedMediaAsync(
                     selectedItem);
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} PlaySelectedMediaAsync returned",
+                        diagSeq,
+                        DateTime.UtcNow));
             }
             finally
             {
                 _isResolvingMediaSelection = false;
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} end",
+                        diagSeq,
+                        DateTime.UtcNow));
             }
         }
 
@@ -1796,7 +2197,13 @@ namespace StremioVideoCenter
                     ? new TmdbService(_tmdbAccessToken)
                     : null;
 
-            await browser.LoadAsync(show, cinemetaService, tmdbService);
+            // Slice 15 Kitsu Migration: needed for a Kitsu-sourced show
+            // (StremioId starting "kitsu:") - see EpisodeBrowserView.
+            // LoadAsync's own routing. Zero-config, always constructed,
+            // exactly like cinemetaService above.
+            var kitsuService = new KitsuService();
+
+            await browser.LoadAsync(show, cinemetaService, tmdbService, kitsuService);
 
             MediaItem result =
                 await completionSource.Task;
@@ -1929,9 +2336,24 @@ namespace StremioVideoCenter
         // PLAY SELECTED MEDIA
         // =========================================================
 
+        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
+        // - sequence counter for the Play# log lines below. Purely
+        // observational - no behaviour here is changed.
+        private static int _diagPlaySeq;
+
         private async Task PlaySelectedMediaAsync(
             MediaItem mediaItem)
         {
+            int diagSeq = Interlocked.Increment(ref _diagPlaySeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} begin item={2} stremioId={3}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    mediaItem != null ? mediaItem.Title : "(null)",
+                    mediaItem != null ? mediaItem.StremioId : "(null)"));
+
             if (mediaItem == null)
             {
                 return;
@@ -2028,7 +2450,31 @@ namespace StremioVideoCenter
                 // <episode>" via ContentRequest.BuildStremioId() itself -
                 // the same mechanism ForTvEpisode already uses - rather
                 // than requiring a pre-combined id string on MediaItem.
+                //
+                // Slice 15 (Anime Architecture Audit + Kitsu Migration +
+                // Provider Role Correction): a Kitsu-sourced episode
+                // (mediaItem.StremioId starting "kitsu:") does NOT use
+                // this tt/Season/Episode shape at all - the real,
+                // documented Kitsu/Stremio episode id is
+                // "kitsu:<id>:<episodeNumber>", with NO season component
+                // (see KitsuService's own remarks and EpisodeBrowserView.
+                // BuildEpisodeMediaItem) - so it is built directly as
+                // ExplicitStremioId instead of going through ImdbId/
+                // Season/Episode, which BuildStremioId() would otherwise
+                // combine into the wrong (tt-style, season-inclusive)
+                // shape.
+                bool isKitsuId =
+                    !string.IsNullOrWhiteSpace(mediaItem.StremioId) &&
+                    mediaItem.StremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
+
                 if (mediaItem.Season.HasValue &&
+                    mediaItem.Episode.HasValue &&
+                    isKitsuId)
+                {
+                    request.ExplicitStremioId =
+                        mediaItem.StremioId + ":" + mediaItem.Episode.Value;
+                }
+                else if (mediaItem.Season.HasValue &&
                     mediaItem.Episode.HasValue)
                 {
                     request.ImdbId = mediaItem.StremioId;
@@ -2038,27 +2484,55 @@ namespace StremioVideoCenter
                 else
                 {
                     // Movie or show-level MediaItem - completely unchanged
-                    // from before this slice.
+                    // from before this slice (still handles a kitsu-
+                    // prefixed show-level id too, e.g. if a future caller
+                    // ever sends one with no Season/Episode - used
+                    // verbatim, same as any other ExplicitStremioId).
                     request.ExplicitStremioId = mediaItem.StremioId;
                 }
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting aggregator.AggregateAsync (discovery + per-stream resolution)",
+                        diagSeq,
+                        DateTime.UtcNow));
 
                 PlaybackSourceSet set =
                     await aggregator.AggregateAsync(
                         request);
 
-                if (set.Sources.Count == 0 &&
-                    set.Unresolved.Count == 0)
-                {
-                    TeardownEpisodeBrowserOverlay(
-                        pendingEpisodeBrowser);
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} aggregator.AggregateAsync returned sources={2} unresolved={3}",
+                        diagSeq,
+                        DateTime.UtcNow,
+                        set.Sources.Count,
+                        set.Unresolved.Count));
 
-                    MessageBox.Show(
-                        "Stremio returned no playable streams for:\n\n" +
-                        mediaItem.Title);
-
-                    return;
-                }
-
+                // Slice 15 Workstream B (no-stream UX correction): "no
+                // playable streams" is a valid, expected result - not an
+                // exceptional failure - so it no longer short-circuits
+                // into a blocking MessageBox here. The code below already
+                // handles a zero-source case gracefully on its own: it
+                // was already reached whenever Sources was empty but
+                // Unresolved was not (e.g. every candidate hit the
+                // Real-Debrid resolution limit), which NormalizeAll turns
+                // into an empty normalizedSources list, which
+                // ShowSourceSelectorAsync/SourceSelectorView.Populate
+                // already detects and shows its own existing "No
+                // playable sources found." empty state for (see
+                // SourceSelectorView.ShowEmptyState) - complete with a
+                // working Back button wired to the same
+                // SelectionCancelled flow as everywhere else. Removing
+                // this early-exit branch simply lets the true "nothing
+                // at all" case (Sources.Count == 0 && Unresolved.Count ==
+                // 0) reach that exact same, already-proven path instead
+                // of a separate MessageBox branch - no new UI or
+                // plumbing was needed. A genuine unexpected exception
+                // (network failure, malformed response, etc.) is
+                // unaffected - the catch block below still reports that
+                // separately via its own MessageBox, so a real error is
+                // never mistaken for a legitimate zero-result response.
                 List<NormalizedPlaybackSource> normalizedSources =
                     normalizer.NormalizeAll(
                         set.Sources);
@@ -2071,10 +2545,24 @@ namespace StremioVideoCenter
                 TeardownEpisodeBrowserOverlay(
                     pendingEpisodeBrowser);
 
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting ShowSourceSelectorAsync with {2} normalized source(s)",
+                        diagSeq,
+                        DateTime.UtcNow,
+                        normalizedSources.Count));
+
                 NormalizedPlaybackSource selected =
                     await ShowSourceSelectorAsync(
                         normalizedSources,
                         mediaItem);
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} ShowSourceSelectorAsync returned selected={2}",
+                        diagSeq,
+                        DateTime.UtcNow,
+                        selected != null ? "true" : "(null - cancelled)"));
 
                 if (selected == null)
                 {
@@ -2096,11 +2584,30 @@ namespace StremioVideoCenter
                         Visibility.Visible;
                 }
 
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting PlayVideoAsync",
+                        diagSeq,
+                        DateTime.UtcNow));
+
                 await _stremioPlayer.PlayVideoAsync(
                     selected.Source.Url);
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (PlayVideoAsync returned)",
+                        diagSeq,
+                        DateTime.UtcNow));
             }
             catch (Exception ex)
             {
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (exception: {2})",
+                        diagSeq,
+                        DateTime.UtcNow,
+                        ex.Message));
+
                 TeardownEpisodeBrowserOverlay(
                     pendingEpisodeBrowser);
 
@@ -2278,8 +2785,9 @@ namespace StremioVideoCenter
             var cinemetaService = new CinemetaService();
             var catalogueService = new CatalogueService(tmdbService, cinemetaService);
             var animeFlvCatalogueService = new AnimeFlvCatalogueService();
+            var kitsuService = new KitsuService();
 
-            page.Initialize(catalogueService, animeFlvCatalogueService);
+            page.Initialize(catalogueService, animeFlvCatalogueService, kitsuService);
 
             await completionSource.Task;
 
@@ -2329,9 +2837,9 @@ namespace StremioVideoCenter
             SearchPageHost.Visibility = Visibility.Visible;
 
             var cinemetaService = new CinemetaService();
-            var animeFlvCatalogueService = new AnimeFlvCatalogueService();
+            var kitsuService = new KitsuService();
 
-            page.Initialize(cinemetaService, animeFlvCatalogueService);
+            page.Initialize(cinemetaService, kitsuService);
             page.FocusSearchBox();
 
             await completionSource.Task;
@@ -2398,10 +2906,24 @@ namespace StremioVideoCenter
         // SHOW SOURCE SELECTOR
         // =========================================================
 
+        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
+        // - sequence counter for the SrcSel# log lines below. Purely
+        // observational - no behaviour here is changed.
+        private static int _diagSrcSelSeq;
+
         private async Task<NormalizedPlaybackSource> ShowSourceSelectorAsync(
             List<NormalizedPlaybackSource> sources,
             MediaItem mediaItem)
         {
+            int diagSeq = Interlocked.Increment(ref _diagSrcSelSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] SrcSel#{0} time={1:HH:mm:ss.fff} begin sourceCount={2}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    sources != null ? sources.Count : 0));
+
             var selector = new SourceSelectorView();
 
             var completionSource =
@@ -2430,8 +2952,27 @@ namespace StremioVideoCenter
 
             selector.Populate(sources, mediaItem);
 
+            // This is the point the user's diagnostic request calls out
+            // specifically: the Source Selector control has now been
+            // constructed, added to the visual tree, made Visible, and
+            // populated with data - i.e. actually displayed - and
+            // control is about to yield on completionSource.Task waiting
+            // for the user to pick a source (or cancel).
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] SrcSel#{0} time={1:HH:mm:ss.fff} Source Selector created/populated/visible - now awaiting user selection",
+                    diagSeq,
+                    DateTime.UtcNow));
+
             NormalizedPlaybackSource result =
                 await completionSource.Task;
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] SrcSel#{0} time={1:HH:mm:ss.fff} end user chose={2}",
+                    diagSeq,
+                    DateTime.UtcNow,
+                    result != null ? "a source" : "(null - cancelled)"));
 
             selector.SourceSelected -= onSelected;
             selector.SelectionCancelled -= onCancelled;

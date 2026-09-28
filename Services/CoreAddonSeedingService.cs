@@ -121,6 +121,106 @@ namespace StremioVideoCenter.Services
                 changed = true;
             }
 
+            // Slice 15 (Anime Architecture Audit + Kitsu Migration +
+            // Provider Role Correction): every core addon's Roles (set
+            // on its definition below) was introduced/changed after many
+            // installs had already seeded these AddonInstances - and the
+            // "alreadySeeded" check above means an existing instance is
+            // never recreated from its definition again. Without this,
+            // an already-saved core instance would keep deserializing
+            // with Roles empty (the old "Role" string field is no longer
+            // read at all) forever, and the Provider Role Correction
+            // would silently never take effect for it. This is a
+            // targeted, idempotent migration keyed strictly off
+            // ProviderKey - the same stable identity AddonInstance.
+            // ProviderKey's own remarks already document this project
+            // using for exactly this kind of "single active instance per
+            // provider" purpose - never off FriendlyName or ManifestUrl,
+            // so it can never touch a user's own custom addon even one
+            // that happens to reuse the same name or URL. Supersedes the
+            // earlier, AnimeFLV-only SyncAnimeFlvRole migration.
+            if (SyncCoreAddonRoles(settings))
+            {
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        // =========================================================
+        // SYNC CORE ADDON ROLES (Slice 15 migration)
+        // =========================================================
+        //
+        // See the call-site remarks above. Returns true only when an
+        // existing instance's Roles actually needed correcting, so a
+        // fully up-to-date settings file is never rewritten for no
+        // reason (same "don't dirty the file unnecessarily" convention
+        // this class already follows for seeding itself). The expected
+        // Roles per ProviderKey mirror GetCoreAddonDefinitions below
+        // exactly - kept as a single small map here rather than
+        // re-deriving from the definitions list, so this migration
+        // never accidentally picks up an unrelated field change from a
+        // future definition edit.
+        private static readonly Dictionary<string, List<string>> CoreProviderRoles =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "cinemeta", new List<string> { AddonRole.Metadata, AddonRole.Catalogue } },
+
+                // AnimeFLV: Metadata + Catalogue ONLY. Its manifest does
+                // declare "stream" (it really can serve anime streams),
+                // but this slice's explicit correction is that AnimeFLV
+                // must never be used as a StreamProvider, for any
+                // content type - see AddonRole's own remarks.
+                { "animeflv", new List<string> { AddonRole.Metadata, AddonRole.Catalogue } },
+
+                { "opensubtitles", new List<string> { AddonRole.SubtitleProvider } },
+                { "opensubtitlesv3", new List<string> { AddonRole.SubtitleProvider } },
+
+                // Local Files: carries the generic LocalMedia category
+                // per this slice's own desired-architecture mapping, but
+                // ALSO keeps StreamProvider - it is today seeded as a
+                // real Stremio-protocol addon (org.stremio.local) whose
+                // "stream" resource is how local playback is actually
+                // discovered (see its definition below). Dropping
+                // StreamProvider here would silently stop local files
+                // from ever being queried for streams again - a
+                // regression this slice's own "preserve completed
+                // functionality" instruction forbids, and nothing in
+                // this task asked for that removal.
+                { "localfiles", new List<string> { AddonRole.LocalMedia, AddonRole.StreamProvider } }
+            };
+
+        private static bool SyncCoreAddonRoles(StremioVideoCenterSettings settings)
+        {
+            bool changed = false;
+
+            foreach (AddonInstance instance in settings.AddonInstances)
+            {
+                if (instance == null || string.IsNullOrWhiteSpace(instance.ProviderKey))
+                {
+                    continue;
+                }
+
+                List<string> expectedRoles;
+
+                if (!CoreProviderRoles.TryGetValue(instance.ProviderKey, out expectedRoles))
+                {
+                    continue;
+                }
+
+                List<string> currentRoles = instance.Roles ?? new List<string>();
+
+                bool matches =
+                    currentRoles.Count == expectedRoles.Count &&
+                    expectedRoles.All(role => currentRoles.Contains(role));
+
+                if (!matches)
+                {
+                    instance.Roles = new List<string>(expectedRoles);
+                    changed = true;
+                }
+            }
+
             return changed;
         }
 
@@ -154,7 +254,8 @@ namespace StremioVideoCenter.Services
                     Description = "The official addon for movie and series catalogs",
                     Types = new List<string> { "movie", "series" },
                     IdPrefixes = new List<string> { "tt" },
-                    ResourceNames = new List<string> { "catalog", "meta", "addon_catalog" }
+                    ResourceNames = new List<string> { "catalog", "meta", "addon_catalog" },
+                    Roles = new List<string> { AddonRole.Metadata, AddonRole.Catalogue }
                 },
 
                 // -----------------------------------------------------
@@ -166,6 +267,25 @@ namespace StremioVideoCenter.Services
                 // = true but configurationRequired is NOT set - usable as-is
                 // with no configuration step, matching "installed by default,
                 // no configuration required."
+                //
+                // Roles = [Metadata, Catalogue], deliberately NOT
+                // StreamProvider (Slice 15 Anime Architecture Audit +
+                // Kitsu Migration + Provider Role Correction): this
+                // addon's manifest genuinely declares "stream" (it really
+                // does serve anime streams, and ResourceNames above is
+                // left completely unchanged/accurate - that field remains
+                // an honest record of the manifest's own capabilities),
+                // but per this slice's explicit correction AnimeFLV must
+                // never be queried during stream discovery for ANY
+                // content type - not scoped to "outside Anime requests"
+                // (the prior AddonRole.AnimeScopedStream design, now
+                // removed). Its metadata/catalogue/search/artwork role
+                // (AnimeFlvCatalogueService, AnimeBrowseView's genre/
+                // search browse grid) is completely untouched by this -
+                // only stream-discovery eligibility is scoped, via
+                // StremioAddonRegistry.GetAllStreamsAsync's generic
+                // Roles-based check (no AnimeFLV-specific code there at
+                // all).
                 new AddonInstance
                 {
                     ProviderKey = "animeflv",
@@ -179,7 +299,8 @@ namespace StremioVideoCenter.Services
                     Version = "1.4.5",
                     Description =
                         "AnimeFLV, AnimeAV1, Henaojara, TioAnime, AnimeJara & JKAnime " +
-                        "catalogs, streams and metadata for Stremio.",
+                        "catalogs and metadata for Stremio. Used by Zino for anime " +
+                        "genre/search browsing only - never queried for streams.",
                     Types = new List<string> { "movie", "series", "anime", "other" },
                     IdPrefixes = new List<string>
                     {
@@ -187,7 +308,8 @@ namespace StremioVideoCenter.Services
                         "animejara:", "jkanime:", "tmdb:", "anilist:", "kitsu:",
                         "mal:", "anidb:"
                     },
-                    ResourceNames = new List<string> { "stream", "meta", "catalog" }
+                    ResourceNames = new List<string> { "stream", "meta", "catalog" },
+                    Roles = new List<string> { AddonRole.Metadata, AddonRole.Catalogue }
                 },
 
                 // -----------------------------------------------------
@@ -223,7 +345,8 @@ namespace StremioVideoCenter.Services
                     Description = "The official add-on for subtitles from OpenSubtitles",
                     Types = new List<string> { "series", "movie", "other" },
                     IdPrefixes = new List<string>(),
-                    ResourceNames = new List<string> { "subtitles" }
+                    ResourceNames = new List<string> { "subtitles" },
+                    Roles = new List<string> { AddonRole.SubtitleProvider }
                 },
 
                 // -----------------------------------------------------
@@ -250,7 +373,8 @@ namespace StremioVideoCenter.Services
                     Description = "OpenSubtitles v3 Addon for Stremio",
                     Types = new List<string> { "movie", "series" },
                     IdPrefixes = new List<string> { "tt" },
-                    ResourceNames = new List<string> { "subtitles" }
+                    ResourceNames = new List<string> { "subtitles" },
+                    Roles = new List<string> { AddonRole.SubtitleProvider }
                 },
 
                 // -----------------------------------------------------
@@ -287,7 +411,8 @@ namespace StremioVideoCenter.Services
                         "component, when it is running on this machine.",
                     Types = new List<string> { "movie", "series", "other" },
                     IdPrefixes = new List<string> { "local:", "bt:" },
-                    ResourceNames = new List<string> { "stream" }
+                    ResourceNames = new List<string> { "stream" },
+                    Roles = new List<string> { AddonRole.LocalMedia, AddonRole.StreamProvider }
                 }
             };
         }

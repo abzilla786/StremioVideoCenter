@@ -346,9 +346,29 @@ namespace StremioVideoCenter
             return null;
         }
 
+        // TEMPORARY DIAGNOSTIC (controller double-input investigation) -
+        // logs every single raw invocation of this callback, before any
+        // filtering, to StremioVideoCenter.log. Purpose: determine whether
+        // Playnite itself calls this method more than once for one
+        // physical D-pad press (e.g. two controller APIs/devices reporting
+        // the same physical controller), independent of anything our own
+        // code does afterward. Remove once the root cause is confirmed.
+        private static int _diagCallSeq;
+
         public override void OnControllerButtonStateChanged(
             OnControllerButtonStateChangedArgs args)
         {
+            int seq = System.Threading.Interlocked.Increment(ref _diagCallSeq);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] #{0} button={1} state={2} windowNull={3} viewNull={4}",
+                    seq,
+                    args.Button,
+                    args.State,
+                    videoCenterWindow == null,
+                    videoCenterView == null));
+
             if (videoCenterWindow == null ||
                 videoCenterView == null)
             {

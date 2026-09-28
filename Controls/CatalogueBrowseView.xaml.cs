@@ -498,8 +498,40 @@ namespace StremioVideoCenterControls
             switch (e.Key)
             {
                 case Key.Escape:
-                    RaiseClosed();
+                    // Filter controls task: Escape while a filter's
+                    // dropdown is open dismisses the dropdown, matching
+                    // the same "cancel the immediate thing, not the
+                    // whole page" behaviour this Escape already implies
+                    // elsewhere - without this, Escape would close the
+                    // entire Movies/TV page out from under an open
+                    // filter popup.
+                    if (IsAnyFilterDropDownOpen())
+                    {
+                        CloseAnyFilterDropDown();
+                    }
+                    else
+                    {
+                        RaiseClosed();
+                    }
+
                     e.Handled = true;
+                    break;
+
+                case Key.Enter:
+                case Key.Space:
+                    // Filter controls task: activates the focused filter
+                    // (opens its dropdown, or confirms/closes it if
+                    // already open) - mirrors ControllerInput.A's
+                    // ActivateFocusedElement below. Left unhandled (and
+                    // so left to bubble/tunnel further) when the filter
+                    // bar doesn't have focus, so this never touches the
+                    // Back button's or a MediaCard's own existing
+                    // Enter/Space activation.
+                    if (ActivateFilterCombo())
+                    {
+                        e.Handled = true;
+                    }
+
                     break;
 
                 case Key.Up:
@@ -533,6 +565,17 @@ namespace StremioVideoCenterControls
             switch (button)
             {
                 case ControllerInput.B:
+                    // Filter controls task: B while a filter's dropdown
+                    // is open dismisses the dropdown rather than closing
+                    // the whole page out from under it - same reasoning
+                    // as the Escape case above, which this mirrors for
+                    // the controller path.
+                    if (IsAnyFilterDropDownOpen())
+                    {
+                        CloseAnyFilterDropDown();
+                        return true;
+                    }
+
                     RaiseClosed();
                     return true;
 
@@ -570,6 +613,15 @@ namespace StremioVideoCenterControls
         // button.
         private bool ActivateFocusedElement()
         {
+            // Filter controls task: checked first, since GenreCombo/
+            // YearCombo are neither a ButtonBase nor a MediaCard - without
+            // this, controller A on a focused filter would silently fall
+            // through both checks below and do nothing.
+            if (ActivateFilterCombo())
+            {
+                return true;
+            }
+
             if (Keyboard.FocusedElement is ButtonBase focusedButton)
             {
                 focusedButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -625,21 +677,163 @@ namespace StremioVideoCenterControls
         }
 
         // =========================================================
+        // FILTER BAR OPERATION (filter controls task)
+        // =========================================================
+        //
+        // GenreCombo/YearCombo are ordinary WPF ComboBoxes, but this
+        // view's PreviewKeyDown/HandleControllerInput already claim every
+        // Up/Down/Left/Right/Enter/A themselves before a focused child
+        // control would ever see them (same "hand-rolled focus
+        // management instead of WPF's built-in directional navigation"
+        // convention this whole view already uses - see the class
+        // remarks), so a focused combo would never naturally receive an
+        // arrow key or Enter/A on its own. This section gives the filter
+        // bar its own small, self-contained operation model instead,
+        // reusing the WPF ComboBox exactly as it already worked for the
+        // mouse (same Items/SelectedIndex/SelectionChanged wiring, same
+        // FilterComboItemStyle dropdown) - just driven explicitly rather
+        // than through WPF's normal input plumbing.
+
+        private ComboBox GetFocusedFilterCombo()
+        {
+            if (GenreCombo.IsKeyboardFocused)
+            {
+                return GenreCombo;
+            }
+
+            if (YearCombo.IsKeyboardFocused)
+            {
+                return YearCombo;
+            }
+
+            return null;
+        }
+
+        private bool IsFilterBarFocused()
+        {
+            return GetFocusedFilterCombo() != null;
+        }
+
+        private bool IsAnyFilterDropDownOpen()
+        {
+            return GenreCombo.IsDropDownOpen || YearCombo.IsDropDownOpen;
+        }
+
+        private void CloseAnyFilterDropDown()
+        {
+            GenreCombo.IsDropDownOpen = false;
+            YearCombo.IsDropDownOpen = false;
+        }
+
+        private void MoveFilterBarHorizontal(int direction)
+        {
+            if (direction < 0)
+            {
+                GenreCombo.Focus();
+            }
+            else
+            {
+                YearCombo.Focus();
+            }
+        }
+
+        // A/Enter on the filter bar: opens the focused combo's dropdown
+        // if closed, or confirms (closes) it if already open. The
+        // already-current SelectedIndex is whatever MoveFilterDropDown
+        // Selection below last set, exactly mirroring how a mouse click
+        // on an item already applies the selection immediately via the
+        // existing Filter_SelectionChanged handler - "confirm" here is
+        // only about dismissing the popup, not a separate apply step.
+        // Returns false (does nothing) when the filter bar doesn't have
+        // focus, so callers can fall through to their own activation
+        // logic for whatever else is focused.
+        private bool ActivateFilterCombo()
+        {
+            ComboBox combo = GetFocusedFilterCombo();
+
+            if (combo == null)
+            {
+                return false;
+            }
+
+            combo.IsDropDownOpen = !combo.IsDropDownOpen;
+
+            return true;
+        }
+
+        // Moves the focused filter's selection directly by one item
+        // rather than letting WPF's own arrow-key-in-open-dropdown
+        // handling run (which this view's own tunneling PreviewKeyDown/
+        // HandleControllerInput would still intercept before it ever
+        // reached the ComboBox). Changing SelectedIndex already fires
+        // the existing Filter_SelectionChanged -> ApplyFiltersAsync
+        // wiring unchanged, so this reuses that exact path rather than
+        // adding a second one. Explicitly brings the newly-selected
+        // item's container into view rather than relying on WPF's
+        // default ComboBox scroll-into-view behaviour, which is tied to
+        // that control's own default template's named parts and isn't
+        // guaranteed to apply to this custom one.
+        private void MoveFilterDropDownSelection(int direction)
+        {
+            ComboBox combo = GetFocusedFilterCombo();
+
+            if (combo == null || combo.Items.Count == 0)
+            {
+                return;
+            }
+
+            int target = combo.SelectedIndex + direction;
+            target = Math.Max(0, Math.Min(target, combo.Items.Count - 1));
+
+            combo.SelectedIndex = target;
+
+            FrameworkElement container =
+                combo.ItemContainerGenerator.ContainerFromIndex(target) as FrameworkElement;
+
+            container?.BringIntoView();
+        }
+
+        // =========================================================
         // FOCUS MOVEMENT (shared by keyboard + controller)
         // =========================================================
 
         private void MoveVertical(int direction)
         {
-            // Dedicated-page Back navigation task: the Back (Close)
-            // button sits directly above this page's content, mirroring
-            // the same top-layer <-> content chaining Home's own
-            // navigation already uses (top nav <-> hero <-> content
-            // rows) - Down from Back enters the first available content,
-            // Up from the topmost content reaches Back, and Up from Back
-            // is a no-op (Back is already the topmost control).
+            // Filter controls task: while a filter's dropdown is open,
+            // Up/Down move its own selection instead of navigating this
+            // page - checked first, ahead of every other case below,
+            // since focus itself never leaves the ComboBox while its
+            // popup is open.
+            if (IsAnyFilterDropDownOpen())
+            {
+                MoveFilterDropDownSelection(direction);
+                return;
+            }
+
+            // Dedicated-page Back navigation task, extended by the filter
+            // controls task: the chain is now Back <-> filter bar <->
+            // content (mirroring Home's own Hero <-> Watch Now/My List
+            // <-> content rows chain) rather than Back going straight to
+            // content - Down from Back now enters the filter bar first,
+            // and Up from Back is still a no-op (Back is the topmost
+            // control).
             if (CloseButton.IsKeyboardFocused)
             {
                 if (direction > 0)
+                {
+                    GenreCombo.Focus();
+                }
+
+                return;
+            }
+
+            if (IsFilterBarFocused())
+            {
+                if (direction < 0)
+                {
+                    CloseButton.Focus();
+                }
+                else
                 {
                     FocusFirstAvailableAnyView();
                 }
@@ -651,7 +845,10 @@ namespace StremioVideoCenterControls
             {
                 if (direction < 0 && IsFocusedFilteredCardInTopRow())
                 {
-                    CloseButton.Focus();
+                    // Was CloseButton.Focus() - Up from the topmost
+                    // filtered row now reaches the filter bar first, not
+                    // Back directly, completing the three-layer chain.
+                    GenreCombo.Focus();
                     return;
                 }
 
@@ -665,6 +862,22 @@ namespace StremioVideoCenterControls
 
         private void MoveHorizontal(int direction)
         {
+            // Filter controls task: Left/Right while a dropdown is open
+            // would otherwise step focus to the other filter with the
+            // popup still showing - consumed as a no-op instead, exactly
+            // mirroring why Up/Down are repurposed above rather than
+            // left to their normal meaning while a dropdown is open.
+            if (IsAnyFilterDropDownOpen())
+            {
+                return;
+            }
+
+            if (IsFilterBarFocused())
+            {
+                MoveFilterBarHorizontal(direction);
+                return;
+            }
+
             if (IsFilteredViewActive())
             {
                 MoveFilteredGrid(direction, 0);
@@ -718,10 +931,11 @@ namespace StremioVideoCenterControls
 
             if (target < 0)
             {
-                // Dedicated-page Back navigation task: moving up out of
-                // the topmost section reaches the Back button instead of
-                // clamping in place.
-                CloseButton.Focus();
+                // Dedicated-page Back navigation task, extended by the
+                // filter controls task: moving up out of the topmost
+                // section reaches the filter bar (not Back directly
+                // anymore) instead of clamping in place.
+                GenreCombo.Focus();
                 return;
             }
 
