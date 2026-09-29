@@ -232,8 +232,33 @@ namespace StremioVideoCenterControls
         // is confirmed.
         private static int _diagMoveHCallSeq;
 
+        // "See More" focusability fix: a section with a visible More
+        // link previously had no way for directional Left/Right to ever
+        // reach it - Right from the last card just re-clamped onto that
+        // same last card, and the link was mouse-only despite being
+        // Focusable. It is now a genuine stop at the right-hand end of
+        // this section's own horizontal chain: Right past the last card
+        // moves onto More (instead of clamping), and Left from More
+        // returns to the last card. Checked first, ahead of the
+        // count==0 guard below, so Left off of More still works even in
+        // the (currently never-populated-with-More) edge case of an
+        // empty section that somehow has the link focused.
         public void MoveHorizontal(int direction)
         {
+            if (MoreButton.IsKeyboardFocused)
+            {
+                if (direction < 0)
+                {
+                    FocusLastCard();
+                }
+
+                // direction > 0 from More: already the rightmost stop in
+                // this section's chain - no-op, same as clamping at the
+                // last card used to (and still does) for direction < 0
+                // off of the first card.
+                return;
+            }
+
             int diagMoveHSeq =
                 System.Threading.Interlocked.Increment(
                     ref _diagMoveHCallSeq);
@@ -261,6 +286,24 @@ namespace StremioVideoCenterControls
             else
             {
                 currentIndex += direction;
+            }
+
+            if (currentIndex >= count &&
+                direction > 0 &&
+                MoreButton.Visibility == Visibility.Visible)
+            {
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "[CTRL-DIAG] MoveH#{0} section={1} direction={2} beforeIndex={3} afterIndex=More count={4}",
+                        diagMoveHSeq,
+                        Title,
+                        direction,
+                        beforeIndex,
+                        count));
+
+                MoreButton.Focus();
+
+                return;
             }
 
             currentIndex =

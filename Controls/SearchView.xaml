@@ -78,6 +78,36 @@
             </Style.Triggers>
         </Style>
 
+        <!--
+            On-screen keyboard task: mouse/touch affordance for opening the
+            keyboard deliberately (controller users reach it via A while
+            SearchBox has focus instead - see SearchView.xaml.cs's
+            OpenKeyboard remarks). Same visual language as SearchButtonStyle
+            but neutral-colored so it doesn't compete with Search as the
+            row's primary action.
+        -->
+        <Style x:Key="OpenKeyboardButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="14,10" />
+            <Setter Property="Margin" Value="10,0,0,0" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#24242A" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="#E91E63" />
+                    <Setter Property="BorderThickness" Value="2" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
     </UserControl.Resources>
 
     <Grid Background="#EE0D0D0F">
@@ -137,6 +167,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
             <TextBox x:Name="SearchBox"
@@ -145,8 +176,23 @@
                      VerticalContentAlignment="Center"
                      KeyDown="SearchBox_KeyDown" />
 
-            <Button x:Name="SearchButton"
+            <!--
+                On-screen keyboard task: explicit mouse/touch trigger for
+                controller-less pointer users who still want the virtual
+                keyboard (e.g. no physical keyboard attached). Placed
+                between the text box and Search so tab/visual order still
+                reads left-to-right as "type here, or open keyboard, or
+                submit".
+            -->
+            <Button x:Name="OpenKeyboardButton"
                     Grid.Column="1"
+                    Content="&#x2328;"
+                    ToolTip="Open on-screen keyboard"
+                    Style="{StaticResource OpenKeyboardButtonStyle}"
+                    Click="OpenKeyboardButton_Click" />
+
+            <Button x:Name="SearchButton"
+                    Grid.Column="2"
                     Content="Search"
                     Style="{StaticResource SearchButtonStyle}"
                     Click="SearchButton_Click" />
@@ -194,6 +240,28 @@
                        HorizontalAlignment="Center"
                        VerticalAlignment="Center"
                        Visibility="Collapsed" />
+
+            <!--
+                On-screen keyboard task: docked at the bottom of the
+                results area (not a full-page overlay) so the search box
+                above stays visible while typing, Netflix/console-style.
+                Panel.ZIndex explicit rather than relying on declaration
+                order - see StremioVideoCenterView.xaml's own remark on
+                the Episode Browser Z-order bug this mirrors the lesson
+                from: an explicit, higher ZIndex than any ordinary sibling
+                content in this Grid (which has none set, i.e. 0) can never
+                silently end up underneath something added later.
+                Visibility/host add-remove is owned by SearchView.xaml.cs
+                (OpenKeyboard/CloseKeyboard), not set here.
+            -->
+            <controls:OnScreenKeyboardView x:Name="KeyboardOverlay"
+                                            Panel.ZIndex="500"
+                                            Visibility="Collapsed"
+                                            CharacterEntered="KeyboardOverlay_CharacterEntered"
+                                            BackspaceRequested="KeyboardOverlay_BackspaceRequested"
+                                            ClearRequested="KeyboardOverlay_ClearRequested"
+                                            SubmitRequested="KeyboardOverlay_SubmitRequested"
+                                            CloseRequested="KeyboardOverlay_CloseRequested" />
 
         </Grid>
 

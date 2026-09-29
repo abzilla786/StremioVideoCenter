@@ -50,9 +50,19 @@ namespace StremioVideoCenterControls
         public event EventHandler Closed;
         public event EventHandler<MediaItemSelectedEventArgs> MediaSelected;
 
+        // Persistent hero navigation task: same quick-nav row event as
+        // CatalogueBrowseView's own NavigationRequested - see that file's
+        // remarks.
+        public event EventHandler<string> NavigationRequested;
+
         private CatalogueService _catalogueService;
         private AnimeFlvCatalogueService _animeFlvCatalogueService;
         private KitsuService _kitsuService;
+
+        // Persistent hero navigation task: same header-row Left/Right
+        // source-of-truth convention as CatalogueBrowseView's own
+        // _headerNavButtons.
+        private Button[] _headerNavButtons;
 
         private readonly ObservableCollection<MediaItem> _featuredItems = new ObservableCollection<MediaItem>();
         private readonly ObservableCollection<MediaItem> _popularItems = new ObservableCollection<MediaItem>();
@@ -89,6 +99,16 @@ namespace StremioVideoCenterControls
             PopularAnimeSection.MediaSelected += Section_MediaSelected;
             NewAnimeSection.MediaSelected += Section_MediaSelected;
             KitsuPopularSection.MediaSelected += Section_MediaSelected;
+
+            _headerNavButtons =
+                new[]
+                {
+                    QuickNavHomeButton,
+                    QuickNavMoviesButton,
+                    QuickNavTvShowsButton,
+                    QuickNavAnimeButton,
+                    CloseButton
+                };
         }
 
         // =========================================================
@@ -539,6 +559,40 @@ namespace StremioVideoCenterControls
             RaiseClosed();
         }
 
+        // Persistent hero navigation task: same quick-nav handlers as
+        // CatalogueBrowseView's own - see that file's remarks.
+        private void QuickNavHomeButton_Click(object sender, RoutedEventArgs e)
+        {
+            RaiseClosed();
+        }
+
+        private void QuickNavMoviesButton_Click(object sender, RoutedEventArgs e)
+        {
+            RaiseNavigationRequested("Movies");
+        }
+
+        private void QuickNavTvShowsButton_Click(object sender, RoutedEventArgs e)
+        {
+            RaiseNavigationRequested("TvShows");
+        }
+
+        private void QuickNavAnimeButton_Click(object sender, RoutedEventArgs e)
+        {
+            RaiseNavigationRequested("Anime");
+        }
+
+        private void RaiseNavigationRequested(string destination)
+        {
+            EventHandler<string> handler = NavigationRequested;
+
+            if (handler != null)
+            {
+                handler(this, destination);
+            }
+
+            RaiseClosed();
+        }
+
         private void RaiseClosed()
         {
             EventHandler handler = Closed;
@@ -735,10 +789,13 @@ namespace StremioVideoCenterControls
 
         private void MoveVertical(int direction)
         {
-            // Dedicated-page Back navigation task: same top-layer <->
-            // content chaining as CatalogueBrowseView/SearchView - see
-            // those files' identical remark on their own MoveVertical.
-            if (CloseButton.IsKeyboardFocused)
+            // Dedicated-page Back navigation task, extended by the
+            // persistent hero navigation task: same top-layer <-> content
+            // chaining as CatalogueBrowseView/SearchView - see those
+            // files' identical remark on their own MoveVertical. The
+            // "top layer" is now the whole header row (quick-nav buttons
+            // + Back), not just Back alone.
+            if (IsHeaderRowFocused())
             {
                 if (direction > 0)
                 {
@@ -823,6 +880,16 @@ namespace StremioVideoCenterControls
 
         private void MoveHorizontal(int direction)
         {
+            // Persistent hero navigation task: checked first, same as
+            // CatalogueBrowseView's own MoveHorizontal - Left/Right while
+            // any header-row button has focus cycles the quick-nav
+            // buttons and Back, clamping at either end.
+            if (IsHeaderRowFocused())
+            {
+                MoveHeaderRowHorizontal(direction);
+                return;
+            }
+
             if (IsFocusInAnimeFlvGrid())
             {
                 MoveAnimeFlvGrid(direction, 0);
@@ -830,6 +897,33 @@ namespace StremioVideoCenterControls
             }
 
             GetFocusedTmdbSection()?.MoveHorizontal(direction);
+        }
+
+        private bool IsHeaderRowFocused()
+        {
+            return Array.Exists(
+                _headerNavButtons,
+                button => button != null && button.IsKeyboardFocused);
+        }
+
+        private void MoveHeaderRowHorizontal(int direction)
+        {
+            int currentIndex =
+                Array.FindIndex(
+                    _headerNavButtons,
+                    button => button != null && button.IsKeyboardFocused);
+
+            if (currentIndex < 0)
+            {
+                return;
+            }
+
+            int target =
+                Math.Max(
+                    0,
+                    Math.Min(currentIndex + direction, _headerNavButtons.Length - 1));
+
+            _headerNavButtons[target]?.Focus();
         }
 
         // =========================================================

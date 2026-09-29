@@ -124,6 +124,35 @@
             </Style.Triggers>
         </Style>
 
+        <!--
+            Persistent hero navigation task: same local equivalent of
+            StremioVideoCenterView's own NavigationButtonStyle as
+            CatalogueBrowseView's identical resource - see that file's
+            own remark on why this is duplicated here rather than shared.
+        -->
+        <Style x:Key="QuickNavButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#E5E5E5" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="12,10" />
+            <Setter Property="Margin" Value="2,0" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Foreground" Value="White" />
+                    <Setter Property="Background" Value="#24242A" />
+                </Trigger>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="Foreground" Value="White" />
+                    <Setter Property="Background" Value="#2A1825" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
     </UserControl.Resources>
 
     <Grid Background="#EE0D0D0F">
@@ -149,20 +178,52 @@
                 </StackPanel>
 
                 <!--
-                    Dedicated-page Back navigation task: same control/
-                    event/style as before - only the visible label
-                    changed to a clearly-readable "Back" affordance.
+                    Persistent hero navigation task: same quick-nav row as
+                    CatalogueBrowseView's own header - see that file's
+                    NavigationRequested remarks for why this exists.
                 -->
-                <Button x:Name="CloseButton"
-                        Style="{StaticResource CloseButtonStyle}"
-                        Content="&#x2190; Back"
-                        ToolTip="Back to Home"
-                        Click="CloseButton_Click"
-                        HorizontalAlignment="Right"
-                        MinWidth="92"
-                        Height="40"
-                        FontSize="14"
-                        FontWeight="SemiBold" />
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center">
+
+                    <Button x:Name="QuickNavHomeButton"
+                            Content="HOME"
+                            ToolTip="Back to Home"
+                            Style="{StaticResource QuickNavButtonStyle}"
+                            Click="QuickNavHomeButton_Click" />
+
+                    <Button x:Name="QuickNavMoviesButton"
+                            Content="MOVIES"
+                            Style="{StaticResource QuickNavButtonStyle}"
+                            Click="QuickNavMoviesButton_Click" />
+
+                    <Button x:Name="QuickNavTvShowsButton"
+                            Content="TV SHOWS"
+                            Style="{StaticResource QuickNavButtonStyle}"
+                            Click="QuickNavTvShowsButton_Click" />
+
+                    <Button x:Name="QuickNavAnimeButton"
+                            Content="ANIME"
+                            Style="{StaticResource QuickNavButtonStyle}"
+                            Click="QuickNavAnimeButton_Click" />
+
+                    <!--
+                        Dedicated-page Back navigation task: same control/
+                        event/style as before - only the visible label
+                        changed to a clearly-readable "Back" affordance.
+                    -->
+                    <Button x:Name="CloseButton"
+                            Style="{StaticResource CloseButtonStyle}"
+                            Content="&#x2190; Back"
+                            ToolTip="Back to Home"
+                            Click="CloseButton_Click"
+                            MinWidth="92"
+                            Height="40"
+                            FontSize="14"
+                            FontWeight="SemiBold"
+                            Margin="10,0,0,0" />
+
+                </StackPanel>
             </Grid>
         </StackPanel>
 

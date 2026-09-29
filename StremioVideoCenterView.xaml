@@ -920,9 +920,37 @@
             </StackPanel>
 
         </ScrollViewer>
+        <!--
+            Episode Browser hosting/focus fix: PlaybackTestHost,
+            SourceSelectorHost and EpisodeBrowserHost are true modal
+            overlays - meant to sit on top of whatever page is currently
+            showing (Home, or one of the Slice 15 Movies/TV/Anime/Search
+            page hosts below), not to be peers of those pages. They used
+            to share the same Panel.ZIndex="1000" as the page hosts added
+            in Slice 15. WPF only uses ZIndex to order same-parent
+            siblings, and breaks ties between equal ZIndex values by
+            Children-collection order (later-added wins) - so whichever
+            Slice 15 page host was currently visible (declared after
+            these three in this same Grid's Children) always rendered
+            and hit-tested on top of an overlay opened from within it.
+            Selecting a TV show/anime from the Search/Movies/TV/Anime
+            page therefore opened EpisodeBrowserHost "successfully" (its
+            Visibility really was Visible, and _activeEpisodeBrowser
+            really was set) but it was drawn underneath the still-visible
+            page host, invisible and unreachable by mouse hit-testing.
+            Raising these three to a higher ZIndex (2000) than every page
+            host (which all remain at 1000) makes an overlay always
+            render above any page, matching how these hosts are already
+            described in this file's own comments (see "other overlay
+            host below (PlaybackTestHost/SourceSelectorHost/
+            EpisodeBrowserHost)" further up) and how HandleControllerInput
+            already treats them as the most-specific, highest-priority
+            input target. This is a pure stacking-order change - no
+            visibility/lifecycle logic changed.
+        -->
         <Grid
             x:Name="PlaybackTestHost"
-            Panel.ZIndex="1000"
+            Panel.ZIndex="2000"
             Background="Black"
             Visibility="Collapsed" />
 
@@ -939,7 +967,7 @@
         -->
         <Grid
             x:Name="SourceSelectorHost"
-            Panel.ZIndex="1000"
+            Panel.ZIndex="2000"
             Background="Black"
             Visibility="Collapsed" />
 
@@ -956,7 +984,7 @@
         -->
         <Grid
             x:Name="EpisodeBrowserHost"
-            Panel.ZIndex="1000"
+            Panel.ZIndex="2000"
             Background="Black"
             Visibility="Collapsed" />
 

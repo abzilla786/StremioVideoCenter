@@ -115,6 +115,25 @@ namespace StremioVideoCenter
         private SearchView _activeSearchPage;
 
         // =========================================================
+        // PERSISTENT HERO NAVIGATION (quick-nav row on Movies/TV/Anime)
+        // =========================================================
+        //
+        // Set (synchronously, before the page's own Closed event fires -
+        // see CatalogueBrowseView.RaiseNavigationRequested/AnimeBrowseView
+        // .RaiseNavigationRequested) by a quick-nav Movies/TV Shows/Anime
+        // button click on whichever page is currently open. The page
+        // tears itself down through the exact same Closed-event path as
+        // the Back button; once ShowCatalogueBrowsePageAsync/
+        // ShowAnimePageAsync finish their own cleanup (host/Children,
+        // Visibility, _active*Page) they check this field and, if set,
+        // open the requested destination next instead of just returning
+        // to Home - see NavigateToPendingDestinationAsync. Only one page
+        // is ever open at a time (same invariant as _activeMoviesPage/
+        // _activeTvPage/_activeAnimePage/_activeSearchPage), so a single
+        // shared field is enough.
+        private string _pendingPageNavigationDestination;
+
+        // =========================================================
         // LOCAL MEDIA LIBRARY LOCATIONS (Slice 15 - architecture only)
         // =========================================================
 
@@ -1035,19 +1054,56 @@ namespace StremioVideoCenter
                     e.Handled));
 
             // Runtime regression fix: SelectFocusedMediaCard() already
-            // existed (reused below) and was already wired to the
-            // controller's A button, but nothing ever called it for a
-            // keyboard Enter/Space press - MediaCard's own PreviewKeyDown
-            // only fires when the MediaCard itself is literally the
-            // focused element, not when a focused-within descendant or a
-            // nav/Hero Button holds focus. Routing keyboard Enter/Space
-            // through the same SelectFocusedMediaCard() the controller
-            // already uses reuses the existing activation path instead of
-            // introducing a second one.
+            // existed and was already wired to the controller's A button,
+            // but nothing ever called it for a keyboard Enter/Space press
+            // - MediaCard's own PreviewKeyDown only fires when the
+            // MediaCard itself is literally the focused element, not when
+            // a focused-within descendant or a nav/Hero Button holds
+            // focus.
+            //
+            // Episode Browser hosting/focus fix: this used to call
+            // SelectFocusedMediaCard() directly, which (like
+            // HandleHomeDirectionalNavigation below) only knows about
+            // Home's own sections - it never checked whether an overlay
+            // (Episode Browser, Source Selector, Local Media, or a
+            // Movies/TV/Anime/Search page) was currently active the way
+            // HandleControllerInput's routing already did for a real
+            // controller's A button. That meant a keyboard Enter/Space
+            // pressed while, say, the Episode Browser was open and
+            // waiting for an episode pick fell straight through to Home's
+            // card selection instead of reaching the browser at all.
+            // Routing through the same RouteButtonToActiveOverlayOrHome
+            // used by HandleControllerInput fixes that gap - when nothing
+            // is active it still ends up calling SelectFocusedMediaCard()
+            // exactly as before, so plain Home behaviour is unchanged.
             if (e.Key == Key.Enter ||
                 e.Key == Key.Space)
             {
-                if (SelectFocusedMediaCard())
+                // On-screen keyboard task fix: a focused TextBox (e.g.
+                // SearchView's SearchBox) needs its own Enter/Space to
+                // reach its own KeyDown handler untouched - Space must
+                // type a space character and Enter must submit the
+                // search, exactly as before this task. Translating
+                // either into a synthetic controller A press here, as
+                // already done for every other focused control, would
+                // instead run whatever ActivateFocusedElement() finds
+                // for a focused TextBox (on SearchView, that's now
+                // "open the on-screen keyboard"), silently replacing
+                // normal text-field behaviour with the wrong action.
+                // Letting the key fall through when a TextBox has focus
+                // preserves existing text-entry behaviour everywhere
+                // unchanged; a real controller's A button is unaffected
+                // by this guard, since it never reaches this keyboard-
+                // only method at all (it starts at StremioVideoCenter.
+                // OnControllerButtonStateChanged and calls
+                // HandleControllerInput directly - see that method's
+                // own remarks above).
+                if (Keyboard.FocusedElement is TextBox)
+                {
+                    return;
+                }
+
+                if (RouteButtonToActiveOverlayOrHome(ControllerInput.A))
                 {
                     e.Handled = true;
                 }
@@ -1098,8 +1154,12 @@ namespace StremioVideoCenter
             // itself, exactly as the removed hook's own staleness bound
             // was documented. A genuine keyboard arrow pressed by the
             // user is never preceded by a matching HandleControllerInput
-            // call, so it always falls through to HandleHomeDirectional
-            // Navigation exactly as before.
+            // call, so it always falls through to RouteButtonToActive
+            // OverlayOrHome exactly as before (see the Episode Browser
+            // hosting/focus fix remarks above the Enter/Space branch
+            // above - the same gap existed here: this used to call
+            // HandleHomeDirectionalNavigation(e.Key) directly, bypassing
+            // whatever overlay/page was actually active).
             if (IsControllerEchoEvent(e.Key))
             {
                 e.Handled = true;
@@ -1107,9 +1167,46 @@ namespace StremioVideoCenter
                 return;
             }
 
-            if (HandleHomeDirectionalNavigation(e.Key))
+            ControllerInput? directionalButton =
+                ControllerInputFromDirectionalKey(e.Key);
+
+            if (directionalButton.HasValue &&
+                RouteButtonToActiveOverlayOrHome(directionalButton.Value))
             {
                 e.Handled = true;
+            }
+        }
+
+        // Converts a directional Key into the matching D-pad
+        // ControllerInput, or null for anything else. The inverse of
+        // DirectionalKeyFromControllerInput below - kept as its own
+        // method rather than reusing/inverting that one so neither
+        // mapping has to guess at the other's intent, exactly as
+        // DirectionalKeyFromControllerInput's own remarks describe for
+        // why it doesn't need to agree with any other mapping. Used only
+        // to let StremioVideoCenterView_PreviewKeyDown's genuine-keyboard-
+        // arrow fallback share RouteButtonToActiveOverlayOrHome with the
+        // controller path instead of duplicating its overlay-priority
+        // logic.
+        private static ControllerInput? ControllerInputFromDirectionalKey(
+            Key key)
+        {
+            switch (key)
+            {
+                case Key.Left:
+                    return ControllerInput.DPadLeft;
+
+                case Key.Right:
+                    return ControllerInput.DPadRight;
+
+                case Key.Up:
+                    return ControllerInput.DPadUp;
+
+                case Key.Down:
+                    return ControllerInput.DPadDown;
+
+                default:
+                    return null;
             }
         }
 
@@ -1462,17 +1559,53 @@ namespace StremioVideoCenter
                 _pendingControllerEchoAt = DateTime.UtcNow;
             }
 
-            // Episode browser owns controller input while season/episode
-            // selection is in progress - checked first, since it's the
-            // "most specific" overlay when present (mirrors how the source
+            return RouteButtonToActiveOverlayOrHome(button);
+        }
+
+        // =========================================================
+        // ROUTE BUTTON TO ACTIVE OVERLAY OR HOME (Episode Browser
+        // hosting/focus fix)
+        // =========================================================
+        //
+        // Extracted, unchanged, from what used to be the tail of
+        // HandleControllerInput above (the diagnostic logging and the
+        // controller-echo marker bookkeeping stay there - both are
+        // specific to real hardware controller input and are not part
+        // of "which handler owns this button" decision). This is that
+        // decision, alone, as its own method, so it can be shared by
+        // the keyboard input path too.
+        //
+        // Root cause this addresses: StremioVideoCenterView_PreviewKeyDown
+        // (the keyboard path) used to decide Enter/Space and arrow-key
+        // handling entirely on its own, by calling SelectFocusedMediaCard()
+        // / HandleHomeDirectionalNavigation() directly - never checking
+        // _activeEpisodeBrowser/_activeSourceSelector/_activeLocalMediaView
+        // /_activeMoviesPage/_activeTvPage/_activeAnimePage/_activeSearchPage
+        // the way this method (then HandleControllerInput's own tail) already
+        // did. So a real controller press correctly reached, say, the
+        // Episode Browser overlay once it was open, but the identical
+        // keyboard key did not - it fell straight through to Home's own
+        // card-selection/navigation instead, which is what made the
+        // Episode Browser look completely unresponsive to keyboard input
+        // even though it had genuinely opened. Routing both input paths
+        // through this single method removes that gap without changing
+        // what either path does when nothing is active (Home's existing
+        // fallback below is identical to before), and without changing
+        // any individual overlay's own HandleControllerInput.
+        private bool RouteButtonToActiveOverlayOrHome(
+            ControllerInput button)
+        {
+            // Episode browser owns input while season/episode selection
+            // is in progress - checked first, since it's the "most
+            // specific" overlay when present (mirrors how the source
             // selector is already checked before the player).
             if (_activeEpisodeBrowser != null)
             {
                 return _activeEpisodeBrowser.HandleControllerInput(button);
             }
 
-            // Source selector owns controller input while a selection is
-            // in progress - checked before the player, since a selector and
+            // Source selector owns input while a selection is in
+            // progress - checked before the player, since a selector and
             // a player are never active at the same time, but checking
             // selector first is harmless either way and keeps this
             // consistent with "most specific overlay wins" ordering.
@@ -1481,9 +1614,9 @@ namespace StremioVideoCenter
                 return _activeSourceSelector.HandleControllerInput(button);
             }
 
-            // Local Media owns controller input while its overlay is open
-            // - same "most specific overlay wins" ordering as the other
-            // three above.
+            // Local Media owns input while its overlay is open - same
+            // "most specific overlay wins" ordering as the other three
+            // above.
             if (_activeLocalMediaView != null)
             {
                 return _activeLocalMediaView.HandleControllerInput(button);
@@ -1513,7 +1646,7 @@ namespace StremioVideoCenter
                 return _activeSearchPage.HandleControllerInput(button);
             }
 
-            // Player owns controller input while playback is active.
+            // Player owns input while playback is active.
             if (_stremioPlayer != null)
             {
                 return _stremioPlayer.HandleControllerInput(button);
@@ -2694,6 +2827,7 @@ namespace StremioVideoCenter
 
             EventHandler onClosed = null;
             EventHandler<MediaItemSelectedEventArgs> onMediaSelected = null;
+            EventHandler<string> onNavigationRequested = null;
 
             onClosed = (sender, args) =>
             {
@@ -2708,8 +2842,19 @@ namespace StremioVideoCenter
                 }
             };
 
+            // Persistent hero navigation task: records the requested
+            // destination before Closed fires (the page raises this event
+            // and then immediately calls RaiseClosed() itself, both
+            // synchronously - see CatalogueBrowseView.RaiseNavigationRequested)
+            // so it's already set by the time this method resumes below.
+            onNavigationRequested = (sender, destination) =>
+            {
+                _pendingPageNavigationDestination = destination;
+            };
+
             page.Closed += onClosed;
             page.MediaSelected += onMediaSelected;
+            page.NavigationRequested += onNavigationRequested;
 
             _activeMoviesPage = isTv ? null : page;
             _activeTvPage = isTv ? page : null;
@@ -2733,6 +2878,7 @@ namespace StremioVideoCenter
 
             page.Closed -= onClosed;
             page.MediaSelected -= onMediaSelected;
+            page.NavigationRequested -= onNavigationRequested;
 
             host.Children.Remove(page);
             host.Visibility = Visibility.Collapsed;
@@ -2740,7 +2886,38 @@ namespace StremioVideoCenter
             _activeMoviesPage = null;
             _activeTvPage = null;
 
-            FocusFirstAvailableSection();
+            await NavigateToPendingDestinationAsync();
+        }
+
+        // Persistent hero navigation task: called after each Movies/TV/
+        // Anime page has fully torn itself down (host cleared, _active*
+        // Page nulled) - opens whichever destination a quick-nav button
+        // requested, if any, otherwise falls back to the existing
+        // "return to Home" behaviour (FocusFirstAvailableSection) exactly
+        // as before this task.
+        private async Task NavigateToPendingDestinationAsync()
+        {
+            string destination = _pendingPageNavigationDestination;
+            _pendingPageNavigationDestination = null;
+
+            switch (destination)
+            {
+                case "Movies":
+                    await ShowMoviesPageAsync();
+                    return;
+
+                case "TvShows":
+                    await ShowTvPageAsync();
+                    return;
+
+                case "Anime":
+                    await ShowAnimePageAsync();
+                    return;
+
+                default:
+                    FocusFirstAvailableSection();
+                    return;
+            }
         }
 
         // =========================================================
@@ -2755,6 +2932,7 @@ namespace StremioVideoCenter
 
             EventHandler onClosed = null;
             EventHandler<MediaItemSelectedEventArgs> onMediaSelected = null;
+            EventHandler<string> onNavigationRequested = null;
 
             onClosed = (sender, args) =>
             {
@@ -2769,8 +2947,16 @@ namespace StremioVideoCenter
                 }
             };
 
+            // Persistent hero navigation task: see the identical remark
+            // on ShowCatalogueBrowsePageAsync's own onNavigationRequested.
+            onNavigationRequested = (sender, destination) =>
+            {
+                _pendingPageNavigationDestination = destination;
+            };
+
             page.Closed += onClosed;
             page.MediaSelected += onMediaSelected;
+            page.NavigationRequested += onNavigationRequested;
 
             _activeAnimePage = page;
 
@@ -2793,13 +2979,14 @@ namespace StremioVideoCenter
 
             page.Closed -= onClosed;
             page.MediaSelected -= onMediaSelected;
+            page.NavigationRequested -= onNavigationRequested;
 
             AnimePageHost.Children.Remove(page);
             AnimePageHost.Visibility = Visibility.Collapsed;
 
             _activeAnimePage = null;
 
-            FocusFirstAvailableSection();
+            await NavigateToPendingDestinationAsync();
         }
 
         // =========================================================

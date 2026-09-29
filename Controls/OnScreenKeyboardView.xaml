@@ -1,0 +1,194 @@
+<UserControl x:Class="StremioVideoCenterControls.OnScreenKeyboardView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Focusable="True"
+             KeyboardNavigation.IsTabStop="True"
+             PreviewKeyDown="OnScreenKeyboardView_PreviewKeyDown">
+
+    <!--
+        ON-SCREEN KEYBOARD (Slice 15 - reusable control)
+
+        A general-purpose virtual keyboard, built once here and consumed by
+        SearchView (its only caller this slice - see SearchView.xaml.cs
+        remarks). It does not know about SearchBox or search at all: every
+        key press is raised as an event (CharacterEntered/Backspace
+        Requested/ClearRequested/SubmitRequested/CloseRequested) and the
+        host view decides what that means for whatever text field it owns.
+        This keeps it reusable for any future text-entry surface without a
+        second/competing keyboard implementation.
+
+        Same overlay conventions as every other control in this codebase -
+        CloseButtonStyle duplicated rather than shared (see EpisodeBrowser
+        View/SearchView remarks on why), PreviewKeyDown for physical
+        keyboard, HandleControllerInput for the shared "most specific
+        overlay wins" input chain, FocusElement/Dispatcher.BeginInvoke at
+        DispatcherPriority.Input for initial focus acquisition.
+
+        Navigation between keys uses WPF's own directional focus prediction
+        (UIElement.PredictFocus) rather than a hand-built row/column index
+        table - the key rows are deliberately uneven lengths (10/10/9/9/3),
+        and PredictFocus already solves "nearest focusable control in this
+        visual direction" for exactly that shape without extra bookkeeping.
+        It naturally does nothing at an edge (returns null), matching this
+        project's existing clamp-not-wrap convention (see MediaSection.
+        MoveHorizontal) with no extra code.
+    -->
+
+    <UserControl.Resources>
+
+        <Style x:Key="CloseButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#99000000" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="CloseBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CloseBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="CloseBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CloseBorder" Property="Background" Value="#DD333333" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Standard single-character key (letters/numbers/punctuation). -->
+        <Style x:Key="KeyButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#33FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Width" Value="52" />
+            <Setter Property="Height" Value="48" />
+            <Setter Property="Margin" Value="4" />
+            <Setter Property="FontSize" Value="18" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="KeyBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="KeyBorder" Property="BorderBrush" Value="#E91E63" />
+                                <Setter TargetName="KeyBorder" Property="BorderThickness" Value="2" />
+                                <Setter TargetName="KeyBorder" Property="Background" Value="#2A2530" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="KeyBorder" Property="Background" Value="#24242A" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Wider action key (Shift/Backspace/Clear/Space/Search) - same
+             visual language, just no fixed Width so MinWidth per-instance
+             controls its size. -->
+        <Style x:Key="WideKeyButtonStyle" TargetType="Button" BasedOn="{StaticResource KeyButtonStyle}">
+            <Setter Property="Width" Value="Auto" />
+            <Setter Property="Padding" Value="16,0" />
+        </Style>
+
+    </UserControl.Resources>
+
+    <!-- Docked at the bottom of whatever host gives this control room -
+         the host (SearchView) keeps its own search box/results visible
+         above, Netflix/console-style, rather than this covering the
+         whole page. -->
+    <Border Background="#EE0D0D0F"
+            BorderBrush="#33FFFFFF"
+            BorderThickness="0,1,0,0"
+            VerticalAlignment="Bottom">
+
+        <StackPanel Margin="24,18,24,22" HorizontalAlignment="Center">
+
+            <!-- ==================================================== -->
+            <!-- HEADER                                                -->
+            <!-- ==================================================== -->
+
+            <Grid Margin="0,0,0,14" MinWidth="640">
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="5" Height="20" Background="#E91E63" CornerRadius="2" Margin="0,0,12,0" />
+                    <TextBlock Text="Keyboard"
+                               Foreground="White"
+                               FontSize="18"
+                               FontWeight="Bold"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+
+                <Button x:Name="CloseButton"
+                        Style="{StaticResource CloseButtonStyle}"
+                        Content="&#x2715;"
+                        ToolTip="Close keyboard"
+                        Click="CloseButton_Click"
+                        HorizontalAlignment="Right"
+                        Width="32"
+                        Height="32"
+                        FontSize="14" />
+            </Grid>
+
+            <!-- ==================================================== -->
+            <!-- KEY ROWS                                              -->
+            <!-- ==================================================== -->
+
+            <StackPanel x:Name="NumberRow" Orientation="Horizontal" HorizontalAlignment="Center" />
+            <StackPanel x:Name="TopLetterRow" Orientation="Horizontal" HorizontalAlignment="Center" />
+            <StackPanel x:Name="MiddleLetterRow" Orientation="Horizontal" HorizontalAlignment="Center" />
+            <StackPanel x:Name="BottomLetterRow" Orientation="Horizontal" HorizontalAlignment="Center" />
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,0">
+                <Button x:Name="ClearButton"
+                        Style="{StaticResource WideKeyButtonStyle}"
+                        Content="Clear"
+                        MinWidth="90"
+                        Click="ActionKey_Click"
+                        Tag="action:clear" />
+
+                <Button x:Name="SpaceButton"
+                        Style="{StaticResource WideKeyButtonStyle}"
+                        Content="Space"
+                        MinWidth="300"
+                        Click="ActionKey_Click"
+                        Tag="action:space" />
+
+                <Button x:Name="SearchKeyButton"
+                        Style="{StaticResource WideKeyButtonStyle}"
+                        Content="Search"
+                        MinWidth="120"
+                        Background="#E91E63"
+                        Click="ActionKey_Click"
+                        Tag="action:submit" />
+            </StackPanel>
+
+        </StackPanel>
+
+    </Border>
+
+</UserControl>

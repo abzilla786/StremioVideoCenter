@@ -71,6 +71,19 @@ namespace StremioVideoCenterControls
         // guard used by CatalogueBrowseView/AnimeBrowseView's pagination.
         private int _searchToken;
 
+        // On-screen keyboard task: same "_active*" convention the top-level
+        // StremioVideoCenterView uses for its own overlays (_activeEpisode
+        // Browser/_activeSourceSelector/etc.) - non-null exactly while the
+        // keyboard overlay is open, and the single thing both PreviewKeyDown
+        // and HandleControllerInput check first so the keyboard gets every
+        // input while it's up, the same "most specific overlay wins" rule
+        // already established one level up. There is only ever one
+        // instance (KeyboardOverlay, declared in XAML) - this field tracks
+        // whether it is currently the active input target, it does not own
+        // the control's lifetime the way the top-level fields own their
+        // dynamically created/destroyed pages.
+        private OnScreenKeyboardView _activeKeyboard;
+
         public SearchView()
         {
             InitializeComponent();
@@ -113,6 +126,117 @@ namespace StremioVideoCenterControls
                 SearchBox.Focus();
                 Keyboard.Focus(SearchBox);
             }), DispatcherPriority.Input);
+        }
+
+        // =========================================================
+        // ON-SCREEN KEYBOARD
+        // =========================================================
+        //
+        // KeyboardOverlay (Controls/OnScreenKeyboardView) knows nothing
+        // about SearchBox - it only raises events for what the user did.
+        // This is the one place that turns those events into actual
+        // SearchBox.Text/CaretIndex changes, so a future second caller of
+        // OnScreenKeyboardView (a different text field entirely) would
+        // wire its own equivalent of these handlers rather than this view
+        // needing to change.
+
+        private void OpenKeyboard()
+        {
+            if (_activeKeyboard != null)
+            {
+                return;
+            }
+
+            _activeKeyboard = KeyboardOverlay;
+            KeyboardOverlay.Visibility = Visibility.Visible;
+            KeyboardOverlay.FocusFirstKey();
+        }
+
+        // Single close path for every way the keyboard can go away
+        // (Close/X, B/Escape, or after Search submits) - always restores
+        // focus to the search box (reusing the same FocusSearchBox() the
+        // page itself uses on open) so focus is never left on a control
+        // that just became invisible.
+        private void CloseKeyboard()
+        {
+            if (_activeKeyboard == null)
+            {
+                return;
+            }
+
+            _activeKeyboard = null;
+            KeyboardOverlay.Visibility = Visibility.Collapsed;
+            FocusSearchBox();
+        }
+
+        private void OpenKeyboardButton_Click(object sender, RoutedEventArgs e)
+        {
+            OpenKeyboard();
+        }
+
+        private void KeyboardOverlay_CharacterEntered(object sender, string e)
+        {
+            InsertIntoSearchBox(e);
+        }
+
+        private void KeyboardOverlay_BackspaceRequested(object sender, EventArgs e)
+        {
+            RemoveCharacterBeforeCaret();
+        }
+
+        private void KeyboardOverlay_ClearRequested(object sender, EventArgs e)
+        {
+            ClearSearchBox();
+        }
+
+        private async void KeyboardOverlay_SubmitRequested(object sender, EventArgs e)
+        {
+            CloseKeyboard();
+            await SubmitSearchAsync();
+        }
+
+        private void KeyboardOverlay_CloseRequested(object sender, EventArgs e)
+        {
+            CloseKeyboard();
+        }
+
+        // Inserts/removes at the actual caret position (not always the
+        // string's end) so the on-screen keyboard behaves sensibly even
+        // when a physical keyboard or mouse click has moved the caret
+        // somewhere in the middle of existing text - normal WPF TextBox
+        // semantics, not a simplified append-only version of them.
+        private void InsertIntoSearchBox(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return;
+            }
+
+            string current = SearchBox.Text ?? string.Empty;
+            int caret = Math.Max(0, Math.Min(SearchBox.CaretIndex, current.Length));
+
+            SearchBox.Text = current.Insert(caret, text);
+            SearchBox.CaretIndex = caret + text.Length;
+        }
+
+        private void RemoveCharacterBeforeCaret()
+        {
+            string current = SearchBox.Text ?? string.Empty;
+            int caret = Math.Max(0, Math.Min(SearchBox.CaretIndex, current.Length));
+
+            if (caret <= 0 || current.Length == 0)
+            {
+                return;
+            }
+
+            SearchBox.Text = current.Remove(caret - 1, 1);
+            SearchBox.CaretIndex = caret - 1;
+        }
+
+        private void ClearSearchBox()
+        {
+            SearchBox.Text = string.Empty;
+            SearchBox.CaretIndex = 0;
         }
 
         // =========================================================
@@ -413,6 +537,18 @@ namespace StremioVideoCenterControls
 
         private void SearchView_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // On-screen keyboard task: while the keyboard overlay is open,
+            // it owns all input - let this tunneling event continue down
+            // to its own PreviewKeyDown handler (OnScreenKeyboardView_
+            // PreviewKeyDown) instead of this view's Escape-closes-the-
+            // whole-page/section-navigation handling below claiming it
+            // first. Same early-return shape as the SearchBox check just
+            // below, one level up.
+            if (_activeKeyboard != null)
+            {
+                return;
+            }
+
             if (e.Key == Key.Escape)
             {
                 RaiseClosed();
@@ -420,11 +556,26 @@ namespace StremioVideoCenterControls
                 return;
             }
 
-            // The search box needs its own text-entry keys (including
-            // Left/Right/Space/Up/Down for caret movement) to reach the
-            // TextBox normally.
+            // Search-bar horizontal navigation task: the search box still
+            // needs its own text-entry keys (Left/Right for caret
+            // movement, Space, digits, letters, Backspace, Enter-to-
+            // submit via SearchBox_KeyDown, etc.) to reach the TextBox
+            // normally. The one deliberate exception is Right pressed
+            // with the caret already at the end of the existing text -
+            // there is nowhere further right for the caret to go anyway,
+            // so that specific press now moves focus out to the on-
+            // screen-keyboard button instead of being a silent no-op.
+            // Left is never intercepted here: SearchBox is the leftmost
+            // stop in this row, so Left always stays caret movement.
             if (SearchBox.IsKeyboardFocusWithin)
             {
+                if (e.Key == Key.Right &&
+                    SearchBox.CaretIndex >= (SearchBox.Text?.Length ?? 0))
+                {
+                    MoveHorizontal(1);
+                    e.Handled = true;
+                }
+
                 return;
             }
 
@@ -458,6 +609,17 @@ namespace StremioVideoCenterControls
 
         public bool HandleControllerInput(ControllerInput button)
         {
+            // On-screen keyboard task: mirrors the guard at the top of
+            // SearchView_PreviewKeyDown - the keyboard overlay is the most
+            // specific active thing while it's open, so it gets first (and
+            // exclusive) claim on every button, the same "most specific
+            // overlay wins" rule StremioVideoCenterView.RouteButtonToActive
+            // OverlayOrHome already applies one level up.
+            if (_activeKeyboard != null)
+            {
+                return _activeKeyboard.HandleControllerInput(button);
+            }
+
             switch (button)
             {
                 case ControllerInput.B:
@@ -492,8 +654,22 @@ namespace StremioVideoCenterControls
         // identical remark on its own ActivateFocusedElement for why this
         // page's own HandleControllerInput (not the generic keyboard
         // Enter/Space path) needs this.
+        //
+        // On-screen keyboard task: this is also the controller "Activate
+        // search input / keyboard" step from the expected flow - the
+        // search box already has focus the moment this page opens
+        // (FocusSearchBox() in ShowSearchPageAsync), so a controller user
+        // never had any way to type into it before. A physical keyboard
+        // needs no such step (it already just types into the focused
+        // TextBox), so this only applies to the controller path.
         private bool ActivateFocusedElement()
         {
+            if (SearchBox.IsKeyboardFocusWithin)
+            {
+                OpenKeyboard();
+                return true;
+            }
+
             if (Keyboard.FocusedElement is ButtonBase focusedButton)
             {
                 focusedButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -578,9 +754,30 @@ namespace StremioVideoCenterControls
             // Dedicated-page Back navigation task: same top-layer <->
             // content chaining as CatalogueBrowseView/AnimeBrowseView -
             // see those files' identical remark on their own MoveVertical.
+            //
+            // Search results Up-navigation fix: a second stop was added
+            // between the Back button and the results - the search
+            // header row (SearchBox/OpenKeyboardButton/SearchButton).
+            // The chain is now Back <-> search header <-> results,
+            // instead of Back sitting directly above the results with no
+            // way to land on the header row via Up/Down at all.
             if (CloseButton.IsKeyboardFocused)
             {
                 if (direction > 0)
+                {
+                    FocusSearchBarRow();
+                }
+
+                return;
+            }
+
+            if (IsSearchBarRowFocused())
+            {
+                if (direction < 0)
+                {
+                    CloseButton.Focus();
+                }
+                else
                 {
                     FocusFirstAvailableSection();
                 }
@@ -609,10 +806,12 @@ namespace StremioVideoCenterControls
 
             if (target < 0)
             {
-                // Dedicated-page Back navigation task: moving up out of
-                // the topmost section reaches the Back button instead of
-                // clamping in place.
-                CloseButton.Focus();
+                // Search results Up-navigation fix: moving up out of the
+                // topmost results section now returns to the search
+                // header row (SearchBox), not all the way to the page-
+                // level Back button - Back is one more Up away from
+                // there, matching the chain established above.
+                FocusSearchBarRow();
                 return;
             }
 
@@ -620,8 +819,70 @@ namespace StremioVideoCenterControls
             sections[target].FocusFirstCard();
         }
 
+        private bool IsSearchBarRowFocused()
+        {
+            return SearchBox.IsKeyboardFocusWithin ||
+                   OpenKeyboardButton.IsKeyboardFocused ||
+                   SearchButton.IsKeyboardFocused;
+        }
+
+        private void FocusSearchBarRow()
+        {
+            FocusSearchBox();
+        }
+
+        // Search-bar horizontal navigation task: SearchBox -> Right ->
+        // on-screen-keyboard button -> Right -> Search button, and the
+        // exact reverse with Left. Each stop clamps at its own end of the
+        // row (SearchBox is the leftmost, SearchButton the rightmost) -
+        // same clamp convention MediaSection.MoveHorizontal already uses
+        // at the right-hand end of a card row (see that method's own
+        // remarks). Falls through to the existing card-row behaviour
+        // unchanged when none of the three search-bar controls has
+        // focus.
         private void MoveHorizontal(int direction)
         {
+            if (SearchBox.IsKeyboardFocusWithin)
+            {
+                if (direction > 0)
+                {
+                    OpenKeyboardButton.Focus();
+                }
+
+                // direction < 0: SearchBox is the leftmost stop in this
+                // row - Left here is always ordinary caret movement,
+                // handled by the TextBox itself before this method is
+                // ever reached (see SearchView_PreviewKeyDown's guard),
+                // so there is nothing further to do on that path.
+                return;
+            }
+
+            if (OpenKeyboardButton.IsKeyboardFocused)
+            {
+                if (direction > 0)
+                {
+                    SearchButton.Focus();
+                }
+                else
+                {
+                    FocusSearchBox();
+                }
+
+                return;
+            }
+
+            if (SearchButton.IsKeyboardFocused)
+            {
+                if (direction < 0)
+                {
+                    OpenKeyboardButton.Focus();
+                }
+
+                // direction > 0: already the rightmost stop in this row -
+                // no-op.
+                return;
+            }
+
             GetFocusedSection()?.MoveHorizontal(direction);
         }
 
