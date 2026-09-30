@@ -421,6 +421,20 @@
                                     IsTabStop="True"
                                     Click="SearchButton_Click"/>
 
+                            <!--
+                                Profile Foundation (Slice 16A): opens the
+                                same shared Netflix-style Profile Selection
+                                overlay used at startup - see
+                                StremioVideoCenterView.xaml.cs's
+                                ShowProfileSelectionAsync remarks for why
+                                there is only one implementation for both.
+                            -->
+                            <Button x:Name="SwitchProfileButton"
+                                    Content="SWITCH PROFILE"
+                                    Style="{DynamicResource NavigationButtonStyle}"
+                                    IsTabStop="True"
+                                    Click="SwitchProfileButton_Click"/>
+
                         </StackPanel>
 
                     </Grid>
@@ -1042,6 +1056,25 @@
         <Grid
             x:Name="SearchPageHost"
             Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <!-- ========================================================= -->
+        <!-- PROFILE SELECTION HOST (Slice 16A - Profile Foundation)   -->
+        <!-- ========================================================= -->
+        <!--
+            Same overlay-host pattern as every host above, but at a
+            higher Panel.ZIndex (3000) than even PlaybackTestHost/
+            SourceSelectorHost/EpisodeBrowserHost (2000) - Profile
+            Selection is the single most modal surface in the
+            application: it can be shown before Home has ever loaded
+            (the startup gate in StremioVideoCenterView_Loaded) and, via
+            SWITCH PROFILE, must always render above anything else that
+            could conceivably still be on screen.
+        -->
+        <Grid
+            x:Name="ProfileSelectionHost"
+            Panel.ZIndex="3000"
             Background="Black"
             Visibility="Collapsed" />
 

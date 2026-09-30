@@ -94,6 +94,9 @@
     <Compile Include="Controls\OnScreenKeyboardView.xaml.cs">
       <DependentUpon>OnScreenKeyboardView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\ProfileSelectionView.xaml.cs">
+      <DependentUpon>ProfileSelectionView.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
       <DependentUpon>SettingsMenu.xaml</DependentUpon>
     </Compile>
@@ -142,6 +145,8 @@
     <Compile Include="Services\LocalMediaIdentificationService.cs" />
     <Compile Include="Services\LocalMediaScanService.cs" />
     <Compile Include="Services\LocalLibraryService.cs" />
+    <Compile Include="Services\ProfileService.cs" />
+    <Compile Include="Models\UserProfile.cs" />
     <Compile Include="StremioVideoCenter.cs" />
     <Compile Include="StremioVideoCenterSettings.cs" />
     <Compile Include="StremioVideoCenterSettingsView.xaml.cs">
@@ -203,6 +208,10 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Controls\OnScreenKeyboardView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\ProfileSelectionView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

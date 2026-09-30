@@ -128,7 +128,8 @@ namespace StremioVideoCenter
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
-                    LibraryLocations = settings?.Settings?.LibraryLocations
+                    LibraryLocations = settings?.Settings?.LibraryLocations,
+                    ProfileService = CreateProfileService()
                 };
 
                 videoCenterView = new StremioVideoCenterView(configuration);
@@ -337,13 +338,43 @@ namespace StremioVideoCenter
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
-                    LibraryLocations = settings?.Settings?.LibraryLocations
+                    LibraryLocations = settings?.Settings?.LibraryLocations,
+                    ProfileService = CreateProfileService()
                 };
 
                 return new StremioVideoCenterView(configuration);
             }
 
             return null;
+        }
+
+        // =========================================================
+        // PROFILE SERVICE CONSTRUCTION (Slice 16A - Profile Foundation)
+        // =========================================================
+        //
+        // One ProfileService per Video Center window-open, built here -
+        // where the live StremioVideoCenterSettings instance and this
+        // plugin's own SavePluginSettings are both naturally available -
+        // rather than in the View, which only ever receives read-only
+        // configuration snapshots for everything else (see
+        // StremioVideoCenterConfiguration.ProfileService remarks). The
+        // save delegate calls this plugin's own SavePluginSettings with
+        // the SAME live Settings object ProfileService mutates, so a
+        // profile create/rename/switch made from inside the open window
+        // is written to Playnite's plugin-settings storage immediately,
+        // not only when the Settings dialog is later opened and saved.
+        private ProfileService CreateProfileService()
+        {
+            if (settings?.Settings == null)
+            {
+                return null;
+            }
+
+            StremioVideoCenterSettings liveSettings = settings.Settings;
+
+            return new ProfileService(
+                liveSettings,
+                () => SavePluginSettings(liveSettings));
         }
 
         // TEMPORARY DIAGNOSTIC (controller double-input investigation) -

@@ -99,6 +99,28 @@ namespace StremioVideoCenter
         private LocalMediaView _activeLocalMediaView;
 
         // =========================================================
+        // PROFILE SELECTION (Slice 16A - Profile Foundation)
+        // =========================================================
+        //
+        // Non-null only while a ProfileSelectionView is actively shown -
+        // same lifecycle discipline as every other overlay above: created
+        // fresh per visit, torn down immediately once a profile is
+        // selected. Checked FIRST in RouteButtonToActiveOverlayOrHome
+        // (the most specific/modal overlay of all - it owns startup
+        // itself, before Home has ever loaded).
+
+        private ProfileSelectionView _activeProfileSelection;
+
+        // The sole owner of StremioVideoCenterSettings.Profiles/
+        // ActiveProfileId - constructed once in StremioVideoCenter.cs
+        // (where the live settings object and SavePluginSettings are
+        // both available) and handed to this view via configuration. Can
+        // be null (see configuration remarks) if settings somehow failed
+        // to initialize - every call site below guards against that
+        // rather than assuming it is always present.
+        private readonly ProfileService _profileService;
+
+        // =========================================================
         // MOVIES / TV / ANIME / SEARCH PAGES (Slice 15)
         // =========================================================
         //
@@ -229,6 +251,9 @@ namespace StremioVideoCenter
             _libraryLocations =
                 configuration.LibraryLocations;
 
+            _profileService =
+                configuration.ProfileService;
+
             DataContext =
                 new HomeViewModel();
 
@@ -260,7 +285,8 @@ namespace StremioVideoCenter
                     LocalMediaButton,
                     NavigationMyListButton,
                     HistoryButton,
-                    SearchButton
+                    SearchButton,
+                    SwitchProfileButton
                 };
 
             foreach (MediaSection section in sections)
@@ -346,6 +372,28 @@ namespace StremioVideoCenter
             }
 
             _startupSequenceStarted = true;
+
+            // Slice 16A (Profile Foundation) startup gate: "Application
+            // starts -> Load persisted profiles -> Profile Selection
+            // screen -> User selects profile -> Set ActiveProfileId ->
+            // Load profile-specific personal data -> Home". This runs
+            // and completes BEFORE any Hero/catalogue loading below, so
+            // Home is never shown, even briefly, before a profile has
+            // been chosen. ShowProfileSelectionAsync returns only after
+            // the user has selected a profile (see that method's own
+            // remarks - there is no cancel path), and _profileService
+            // being null (defensive only) simply skips this gate rather
+            // than blocking startup.
+            await ShowProfileSelectionAsync(isSwitching: false);
+
+            if (!IsLoaded)
+            {
+                // Lifecycle fix (existing convention, see the identical
+                // check further below for the hero rotation loop): the
+                // window may already have been closed while profile
+                // selection was awaited.
+                return;
+            }
 
             if (DataContext is HomeViewModel vm)
             {
@@ -1595,6 +1643,18 @@ namespace StremioVideoCenter
         private bool RouteButtonToActiveOverlayOrHome(
             ControllerInput button)
         {
+            // Profile Selection (Slice 16A) owns input while shown - the
+            // most specific/modal overlay of all, checked before every
+            // other overlay below. It can be active before Home has ever
+            // loaded (the startup profile-selection gate in
+            // StremioVideoCenterView_Loaded), so it must be checked even
+            // earlier than the Episode Browser/Source Selector pair that
+            // otherwise leads this chain.
+            if (_activeProfileSelection != null)
+            {
+                return _activeProfileSelection.HandleControllerInput(button);
+            }
+
             // Episode browser owns input while season/episode selection
             // is in progress - checked first, since it's the "most
             // specific" overlay when present (mirrors how the source
@@ -2412,6 +2472,100 @@ namespace StremioVideoCenter
         // architecture, and the AddonInstance/registry plumbing it will
         // need already exists, so the remaining work is browsing/catalogue
         // logic, left for a dedicated future Local Media slice.
+        // =========================================================
+        // PROFILE SELECTION (Slice 16A - Profile Foundation)
+        // =========================================================
+        //
+        // Shared by BOTH the startup gate (StremioVideoCenterView_Loaded,
+        // isSwitching: false) and SWITCH PROFILE (isSwitching: true) - one
+        // implementation, per the Slice 16 spec's explicit requirement.
+        // Same overlay-host pattern as ShowLocalMediaAsync above, but
+        // deliberately has no "cancelled" path - ProfileSelectionView
+        // itself guarantees the user always leaves by selecting a profile
+        // (see that view's own remarks), so this always returns a real
+        // Guid, never null.
+        private async Task<Guid?> ShowProfileSelectionAsync(bool isSwitching)
+        {
+            if (_profileService == null)
+            {
+                // Defensive only - see _profileService's own remarks.
+                // Nothing to show; callers proceed exactly as if the
+                // user had already selected the (nonexistent) profile.
+                return null;
+            }
+
+            var profileSelectionView = new ProfileSelectionView();
+            profileSelectionView.Initialize(_profileService, isSwitching);
+
+            var completionSource = new TaskCompletionSource<Guid>();
+
+            EventHandler<Guid> onSelected = null;
+
+            onSelected = (sender, profileId) =>
+            {
+                completionSource.TrySetResult(profileId);
+            };
+
+            profileSelectionView.ProfileSelected += onSelected;
+
+            _activeProfileSelection = profileSelectionView;
+
+            ProfileSelectionHost.Children.Add(profileSelectionView);
+            ProfileSelectionHost.Visibility = Visibility.Visible;
+
+            profileSelectionView.Focus();
+            profileSelectionView.FocusFirstTile();
+
+            Guid selectedProfileId = await completionSource.Task;
+
+            profileSelectionView.ProfileSelected -= onSelected;
+
+            ProfileSelectionHost.Children.Remove(profileSelectionView);
+            ProfileSelectionHost.Visibility = Visibility.Collapsed;
+
+            _activeProfileSelection = null;
+
+            _profileService.SetActiveProfile(selectedProfileId);
+
+            OnActiveProfileChanged();
+
+            return selectedProfileId;
+        }
+
+        // =========================================================
+        // ACTIVE PROFILE CHANGED HOOK
+        // =========================================================
+        //
+        // Slice 16A scope: intentionally does nothing yet. This is the
+        // single wiring point Slice 16B (Watch State)/16C (Continue
+        // Watching)/16D (History)/16E (profile-switch state refresh) will
+        // extend to reload profile-scoped Home sections - see the Slice
+        // 16 architecture audit's "no stale profile data after switching"
+        // requirement. Left as an explicit, named no-op rather than
+        // omitted entirely so that wiring point already exists and is
+        // called from both the startup and SWITCH PROFILE paths before
+        // any of that data exists.
+        private void OnActiveProfileChanged()
+        {
+        }
+
+        // 16A fix #4 (initial Home focus): after SWITCH PROFILE resolves,
+        // focus must land on HomeButton - the same "HOME in the Hero
+        // navigation receives initial focus" rule the startup profile-
+        // selection gate already satisfies via FocusDefaultHomeTarget()
+        // (see that method's own remarks). This previously called
+        // FocusFirstAvailableSection() directly, which is why testing
+        // found SWITCH PROFILE landing in the Hero/content area instead of
+        // on HOME.
+        private async void SwitchProfileButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            await ShowProfileSelectionAsync(isSwitching: true);
+
+            FocusDefaultHomeTarget();
+        }
+
         private async Task ShowLocalMediaAsync()
         {
             var localMediaView = new LocalMediaView();

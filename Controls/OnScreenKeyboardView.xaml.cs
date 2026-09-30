@@ -247,6 +247,24 @@ namespace StremioVideoCenterControls
         // FOCUS ACQUISITION
         // =========================================================
 
+        // 16A profile-name-keyboard label fix: lets a host override the
+        // submit key's displayed text for its own context (e.g. "Enter"
+        // when this control is confirming a profile name rather than
+        // performing a search) without a second/competing keyboard
+        // implementation. Purely cosmetic - it only ever touches
+        // SearchKeyButton.Content. Dispatch is untouched: the button's
+        // Tag stays "action:submit" and ActionKey_Click/SubmitRequested
+        // fire exactly as before regardless of what text is showing.
+        public void SetSubmitLabel(string label)
+        {
+            if (string.IsNullOrEmpty(label))
+            {
+                return;
+            }
+
+            SearchKeyButton.Content = label;
+        }
+
         public void FocusFirstKey()
         {
             Dispatcher.BeginInvoke(

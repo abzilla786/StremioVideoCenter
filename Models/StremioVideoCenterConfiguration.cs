@@ -37,5 +37,17 @@ namespace StremioVideoCenter.Models
         // locations is not wired into the View this slice - see
         // LocalMediaView/LocalLibraryService remarks.
         public List<LibraryLocation> LibraryLocations { get; set; }
+
+        // Slice 16A (Profile Foundation): unlike every value above (which
+        // are read-only snapshots the View only ever displays), profile
+        // creation/rename/switching must persist live, from inside the
+        // already-open Video Center window, without waiting for Playnite's
+        // Settings dialog to be opened and saved. ProfileService is
+        // therefore handed over fully constructed - built in
+        // StremioVideoCenter.cs, where the live StremioVideoCenterSettings
+        // instance and the plugin's own SavePluginSettings are both
+        // naturally available - rather than trying to carry a save
+        // delegate through this plain data-bundle class.
+        public Services.ProfileService ProfileService { get; set; }
     }
 }

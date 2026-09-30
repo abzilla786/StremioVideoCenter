@@ -22,6 +22,8 @@ namespace StremioVideoCenter
         private List<AddonInstance> addonInstances = new List<AddonInstance>();
         private List<string> seededCoreAddonProviderKeys = new List<string>();
         private List<LibraryLocation> libraryLocations = new List<LibraryLocation>();
+        private List<UserProfile> profiles = new List<UserProfile>();
+        private string activeProfileId = string.Empty;
 
         // =========================================================
         // TMDB API CREDENTIAL
@@ -115,6 +117,34 @@ namespace StremioVideoCenter
         {
             get => libraryLocations;
             set => SetValue(ref libraryLocations, value);
+        }
+
+        // =========================================================
+        // LOCAL PROFILES (Slice 16A - Profile Foundation)
+        // =========================================================
+        //
+        // Local "who's watching" profiles - not authentication/security
+        // accounts (see Models.UserProfile remarks). Reuses this exact
+        // Playnite plugin-settings mechanism, the same one AddonInstances/
+        // LibraryLocations already use. The sole owner of this list and
+        // of ActiveProfileId below is Services.ProfileService - mirrors
+        // how LibraryLocations is only ever touched through
+        // LocalLibraryService.
+        public List<UserProfile> Profiles
+        {
+            get => profiles;
+            set => SetValue(ref profiles, value);
+        }
+
+        // The Guid (as a string) of the profile currently in use. Kept as
+        // a plain string, not a Guid, for the same reason every other
+        // persisted identifier in this codebase is a string (Playnite's
+        // JSON settings serialization) - ProfileService is responsible
+        // for ever reading this as a Guid.
+        public string ActiveProfileId
+        {
+            get => activeProfileId;
+            set => SetValue(ref activeProfileId, value);
         }
 
         // =========================================================
