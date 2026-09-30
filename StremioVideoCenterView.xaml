@@ -413,7 +413,8 @@
                             <Button x:Name="HistoryButton"
                                     Content="HISTORY"
                                     Style="{DynamicResource NavigationButtonStyle}"
-                                    IsTabStop="True"/>
+                                    IsTabStop="True"
+                                    Click="HistoryButton_Click"/>
 
                             <Button x:Name="SearchButton"
                                     Content="SEARCH"
@@ -1055,6 +1056,19 @@
 
         <Grid
             x:Name="SearchPageHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <!-- ========================================================= -->
+        <!-- HISTORY HOST (Slice 16C - Continue Watching + History)     -->
+        <!-- ========================================================= -->
+        <!--
+            Same overlay-host pattern as every other dedicated-page host
+            above - see StremioVideoCenterView.xaml.cs ShowHistoryAsync.
+        -->
+        <Grid
+            x:Name="HistoryHost"
             Panel.ZIndex="1000"
             Background="Black"
             Visibility="Collapsed" />

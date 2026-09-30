@@ -1,4 +1,4 @@
-﻿using Playnite.SDK;
+using Playnite.SDK;
 using Playnite.SDK.Data;
 using StremioVideoCenter.Models;
 using System;
@@ -24,6 +24,9 @@ namespace StremioVideoCenter
         private List<LibraryLocation> libraryLocations = new List<LibraryLocation>();
         private List<UserProfile> profiles = new List<UserProfile>();
         private string activeProfileId = string.Empty;
+        private List<WatchStateEntry> watchStates = new List<WatchStateEntry>();
+        private List<WatchHistoryEntry> watchHistory = new List<WatchHistoryEntry>();
+        private List<MyListEntry> myListEntries = new List<MyListEntry>();
 
         // =========================================================
         // TMDB API CREDENTIAL
@@ -145,6 +148,56 @@ namespace StremioVideoCenter
         {
             get => activeProfileId;
             set => SetValue(ref activeProfileId, value);
+        }
+
+        // =========================================================
+        // PROFILE-OWNED WATCH STATE (Slice 16B)
+        // =========================================================
+        //
+        // Every persisted playback-progress record, across every
+        // profile - reuses this exact Playnite plugin-settings
+        // mechanism, the same one Profiles/AddonInstances/
+        // LibraryLocations already use, rather than a separate database
+        // (Slice 16B spec, Section 7). The sole owner of this list is
+        // Services.WatchStateService - mirrors how Profiles is only ever
+        // touched through ProfileService. Profile isolation (Section 8)
+        // is enforced by WatchStateService filtering every read/write by
+        // ProfileId, not by anything here.
+        public List<WatchStateEntry> WatchStates
+        {
+            get => watchStates;
+            set => SetValue(ref watchStates, value);
+        }
+
+        // =========================================================
+        // PROFILE-OWNED WATCH HISTORY (Slice 16C)
+        // =========================================================
+        //
+        // Every persisted series/movie-level History record, across
+        // every profile - same reuse-the-existing-mechanism reasoning as
+        // WatchStates above. The sole owner is Services.WatchHistoryService.
+        public List<WatchHistoryEntry> WatchHistory
+        {
+            get => watchHistory;
+            set => SetValue(ref watchHistory, value);
+        }
+
+        // =========================================================
+        // PROFILE-OWNED MY LIST (Slice 17A)
+        // =========================================================
+        //
+        // Every persisted My List (content-level "saved for later")
+        // record, across every profile - same reuse-the-existing-
+        // mechanism reasoning as WatchStates/WatchHistory above, rather
+        // than a separate database. The sole owner is
+        // Services.MyListService - mirrors how WatchHistory is only ever
+        // touched through WatchHistoryService. Profile isolation is
+        // enforced by MyListService filtering every read/write by
+        // ProfileId, not by anything here.
+        public List<MyListEntry> MyListEntries
+        {
+            get => myListEntries;
+            set => SetValue(ref myListEntries, value);
         }
 
         // =========================================================

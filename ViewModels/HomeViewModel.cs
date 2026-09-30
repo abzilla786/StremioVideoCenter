@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading.Tasks;
 using StremioVideoCenter.Models;
 using StremioVideoCenter.Services;
@@ -100,15 +101,18 @@ namespace StremioVideoCenter.ViewModels
         // CONDITIONAL SECTIONS: CONTINUE WATCHING / MY LIST
         // =========================================================
         //
-        // Architecture-only this slice (see class remarks) - both
-        // collections start empty and nothing in this slice ever adds to
-        // them. HasContinueWatching/HasMyList exist purely so
+        // My List remains architecture-only (Slice 17). Continue
+        // Watching is now real as of Slice 16C - see LoadContinueWatching
+        // below - populated from WatchStateService's incomplete entries,
+        // never a separately-persisted collection of its own (Slice 16C
+        // spec, Section 3: "Watch State -> incomplete entries -> Continue
+        // Watching -> Home UI. Only Watch State should be the source of
+        // truth."). HasContinueWatching/HasMyList exist purely so
         // StremioVideoCenterView.xaml can bind each MediaSection's
         // Visibility and collapse it entirely while empty, satisfying
         // "no empty carousel, no placeholder cards, no reserved vertical
         // space" without any view-side polling - the CollectionChanged
-        // subscriptions below keep these two flags accurate the moment
-        // Slice 16/17 ever start adding real items.
+        // subscriptions below keep these two flags accurate.
 
         public ObservableCollection<MediaItem> ContinueWatching { get; }
             = new ObservableCollection<MediaItem>();
@@ -313,6 +317,82 @@ namespace StremioVideoCenter.ViewModels
             {
                 // This row keeps whatever it already had - see method
                 // remarks.
+            }
+        }
+
+
+        // =========================================================
+        // LOAD CONTINUE WATCHING (Slice 16C)
+        // =========================================================
+        //
+        // Continue Watching is derived entirely from Watch State's
+        // incomplete entries - "Only Watch State should be the source
+        // of truth" (Slice 16C spec, Section 3). No separate persisted
+        // collection is ever populated here; this simply reconstructs
+        // display MediaItems from WatchStateEntry each time it is
+        // called (app startup and every profile switch, via
+        // StremioVideoCenterView.OnActiveProfileChanged).
+        //
+        // Each reconstructed MediaItem carries Season/Episode exactly
+        // as the WatchStateEntry does (null for a movie, populated for
+        // TV/Kitsu) - HandleMediaSelectedAsync already treats an item
+        // with Season/Episode already set as fully resolved and routes
+        // straight to playback, so selecting a Continue Watching card
+        // requires no new routing logic. A TV/Kitsu entry's StremioId
+        // is the show-level id (ShowStremioId) with the episode number
+        // carried separately, matching how EpisodeBrowserView already
+        // builds episode MediaItems - never a next-episode inference,
+        // always the exact episode last played.
+        public void LoadContinueWatching(WatchStateService watchStateService, Guid profileId)
+        {
+            ContinueWatching.Clear();
+
+            if (watchStateService == null)
+            {
+                return;
+            }
+
+            // Display/derivation limit only (Slice 16 Home presentation
+            // rule) - mirrors the 25-item convention every other Home row
+            // already uses via CatalogueService.DefaultTake, which Continue
+            // Watching otherwise bypasses entirely since it is derived from
+            // Watch State rather than fetched through CatalogueService. This
+            // never touches the underlying Watch State entries themselves -
+            // WatchStateService.MaxEntriesPerProfile (500, completed and
+            // incomplete combined) remains the only persistence-level cap.
+            // A rolling "latest 25" window falls out naturally: replaying an
+            // older incomplete entry updates its LastPlayedUtc, which moves
+            // it back toward the front of this ordering on the very next
+            // LoadContinueWatching call.
+            List<WatchStateEntry> incompleteEntries = watchStateService
+                .GetEntriesForProfile(profileId)
+                .Where(entry => entry != null && !entry.IsCompleted)
+                .OrderByDescending(entry => entry.LastPlayedUtc)
+                .Take(25)
+                .ToList();
+
+            foreach (WatchStateEntry entry in incompleteEntries)
+            {
+                var mediaItem = new MediaItem
+                {
+                    // Movie: ShowStremioId is null, CanonicalKey already
+                    // is the plain "tt..." id. TV/Kitsu: ShowStremioId is
+                    // the show-level id, CanonicalKey is the fuller
+                    // episode-qualified identity - see WatchStateEntry
+                    // remarks.
+                    StremioId = entry.ShowStremioId ?? entry.CanonicalKey,
+                    Title = entry.Title,
+                    PosterPath = entry.PosterPath,
+                    Year = entry.Year,
+                    Type = entry.Type,
+                    Season = entry.SeasonNumber,
+                    Episode = entry.EpisodeNumber,
+                    Progress = entry.DurationSeconds > 0
+                        ? entry.PositionSeconds / entry.DurationSeconds
+                        : 0
+                };
+
+                ContinueWatching.Add(mediaItem);
             }
         }
 

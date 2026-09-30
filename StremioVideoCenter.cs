@@ -1,4 +1,4 @@
-﻿using Playnite.SDK;
+using Playnite.SDK;
 using Playnite.SDK.Events;
 using Playnite.SDK.Models;
 using Playnite.SDK.Plugins;
@@ -121,6 +121,8 @@ namespace StremioVideoCenter
 
             try
             {
+                ProfileService profileService = CreateProfileService();
+
                 var configuration = new StremioVideoCenterConfiguration
                 {
                     TmdbApiKey = settings?.Settings?.TmdbApiKey,
@@ -129,7 +131,10 @@ namespace StremioVideoCenter
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
                     LibraryLocations = settings?.Settings?.LibraryLocations,
-                    ProfileService = CreateProfileService()
+                    ProfileService = profileService,
+                    WatchStateService = CreateWatchStateService(profileService),
+                    WatchHistoryService = CreateWatchHistoryService(profileService),
+                    MyListService = CreateMyListService(profileService)
                 };
 
                 videoCenterView = new StremioVideoCenterView(configuration);
@@ -331,6 +336,8 @@ namespace StremioVideoCenter
         {
             if (args.Name == "VideoCenter")
             {
+                ProfileService profileService = CreateProfileService();
+
                 var configuration = new StremioVideoCenterConfiguration
                 {
                     TmdbApiKey = settings?.Settings?.TmdbApiKey,
@@ -339,7 +346,10 @@ namespace StremioVideoCenter
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
                     LibraryLocations = settings?.Settings?.LibraryLocations,
-                    ProfileService = CreateProfileService()
+                    ProfileService = profileService,
+                    WatchStateService = CreateWatchStateService(profileService),
+                    WatchHistoryService = CreateWatchHistoryService(profileService),
+                    MyListService = CreateMyListService(profileService)
                 };
 
                 return new StremioVideoCenterView(configuration);
@@ -375,6 +385,106 @@ namespace StremioVideoCenter
             return new ProfileService(
                 liveSettings,
                 () => SavePluginSettings(liveSettings));
+        }
+
+        // =========================================================
+        // WATCH STATE SERVICE CONSTRUCTION (Slice 16B)
+        // =========================================================
+        //
+        // Same reasoning and lifecycle as CreateProfileService() above -
+        // one WatchStateService per Video Center window-open, built here
+        // where the live settings instance and SavePluginSettings are
+        // both available, saving through the exact same delegate
+        // pattern. Also wires ProfileService.ProfileDeleted ->
+        // WatchStateService.RemoveAllForProfile here, at construction
+        // time, since this is the one place both services already exist
+        // together - "a profile owns all personal media state" means
+        // deleting a profile must not leave its Watch State orphaned,
+        // without WatchStateService or ProfileService needing to know
+        // about each other directly.
+        private WatchStateService CreateWatchStateService(ProfileService profileService)
+        {
+            if (settings?.Settings == null)
+            {
+                return null;
+            }
+
+            StremioVideoCenterSettings liveSettings = settings.Settings;
+
+            var watchStateService = new WatchStateService(
+                liveSettings,
+                () => SavePluginSettings(liveSettings));
+
+            if (profileService != null)
+            {
+                profileService.ProfileDeleted +=
+                    (sender, deletedProfileId) =>
+                        watchStateService.RemoveAllForProfile(deletedProfileId);
+            }
+
+            return watchStateService;
+        }
+
+        // =========================================================
+        // WATCH HISTORY SERVICE CONSTRUCTION (Slice 16C)
+        // =========================================================
+        //
+        // Same lifecycle/save-delegate/ProfileDeleted-cleanup pattern as
+        // CreateWatchStateService above - "History must also subscribe
+        // to/profile-cleanup through the same lifecycle" (Slice 16C
+        // spec, Section 24).
+        private WatchHistoryService CreateWatchHistoryService(ProfileService profileService)
+        {
+            if (settings?.Settings == null)
+            {
+                return null;
+            }
+
+            StremioVideoCenterSettings liveSettings = settings.Settings;
+
+            var watchHistoryService = new WatchHistoryService(
+                liveSettings,
+                () => SavePluginSettings(liveSettings));
+
+            if (profileService != null)
+            {
+                profileService.ProfileDeleted +=
+                    (sender, deletedProfileId) =>
+                        watchHistoryService.RemoveAllForProfile(deletedProfileId);
+            }
+
+            return watchHistoryService;
+        }
+
+        // =========================================================
+        // MY LIST SERVICE CONSTRUCTION (Slice 17A)
+        // =========================================================
+        //
+        // Same lifecycle/save-delegate/ProfileDeleted-cleanup pattern as
+        // CreateWatchStateService/CreateWatchHistoryService above -
+        // "a profile owns all personal media state" means deleting a
+        // profile must not leave its My List orphaned.
+        private MyListService CreateMyListService(ProfileService profileService)
+        {
+            if (settings?.Settings == null)
+            {
+                return null;
+            }
+
+            StremioVideoCenterSettings liveSettings = settings.Settings;
+
+            var myListService = new MyListService(
+                liveSettings,
+                () => SavePluginSettings(liveSettings));
+
+            if (profileService != null)
+            {
+                profileService.ProfileDeleted +=
+                    (sender, deletedProfileId) =>
+                        myListService.RemoveAllForProfile(deletedProfileId);
+            }
+
+            return myListService;
         }
 
         // TEMPORARY DIAGNOSTIC (controller double-input investigation) -

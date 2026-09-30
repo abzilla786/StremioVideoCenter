@@ -82,6 +82,9 @@
     <Compile Include="Controls\LocalMediaView.xaml.cs">
       <DependentUpon>LocalMediaView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\HistoryView.xaml.cs">
+      <DependentUpon>HistoryView.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Controls\CatalogueBrowseView.xaml.cs">
       <DependentUpon>CatalogueBrowseView.xaml</DependentUpon>
     </Compile>
@@ -147,6 +150,12 @@
     <Compile Include="Services\LocalLibraryService.cs" />
     <Compile Include="Services\ProfileService.cs" />
     <Compile Include="Models\UserProfile.cs" />
+    <Compile Include="Models\WatchStateEntry.cs" />
+    <Compile Include="Services\WatchStateService.cs" />
+    <Compile Include="Models\WatchHistoryEntry.cs" />
+    <Compile Include="Services\WatchHistoryService.cs" />
+    <Compile Include="Models\MyListEntry.cs" />
+    <Compile Include="Services\MyListService.cs" />
     <Compile Include="StremioVideoCenter.cs" />
     <Compile Include="StremioVideoCenterSettings.cs" />
     <Compile Include="StremioVideoCenterSettingsView.xaml.cs">
@@ -192,6 +201,10 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Controls\LocalMediaView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\HistoryView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

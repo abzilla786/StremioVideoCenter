@@ -49,5 +49,26 @@ namespace StremioVideoCenter.Models
         // naturally available - rather than trying to carry a save
         // delegate through this plain data-bundle class.
         public Services.ProfileService ProfileService { get; set; }
+
+        // Slice 16B (Persistent Profile-Owned Watch State): same
+        // reasoning as ProfileService above - playback progress must
+        // persist live, from inside the already-open Video Center
+        // window, so this is handed over fully constructed from
+        // StremioVideoCenter.cs rather than built from a save delegate
+        // carried through this plain data-bundle class.
+        public Services.WatchStateService WatchStateService { get; set; }
+
+        // Slice 16C (Continue Watching + History): same reasoning as
+        // WatchStateService above.
+        public Services.WatchHistoryService WatchHistoryService { get; set; }
+
+        // Slice 17A (My List Core): same reasoning as WatchStateService/
+        // WatchHistoryService above - a profile-owned, content-level
+        // bookmark list that must persist live, so it is handed over
+        // fully constructed from StremioVideoCenter.cs. No UI in this
+        // slice reads or writes through it yet (see MyListService
+        // remarks) - it is plumbed through here now so the foundation is
+        // in place for Slice 17B rather than left unreachable.
+        public Services.MyListService MyListService { get; set; }
     }
 }

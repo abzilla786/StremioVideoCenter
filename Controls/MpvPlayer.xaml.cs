@@ -42,6 +42,30 @@ namespace StremioVideoCenterControls
         public event EventHandler CloseRequested;
         public event EventHandler FullscreenChanged;
 
+        // Slice 16B (Persistent Profile-Owned Watch State): fires on
+        // every tick of the EXISTING PlayerSession.StateChanged event -
+        // the same one that already drives RefreshFromState's seek-bar/
+        // time-text updates via the existing ProgressTimer_Tick ->
+        // PollPositionAsync loop. No second timer or polling mechanism
+        // is introduced. This also covers the end-of-file transition,
+        // since PlayerSession already raises StateChanged (in addition
+        // to its own separate EndOfFileReached event) when it sets
+        // State.ReachedEndOfFile = true - see PlayerSession.
+        // Ipc_EventReceived's "end-file" case. Consumers (e.g.
+        // StremioVideoCenterView's Watch State integration) read
+        // CurrentPlaybackState from this event's handler rather than
+        // this event carrying the state itself, keeping this control's
+        // public surface minimal.
+        public event EventHandler PlaybackStateChanged;
+
+        // Null before a session exists / after DisposePlayer. Exposes the
+        // exact same PlaybackState instance RefreshFromState already
+        // reads from - not a copy, not a second source of truth.
+        public PlaybackState CurrentPlaybackState
+        {
+            get { return _session?.State; }
+        }
+
         public MpvPlayer()
         {
             InitializeComponent();
@@ -298,6 +322,12 @@ namespace StremioVideoCenterControls
         private void Session_StateChanged(object sender, EventArgs e)
         {
             Dispatcher.BeginInvoke(new Action(RefreshFromState));
+
+            EventHandler handler = PlaybackStateChanged;
+            if (handler != null)
+            {
+                Dispatcher.BeginInvoke(new Action(() => handler(this, EventArgs.Empty)));
+            }
         }
 
         private void RefreshFromState()

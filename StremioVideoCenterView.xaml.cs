@@ -121,6 +121,64 @@ namespace StremioVideoCenter
         private readonly ProfileService _profileService;
 
         // =========================================================
+        // WATCH STATE (Slice 16B - Persistent Profile-Owned Watch State)
+        // =========================================================
+        //
+        // The sole owner of StremioVideoCenterSettings.WatchStates -
+        // same construction/ownership pattern as _profileService above
+        // (built once in StremioVideoCenter.cs, handed in via
+        // configuration). Can be null under the same conditions
+        // _profileService can be null; every call site below guards
+        // against that.
+        private readonly WatchStateService _watchStateService;
+
+        // =========================================================
+        // WATCH HISTORY (Slice 16C - Continue Watching + History)
+        // =========================================================
+        //
+        // The sole owner of StremioVideoCenterSettings.WatchHistory -
+        // same construction/ownership pattern as _watchStateService
+        // above (built once in StremioVideoCenter.cs, handed in via
+        // configuration). Can be null under the same conditions
+        // _watchStateService can be null; every call site below guards
+        // against that.
+        private readonly WatchHistoryService _watchHistoryService;
+
+        // =========================================================
+        // MY LIST (Slice 17A - My List Core)
+        // =========================================================
+        //
+        // The sole owner of StremioVideoCenterSettings.MyListEntries -
+        // same construction/ownership pattern as _watchHistoryService
+        // above (built once in StremioVideoCenter.cs, handed in via
+        // configuration). Can be null under the same conditions
+        // _watchHistoryService can be null. Not yet called anywhere in
+        // this view - My List UI (media selection Add/Remove, Hero + My
+        // List) is Slice 17B/later; this field only establishes the
+        // foundation the service-layer audit called for.
+        private readonly MyListService _myListService;
+
+        // Non-null only while a HistoryView is actively shown - same
+        // lifecycle discipline as _activeLocalMediaView/_activeSearchPage:
+        // created fresh per visit, torn down immediately when the user
+        // closes it. Checked in RouteButtonToActiveOverlayOrHome alongside
+        // the other dedicated pages.
+        private HistoryView _activeHistoryView;
+
+        // Identifies the piece of content the CURRENTLY OPEN player
+        // session (_stremioPlayer) is playing, for Watch State purposes
+        // only - set right before playback actually starts in
+        // PlaySelectedMediaAsync, read by StremioPlayer_PlaybackStateChanged
+        // and ClosePlayer, and cleared by ClosePlayer. Null whenever no
+        // player is open, or when the in-progress item has no resolvable
+        // canonical identity (see ContentRequest.BuildStremioId remarks) -
+        // every consumer below treats a null canonical key as "Watch
+        // State unavailable for this item" rather than guessing one.
+        private string _activePlaybackCanonicalKey;
+        private ContentType _activePlaybackContentType;
+        private MediaItem _activePlaybackMediaItem;
+
+        // =========================================================
         // MOVIES / TV / ANIME / SEARCH PAGES (Slice 15)
         // =========================================================
         //
@@ -253,6 +311,15 @@ namespace StremioVideoCenter
 
             _profileService =
                 configuration.ProfileService;
+
+            _watchStateService =
+                configuration.WatchStateService;
+
+            _watchHistoryService =
+                configuration.WatchHistoryService;
+
+            _myListService =
+                configuration.MyListService;
 
             DataContext =
                 new HomeViewModel();
@@ -1577,7 +1644,7 @@ namespace StremioVideoCenter
 
             StremioVideoCenterLogger.Info(
                 string.Format(
-                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activePlayer={9}",
+                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activeHistory={9} activePlayer={10}",
                     seq,
                     button,
                     _activeEpisodeBrowser != null,
@@ -1587,6 +1654,7 @@ namespace StremioVideoCenter
                     _activeTvPage != null,
                     _activeAnimePage != null,
                     _activeSearchPage != null,
+                    _activeHistoryView != null,
                     _stremioPlayer != null));
 
             // Controller navigation stabilisation fix: record the exact
@@ -1704,6 +1772,14 @@ namespace StremioVideoCenter
             if (_activeSearchPage != null)
             {
                 return _activeSearchPage.HandleControllerInput(button);
+            }
+
+            // History (Slice 16C) owns input while its overlay is open -
+            // same "most specific overlay wins" ordering as the other
+            // dedicated pages above.
+            if (_activeHistoryView != null)
+            {
+                return _activeHistoryView.HandleControllerInput(button);
             }
 
             // Player owns input while playback is active.
@@ -2536,17 +2612,41 @@ namespace StremioVideoCenter
         // ACTIVE PROFILE CHANGED HOOK
         // =========================================================
         //
-        // Slice 16A scope: intentionally does nothing yet. This is the
-        // single wiring point Slice 16B (Watch State)/16C (Continue
-        // Watching)/16D (History)/16E (profile-switch state refresh) will
-        // extend to reload profile-scoped Home sections - see the Slice
-        // 16 architecture audit's "no stale profile data after switching"
-        // requirement. Left as an explicit, named no-op rather than
-        // omitted entirely so that wiring point already exists and is
-        // called from both the startup and SWITCH PROFILE paths before
-        // any of that data exists.
+        // Slice 16C: now refreshes Continue Watching from Watch State for
+        // whichever profile just became active - the single wiring point
+        // called from both the startup gate and SWITCH PROFILE (see
+        // ShowProfileSelectionAsync above), satisfying "no stale profile
+        // data after switching" for the one Home section Slice 16C makes
+        // real. History has no Home-section presence to refresh here -
+        // it is loaded fresh every time ShowHistoryAsync opens the
+        // overlay instead (see that method).
         private void OnActiveProfileChanged()
         {
+            RefreshContinueWatching();
+        }
+
+        // Rebuilds HomeViewModel.ContinueWatching from WatchStateService's
+        // current incomplete entries for the active profile - see
+        // HomeViewModel.LoadContinueWatching's own remarks for why this is
+        // always a full reconstruction rather than an incremental update.
+        private void RefreshContinueWatching()
+        {
+            HomeViewModel vm = DataContext as HomeViewModel;
+
+            if (vm == null)
+            {
+                return;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (_watchStateService == null || !activeProfileId.HasValue)
+            {
+                vm.ContinueWatching.Clear();
+                return;
+            }
+
+            vm.LoadContinueWatching(_watchStateService, activeProfileId.Value);
         }
 
         // 16A fix #4 (initial Home focus): after SWITCH PROFILE resolves,
@@ -2617,6 +2717,138 @@ namespace StremioVideoCenter
             RoutedEventArgs e)
         {
             await ShowLocalMediaAsync();
+        }
+
+        // =========================================================
+        // HISTORY (Slice 16C - Continue Watching + History)
+        // =========================================================
+        //
+        // Same overlay-host pattern as ShowLocalMediaAsync above. Builds
+        // display MediaItems from WatchHistoryService's series/movie-level
+        // entries for the active profile - History never routes through
+        // HomeViewModel (it has no Home-section presence, unlike Continue
+        // Watching), it is loaded fresh on every visit instead.
+        //
+        // A history entry becomes a MediaItem carrying only its
+        // series/movie-level identity (StremioId = entry.CanonicalKey,
+        // no Season/Episode) - selecting a movie entry therefore plays it
+        // directly, and selecting a TV/Kitsu entry opens the Episode
+        // Browser exactly like picking that show from a catalogue row
+        // would (HandleMediaSelectedAsync's existing "no Season/Episode
+        // yet -> browse" path), never jumping straight back into the
+        // latest-watched episode - that would be next-episode/resume
+        // inference, explicitly out of scope for this slice (Slice 18).
+        // The History -> Watch State relationship required by the spec is
+        // satisfied by the lookup below (entry.LatestWatchedCanonicalKey
+        // resolved against _watchStateService) without building any
+        // resume UI from it.
+        private async Task ShowHistoryAsync()
+        {
+            var historyView = new HistoryView();
+
+            List<MediaItem> historyDisplayItems = BuildHistoryDisplayItems();
+
+            historyView.Initialize(historyDisplayItems);
+
+            var completionSource =
+                new TaskCompletionSource<bool>();
+
+            EventHandler onClosed = null;
+            EventHandler<MediaItemSelectedEventArgs> onMediaSelected = null;
+
+            onClosed = (sender, args) =>
+            {
+                completionSource.TrySetResult(true);
+            };
+
+            onMediaSelected = async (sender, args) =>
+            {
+                await HandleMediaSelectedAsync(args.Item);
+            };
+
+            historyView.Closed += onClosed;
+            historyView.MediaSelected += onMediaSelected;
+
+            _activeHistoryView = historyView;
+
+            HistoryHost.Children.Add(historyView);
+            HistoryHost.Visibility = Visibility.Visible;
+
+            historyView.Focus();
+
+            await completionSource.Task;
+
+            historyView.Closed -= onClosed;
+            historyView.MediaSelected -= onMediaSelected;
+
+            HistoryHost.Children.Remove(historyView);
+            HistoryHost.Visibility = Visibility.Collapsed;
+
+            _activeHistoryView = null;
+
+            FocusFirstAvailableSection();
+        }
+
+        // Builds the display MediaItems HistoryView shows, from
+        // WatchHistoryService's entries for the active profile - denormalised
+        // metadata only, no network calls (Slice 16C spec, Section 27).
+        private List<MediaItem> BuildHistoryDisplayItems()
+        {
+            var displayItems = new List<MediaItem>();
+
+            if (_watchHistoryService == null)
+            {
+                return displayItems;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (!activeProfileId.HasValue)
+            {
+                return displayItems;
+            }
+
+            IReadOnlyList<WatchHistoryEntry> rawEntries =
+                _watchHistoryService.GetEntriesForProfile(activeProfileId.Value);
+
+            foreach (WatchHistoryEntry entry in rawEntries)
+            {
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                // History -> Watch State lookup relationship (Slice 16C
+                // spec, Section 17) - resolved here so the relationship
+                // demonstrably exists, without building any resume UI
+                // from it (that's Slice 18).
+                WatchStateEntry latestWatchState = _watchStateService?.GetEntry(
+                    activeProfileId.Value,
+                    entry.LatestWatchedCanonicalKey);
+
+                displayItems.Add(new MediaItem
+                {
+                    // Series/movie-level identity only - no Season/Episode -
+                    // see method remarks above for why.
+                    StremioId = entry.CanonicalKey,
+                    Title = entry.Title,
+                    PosterPath = entry.PosterPath,
+                    Year = entry.Year,
+                    Type = entry.Type,
+                    Progress = latestWatchState != null && latestWatchState.DurationSeconds > 0
+                        ? latestWatchState.PositionSeconds / latestWatchState.DurationSeconds
+                        : 0
+                });
+            }
+
+            return displayItems;
+        }
+
+        private async void HistoryButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            await ShowHistoryAsync();
         }
 
         // =========================================================
@@ -2778,6 +3010,22 @@ namespace StremioVideoCenter
                     request.ExplicitStremioId = mediaItem.StremioId;
                 }
 
+                // Slice 16B (Persistent Profile-Owned Watch State): the
+                // Watch State CanonicalKey is always exactly what
+                // BuildStremioId() produces for this same request - the
+                // same "tt1234567" / "tt1234567:2:5" / "kitsu:12345:5"
+                // shape already used to query Stremio addons above, never
+                // a second, independently-computed identity (Slice 16B
+                // spec, Section 4/5). Stashed now, before AggregateAsync,
+                // so it is available once playback actually starts
+                // further down - null here (BuildStremioId's own "cannot
+                // be resolved" case) simply means Watch State is
+                // unavailable for this item, same as everywhere else this
+                // codebase treats that null.
+                _activePlaybackCanonicalKey = request.BuildStremioId();
+                _activePlaybackContentType = request.Type;
+                _activePlaybackMediaItem = mediaItem;
+
                 StremioVideoCenterLogger.Info(
                     string.Format(
                         "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting aggregator.AggregateAsync (discovery + per-stream resolution)",
@@ -2864,6 +3112,12 @@ namespace StremioVideoCenter
                     _stremioPlayer.CloseRequested +=
                         StremioPlayer_CloseRequested;
 
+                    // Slice 16B: same subscribe-on-create/unsubscribe-in-
+                    // ClosePlayer lifecycle as CloseRequested above - see
+                    // ClosePlayer and StremioPlayer_PlaybackStateChanged.
+                    _stremioPlayer.PlaybackStateChanged +=
+                        StremioPlayer_PlaybackStateChanged;
+
                     PlaybackTestHost.Children.Add(
                         _stremioPlayer);
 
@@ -2885,6 +3139,19 @@ namespace StremioVideoCenter
                         "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (PlayVideoAsync returned)",
                         diagSeq,
                         DateTime.UtcNow));
+
+                // Slice 16B: playback has actually started - establish/
+                // update the Watch State entry now (Slice 16B spec,
+                // Section 9's "Playback starts" requirement). No-op if
+                // this item had no resolvable canonical identity, or if
+                // WatchStateService/the active profile aren't available.
+                EstablishWatchStateOnPlaybackStart();
+
+                // Slice 16C: update/create the series/movie-level History
+                // entry at the same "playback actually started" moment
+                // (Slice 16C spec, Section 16). No-op under the same
+                // conditions as EstablishWatchStateOnPlaybackStart above.
+                EstablishHistoryOnPlaybackStart();
             }
             catch (Exception ex)
             {
@@ -3328,6 +3595,158 @@ namespace StremioVideoCenter
             return result;
         }
         // =========================================================
+        // WATCH STATE INTEGRATION (Slice 16B)
+        // =========================================================
+        //
+        // These three methods are the only place this view talks to
+        // WatchStateService. All three are no-ops (never throw, never
+        // block playback) if WatchStateService, the active profile, or
+        // this item's canonical identity aren't available - Watch State
+        // is additive to playback, never a precondition for it.
+
+        private void EstablishWatchStateOnPlaybackStart()
+        {
+            if (_watchStateService == null ||
+                string.IsNullOrWhiteSpace(_activePlaybackCanonicalKey))
+            {
+                return;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (!activeProfileId.HasValue)
+            {
+                return;
+            }
+
+            MediaItem mediaItem = _activePlaybackMediaItem;
+
+            // Slice 15/16B: a Kitsu-sourced episode's "show" identity is
+            // its own StremioId ("kitsu:<id>"); an ordinary TV/anime
+            // episode's is mediaItem.StremioId ("tt..."); a movie or
+            // show-level item has no separate show identity - see
+            // WatchStateEntry.ShowStremioId remarks.
+            string showStremioId =
+                mediaItem != null &&
+                mediaItem.Season.HasValue &&
+                mediaItem.Episode.HasValue
+                    ? mediaItem.StremioId
+                    : null;
+
+            // Kitsu's absolute-episode identity must never be presented
+            // as a season/episode pair (Slice 16B spec, Section 15) -
+            // SeasonNumber is left null for a Kitsu-sourced entry, same
+            // as WatchStateEntry.SeasonNumber's own remarks.
+            bool isKitsuSourced =
+                mediaItem != null &&
+                !string.IsNullOrWhiteSpace(mediaItem.StremioId) &&
+                mediaItem.StremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
+
+            _watchStateService.UpsertOnPlaybackStart(
+                activeProfileId.Value,
+                _activePlaybackContentType,
+                _activePlaybackCanonicalKey,
+                showStremioId,
+                isKitsuSourced ? (int?)null : mediaItem?.Season,
+                mediaItem?.Episode,
+                mediaItem?.Title,
+                mediaItem?.PosterPath,
+                mediaItem?.Year,
+                mediaItem?.Type);
+        }
+
+        // Slice 16C: same "playback actually started" moment as
+        // EstablishWatchStateOnPlaybackStart above, but updates/creates
+        // the series/movie-level History entry instead. seriesCanonicalKey
+        // is always mediaItem.StremioId - unlike Watch State's CanonicalKey,
+        // this is never episode-qualified (EpisodeBrowserView.
+        // BuildEpisodeMediaItem already builds every episode MediaItem's
+        // StremioId as the show-level id alone), so it needs no
+        // isKitsuSourced-style branching to resolve the series identity
+        // itself - only the display season/episode numbers still need
+        // that guard, mirroring EstablishWatchStateOnPlaybackStart exactly.
+        private void EstablishHistoryOnPlaybackStart()
+        {
+            if (_watchHistoryService == null ||
+                string.IsNullOrWhiteSpace(_activePlaybackCanonicalKey))
+            {
+                return;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (!activeProfileId.HasValue)
+            {
+                return;
+            }
+
+            MediaItem mediaItem = _activePlaybackMediaItem;
+
+            if (mediaItem == null || string.IsNullOrWhiteSpace(mediaItem.StremioId))
+            {
+                return;
+            }
+
+            bool isKitsuSourced =
+                mediaItem.StremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
+
+            _watchHistoryService.RecordVisit(
+                activeProfileId.Value,
+                _activePlaybackContentType,
+                mediaItem.StremioId,
+                _activePlaybackCanonicalKey,
+                isKitsuSourced ? (int?)null : mediaItem.Season,
+                mediaItem.Episode,
+                mediaItem.Title,
+                mediaItem.PosterPath,
+                mediaItem.Year,
+                mediaItem.Type);
+        }
+
+        private void StremioPlayer_PlaybackStateChanged(
+            object sender,
+            EventArgs e)
+        {
+            RecordActivePlaybackProgress();
+        }
+
+        // Reads whatever position/duration/EOF state the existing
+        // PlayerSession polling loop currently knows (via MpvPlayer.
+        // CurrentPlaybackState) and forwards it to WatchStateService.
+        // Called on every PlaybackStateChanged tick during playback, and
+        // once more from ClosePlayer before the player is torn down.
+        private void RecordActivePlaybackProgress()
+        {
+            if (_watchStateService == null ||
+                _stremioPlayer == null ||
+                string.IsNullOrWhiteSpace(_activePlaybackCanonicalKey))
+            {
+                return;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (!activeProfileId.HasValue)
+            {
+                return;
+            }
+
+            PlaybackState state = _stremioPlayer.CurrentPlaybackState;
+
+            if (state == null)
+            {
+                return;
+            }
+
+            _watchStateService.RecordProgress(
+                activeProfileId.Value,
+                _activePlaybackCanonicalKey,
+                state.PositionSeconds,
+                state.DurationSeconds,
+                state.ReachedEndOfFile);
+        }
+
+        // =========================================================
         // PLAYER CLOSE
         // =========================================================
 
@@ -3342,10 +3761,35 @@ namespace StremioVideoCenter
         {
             if (_stremioPlayer != null)
             {
+                // Slice 16B: persist whatever position/duration is
+                // currently known ONE more time before the player is
+                // torn down - "ensure the latest known playback state is
+                // persisted before playback is discarded" (Slice 16B
+                // spec, Section 9's "Player closes" requirement). Must
+                // run before DisposePlayer() below, which nulls out the
+                // session CurrentPlaybackState reads from.
+                RecordActivePlaybackProgress();
+
+                // Slice 16C fix: Continue Watching must reflect the
+                // just-finished playback session without waiting for the
+                // next profile switch or app restart - RefreshContinueWatching()
+                // was previously only called from OnActiveProfileChanged
+                // (startup/Switch Profile). Runtime diagnostics (Slice 16C
+                // data-flow investigation) confirmed WatchState itself was
+                // always being created/updated correctly here - the gap was
+                // purely this missing refresh call. Reuses the exact same
+                // WatchStateService.GetEntriesForProfile() read
+                // RefreshContinueWatching already performs elsewhere - no
+                // new timer, no new polling, no change to WatchState
+                // persistence itself.
+                RefreshContinueWatching();
+
                 try
                 {
                     _stremioPlayer.CloseRequested -=
                         StremioPlayer_CloseRequested;
+                    _stremioPlayer.PlaybackStateChanged -=
+                        StremioPlayer_PlaybackStateChanged;
                     _stremioPlayer.DisposePlayer();
                 }
                 catch
@@ -3366,10 +3810,32 @@ namespace StremioVideoCenter
                 _stremioPlayer = null;
             }
 
+            // Slice 16B: clear the in-progress playback identity now that
+            // no player is open - the next PlaySelectedMediaAsync call
+            // sets these fresh before playback starts again.
+            _activePlaybackCanonicalKey = null;
+            _activePlaybackMediaItem = null;
+
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;
 
-            FocusFirstAvailableSection();
+            // Focus-restoration timing fix: unlike every other overlay
+            // teardown that calls FocusFirstAvailableSection() (Episode
+            // Browser/Local Media/History/Search/Source Selector), the
+            // player is the only overlay backed by a native child window
+            // (MpvHost : HwndHost, embedding the real mpv process's
+            // window). DisposePlayer() above tears that native window
+            // down, which can race with a synchronous WPF Focus() call
+            // made in the same dispatcher frame, leaving Home with no
+            // focused element after B/Exit. Deferring via the same
+            // Dispatcher.BeginInvoke pattern already used for initial
+            // Home focus (see StremioVideoCenterView_Loaded) lets that
+            // native teardown's focus transition fully settle first -
+            // same FocusFirstAvailableSection() target and destination
+            // as before, only the timing changes.
+            Dispatcher.BeginInvoke(
+                new Action(() => { FocusFirstAvailableSection(); }),
+                System.Windows.Threading.DispatcherPriority.Input);
         }
 
         // =========================================================
