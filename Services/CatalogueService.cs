@@ -444,6 +444,55 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
+        // PERSONALISATION CANDIDATES (Slice 17C)
+        // =========================================================
+        //
+        // One genre-filtered catalogue page per call, reusing the same
+        // Cinemeta catalog request, mapping and 30-minute cache as the
+        // rows above. Deliberately passes NO TMDB fallback - personalisation
+        // is Cinemeta-only for Movie/TV and Kitsu-only for Anime. Returned
+        // lists are shared cache instances: callers must copy, never mutate.
+
+        public const int RecommendationCandidateTake = 40;
+
+        public Task<List<MediaItem>> GetGenreRecommendationCandidatesAsync(bool isTv, string genre)
+        {
+            return GetCatalogueRowAsync(
+                BuildCacheKey(isTv ? "recs-tv" : "recs-movies", genre, 0, RecommendationCandidateTake),
+                isTv ? "series" : "movie", "top", BuildExtraSegment(genre, 0),
+                isTv ? "TV" : "Movie", isTv: isTv, take: RecommendationCandidateTake,
+                tmdbFallbackFetch: null);
+        }
+
+        public async Task<List<MediaItem>> GetAnimeCategoryRecommendationCandidatesAsync(string categorySlug)
+        {
+            if (string.IsNullOrWhiteSpace(categorySlug))
+            {
+                return new List<MediaItem>();
+            }
+
+            string cacheKey = "recs-anime:kitsu:" + categorySlug + ":" + RecommendationCandidateTake;
+
+            List<MediaItem> cached = TryGetCached(cacheKey);
+
+            if (cached != null)
+            {
+                return cached;
+            }
+
+            KitsuBrowseResult result = await _kitsuService.BrowseAnimeAsync(
+                categorySlugs: new List<string> { categorySlug },
+                sort: "ratingRank",
+                limit: RecommendationCandidateTake);
+
+            List<MediaItem> items = MapKitsuItemsToMediaItems(result?.Items, RecommendationCandidateTake);
+
+            SetCached(cacheKey, items);
+
+            return items;
+        }
+
+        // =========================================================
         // CATALOGUE ROW FETCH (Cinemeta-first, TMDB fallback)
         // =========================================================
         //

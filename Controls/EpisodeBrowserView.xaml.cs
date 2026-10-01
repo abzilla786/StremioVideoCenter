@@ -1103,6 +1103,9 @@ namespace StremioVideoCenterControls
                 Season = episode.SeasonNumber,
                 Episode = episode.EpisodeNumber,
                 Type = _show.Type,
+                // Slice 17C: series genres ride along so History can record
+                // them (history is series-level; never episode genres).
+                Genres = _show.Genres != null ? new List<string>(_show.Genres) : null,
                 TmdbId = _show.TmdbId,
                 Title = _show.Title +
                     (!string.IsNullOrWhiteSpace(episode.Name)

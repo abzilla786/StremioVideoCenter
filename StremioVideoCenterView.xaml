@@ -875,6 +875,17 @@
 
 
                     <!-- ================================================= -->
+                    <!-- RECOMMENDED FOR YOU (conditional, Slice 17C)       -->
+                    <!-- ================================================= -->
+
+                    <controls:MediaSection
+                        x:Name="RecommendedSection"
+                        Title="RECOMMENDED FOR YOU"
+                        Items="{Binding Recommended}"
+                        Visibility="{Binding HasRecommended, Converter={StaticResource BoolToVisibilityConverter}}"/>
+
+
+                    <!-- ================================================= -->
                     <!-- FEATURED MOVIES                                    -->
                     <!-- ================================================= -->
 
@@ -1088,6 +1099,21 @@
             Panel.ZIndex="1000"
             Background="Black"
             Visibility="Collapsed" />
+
+        <!-- ========================================================= -->
+        <!-- FEEDBACK TOAST (Slice 17C)                                 -->
+        <!-- ========================================================= -->
+        <!--
+            Single-slot, non-focusable, non-hit-testable transient message
+            (see Controls/ToastHost.cs). Above the page/modal hosts (2000),
+            below Profile Selection (3000).
+        -->
+        <controls:ToastHost
+            x:Name="FeedbackToast"
+            Panel.ZIndex="2500"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Bottom"
+            Margin="0,0,0,48" />
 
         <!-- ========================================================= -->
         <!-- PROFILE SELECTION HOST (Slice 16A - Profile Foundation)   -->

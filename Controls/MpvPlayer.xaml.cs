@@ -58,6 +58,11 @@ namespace StremioVideoCenterControls
         // public surface minimal.
         public event EventHandler PlaybackStateChanged;
 
+        // Raised on the UI thread when mpv reports end-file reason=error
+        // with a file_error (a genuine load/playback failure). Never raised
+        // for eof/stop/quit.
+        public event EventHandler PlaybackFailed;
+
         // Null before a session exists / after DisposePlayer. Exposes the
         // exact same PlaybackState instance RefreshFromState already
         // reads from - not a copy, not a second source of truth.
@@ -181,6 +186,7 @@ namespace StremioVideoCenterControls
                     _session.StateChanged += Session_StateChanged;
                     _session.TracksChanged += Session_StateChanged;
                     _session.EndOfFileReached += Session_EndOfFileReached;
+                    _session.PlaybackFailed += Session_PlaybackFailed;
                     _session.Disconnected += Session_Disconnected;
                 }
 
@@ -263,6 +269,7 @@ namespace StremioVideoCenterControls
                     _session.StateChanged -= Session_StateChanged;
                     _session.TracksChanged -= Session_StateChanged;
                     _session.EndOfFileReached -= Session_EndOfFileReached;
+                    _session.PlaybackFailed -= Session_PlaybackFailed;
                     _session.Disconnected -= Session_Disconnected;
                     _session.Dispose();
                 }
@@ -352,6 +359,19 @@ namespace StremioVideoCenterControls
             MuteButton.Content = state.IsMuted ? "\U0001F507" : "\U0001F50A";
 
             TimeText.Text = FormatTime(state.PositionSeconds) + " / " + FormatTime(state.DurationSeconds);
+        }
+
+        private void Session_PlaybackFailed(object sender, EventArgs e)
+        {
+            // Raised from the IPC read thread - marshal to the UI thread.
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_disposed) return;
+
+                EventHandler handler = PlaybackFailed;
+                if (handler != null)
+                    handler(this, EventArgs.Empty);
+            }));
         }
 
         private void Session_EndOfFileReached(object sender, EventArgs e)

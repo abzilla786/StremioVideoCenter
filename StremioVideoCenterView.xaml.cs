@@ -7,6 +7,7 @@ using StremioVideoCenter.Services;
 using StremioVideoCenter.ViewModels;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -341,6 +342,7 @@ namespace StremioVideoCenter
                 {
                     MyListSection,
                     ContinueWatchingSection,
+                    RecommendedSection,
                     FeaturedMoviesSection,
                     PopularMoviesSection,
                     FeaturedShowsSection,
@@ -512,6 +514,10 @@ namespace StremioVideoCenter
             // before Hero had loaded), so this is specifically to pick up
             // real Hero content instead of the static fallback slide.
             RefreshHeroMyListButtonState();
+
+            // Slice 17C: Hero items are now known, so the recommendations
+            // can exclude them.
+            RefreshRecommendations(clearImmediately: false);
 
             await Dispatcher.BeginInvoke(
                 new Action(() =>
@@ -2712,6 +2718,149 @@ namespace StremioVideoCenter
             // never the previous profile's stale state.
             RefreshMyList();
             RefreshHeroMyListButtonState();
+
+            // Slice 17C: the previous profile's recommendations must vanish
+            // immediately and can never land after this switch.
+            RefreshRecommendations(clearImmediately: true);
+        }
+
+        // =========================================================
+        // RECOMMENDED FOR YOU + TOAST (Slice 17C)
+        // =========================================================
+
+        private void ShowToast(string message)
+        {
+            FeedbackToast?.Show(message);
+        }
+
+        private const int RecommendationDebounceMilliseconds = 400;
+
+        private PersonalisationService _personalisationService;
+        private CatalogueService _recommendationCatalogue;
+        private CancellationTokenSource _recommendationCts;
+        private int _recommendationVersion;
+
+        // Recalculates the personalised row for the ACTIVE profile. Called
+        // only on profile change, My List change, Hero load and player
+        // close - never on focus/navigation. Every call cancels the
+        // previous one and a short delay coalesces bursts. Results are
+        // applied only if this call is still the newest AND the active
+        // profile is still the one it started for, so a previous profile's
+        // results can never appear under another profile. Personalisation
+        // failures are swallowed: the row simply stays hidden.
+        private async void RefreshRecommendations(bool clearImmediately)
+        {
+            HomeViewModel vm = DataContext as HomeViewModel;
+
+            if (vm == null)
+            {
+                return;
+            }
+
+            CancellationTokenSource previous = _recommendationCts;
+
+            if (previous != null)
+            {
+                previous.Cancel();
+            }
+
+            var cts = new CancellationTokenSource();
+            _recommendationCts = cts;
+            int version = ++_recommendationVersion;
+
+            if (clearImmediately)
+            {
+                vm.SetRecommended(null);
+            }
+
+            Guid? profileId = _profileService?.GetActiveProfileId();
+
+            if (!profileId.HasValue || _myListService == null)
+            {
+                vm.SetRecommended(null);
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(RecommendationDebounceMilliseconds, cts.Token);
+
+                if (_personalisationService == null)
+                {
+                    _personalisationService = new PersonalisationService(
+                        _myListService,
+                        _watchHistoryService,
+                        _watchStateService);
+                }
+
+                // No TMDB: Cinemeta (Movie/TV) and Kitsu (Anime) only. The
+                // catalogue cache is static, so this shares Home's cache.
+                if (_recommendationCatalogue == null)
+                {
+                    _recommendationCatalogue = new CatalogueService(
+                        null,
+                        new CinemetaService(),
+                        new KitsuService());
+                }
+
+                TasteProfile taste =
+                    _personalisationService.BuildTasteProfile(profileId.Value, DateTime.UtcNow);
+
+                if (!taste.HasEnoughSignal)
+                {
+                    vm.SetRecommended(null);
+                    return;
+                }
+
+                List<MediaItem> items =
+                    await _personalisationService.GetRecommendationsAsync(
+                        taste,
+                        _recommendationCatalogue,
+                        BuildHeroKeySet(vm),
+                        cts.Token);
+
+                if (cts.IsCancellationRequested ||
+                    version != _recommendationVersion ||
+                    _profileService?.GetActiveProfileId() != profileId)
+                {
+                    return;
+                }
+
+                // Hero may have changed while the request was in flight.
+                HashSet<string> heroKeys = BuildHeroKeySet(vm);
+
+                vm.SetRecommended(
+                    items.Where(item => !heroKeys.Contains(item.StremioId)));
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by a newer refresh or a profile switch.
+            }
+            catch (Exception ex)
+            {
+                if (version == _recommendationVersion)
+                {
+                    vm.SetRecommended(null);
+                }
+
+                StremioVideoCenterLogger.Info(
+                    "Recommendations unavailable: " + ex.GetType().Name);
+            }
+        }
+
+        private static HashSet<string> BuildHeroKeySet(HomeViewModel vm)
+        {
+            var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (HeroItem hero in vm.HeroItems)
+            {
+                if (hero != null && !string.IsNullOrWhiteSpace(hero.StremioId))
+                {
+                    keys.Add(hero.StremioId);
+                }
+            }
+
+            return keys;
         }
 
         // Rebuilds HomeViewModel.ContinueWatching from WatchStateService's
@@ -2990,10 +3139,18 @@ namespace StremioVideoCenter
                     return;
                 }
 
+                bool existed = _myListService.IsInMyList(activeProfileId.Value, args.CanonicalKey);
+
                 _myListService.Remove(activeProfileId.Value, args.CanonicalKey);
 
                 RefreshMyList();
                 RefreshHeroMyListButtonState();
+                RefreshRecommendations(clearImmediately: false);
+
+                if (existed)
+                {
+                    ShowToast("Removed from My List");
+                }
 
                 myListView.UpdateEntries(BuildMyListDisplayEntries());
             };
@@ -3334,54 +3491,14 @@ namespace StremioVideoCenter
                     return;
                 }
 
-                if (_stremioPlayer == null)
-                {
-                    _stremioPlayer =
-                        new MpvPlayer();
+                // Failure-recovery context (session-scoped, in memory only):
+                // the candidate list and the chosen source, so a genuine mpv
+                // load error can return to this Source Selector minus ONLY
+                // the failed candidate. See StremioPlayer_PlaybackFailed.
+                _recoverySources = new List<NormalizedPlaybackSource>(normalizedSources);
+                _recoveryMediaItem = mediaItem;
 
-                    _stremioPlayer.CloseRequested +=
-                        StremioPlayer_CloseRequested;
-
-                    // Slice 16B: same subscribe-on-create/unsubscribe-in-
-                    // ClosePlayer lifecycle as CloseRequested above - see
-                    // ClosePlayer and StremioPlayer_PlaybackStateChanged.
-                    _stremioPlayer.PlaybackStateChanged +=
-                        StremioPlayer_PlaybackStateChanged;
-
-                    PlaybackTestHost.Children.Add(
-                        _stremioPlayer);
-
-                    PlaybackTestHost.Visibility =
-                        Visibility.Visible;
-                }
-
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting PlayVideoAsync",
-                        diagSeq,
-                        DateTime.UtcNow));
-
-                await _stremioPlayer.PlayVideoAsync(
-                    selected.Source.Url);
-
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (PlayVideoAsync returned)",
-                        diagSeq,
-                        DateTime.UtcNow));
-
-                // Slice 16B: playback has actually started - establish/
-                // update the Watch State entry now (Slice 16B spec,
-                // Section 9's "Playback starts" requirement). No-op if
-                // this item had no resolvable canonical identity, or if
-                // WatchStateService/the active profile aren't available.
-                EstablishWatchStateOnPlaybackStart();
-
-                // Slice 16C: update/create the series/movie-level History
-                // entry at the same "playback actually started" moment
-                // (Slice 16C spec, Section 16). No-op under the same
-                // conditions as EstablishWatchStateOnPlaybackStart above.
-                EstablishHistoryOnPlaybackStart();
+                await StartPlaybackAsync(selected, diagSeq);
             }
             catch (Exception ex)
             {
@@ -3403,6 +3520,178 @@ namespace StremioVideoCenter
                     mediaItem.Title +
                     "\n\n" +
                     ex.Message);
+            }
+        }
+
+        // Creates the player if needed and starts playback of the given
+        // (already user-selected) source. Shared by the normal selection
+        // path and the post-failure re-selection path.
+        private async Task StartPlaybackAsync(
+            NormalizedPlaybackSource selected,
+            int diagSeq)
+        {
+            _recoverySelected = selected;
+
+            if (_stremioPlayer == null)
+            {
+                _stremioPlayer =
+                    new MpvPlayer();
+
+                _stremioPlayer.CloseRequested +=
+                    StremioPlayer_CloseRequested;
+
+                // Slice 16B: same subscribe-on-create/unsubscribe-in-
+                // ClosePlayer lifecycle as CloseRequested above - see
+                // ClosePlayer and StremioPlayer_PlaybackStateChanged.
+                _stremioPlayer.PlaybackStateChanged +=
+                    StremioPlayer_PlaybackStateChanged;
+
+                // Genuine mpv load/playback failure (end-file reason=error
+                // with a file_error) - see StremioPlayer_PlaybackFailed.
+                _stremioPlayer.PlaybackFailed +=
+                    StremioPlayer_PlaybackFailed;
+
+                PlaybackTestHost.Children.Add(
+                    _stremioPlayer);
+
+                PlaybackTestHost.Visibility =
+                    Visibility.Visible;
+            }
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting PlayVideoAsync",
+                    diagSeq,
+                    DateTime.UtcNow));
+
+            await _stremioPlayer.PlayVideoAsync(
+                selected.Source.Url);
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (PlayVideoAsync returned)",
+                    diagSeq,
+                    DateTime.UtcNow));
+
+            // Slice 16B: playback has actually started - establish/
+            // update the Watch State entry now (Slice 16B spec,
+            // Section 9's "Playback starts" requirement). No-op if
+            // this item had no resolvable canonical identity, or if
+            // WatchStateService/the active profile aren't available.
+            EstablishWatchStateOnPlaybackStart();
+
+            // Slice 16C: update/create the series/movie-level History
+            // entry at the same "playback actually started" moment
+            // (Slice 16C spec, Section 16). No-op under the same
+            // conditions as EstablishWatchStateOnPlaybackStart above.
+            EstablishHistoryOnPlaybackStart();
+        }
+
+        // =========================================================
+        // SOURCE FAILURE RECOVERY
+        // =========================================================
+        //
+        // Only reached for a genuine mpv failure: end-file reason=error
+        // WITH a file_error (see PlayerSession.HandleEndFile). Never for
+        // eof/stop/quit, and never based on URL text, addon name, label,
+        // size or duration. The failed candidate is removed from this
+        // selector session only - nothing is persisted - and the user
+        // must still choose the next source themselves (no autoplay).
+        // Logs use only the addon display name and the candidate's index;
+        // never a URL.
+
+        private List<NormalizedPlaybackSource> _recoverySources;
+        private MediaItem _recoveryMediaItem;
+        private NormalizedPlaybackSource _recoverySelected;
+        private bool _isRecoveringFromFailure;
+
+        private async void StremioPlayer_PlaybackFailed(
+            object sender,
+            EventArgs e)
+        {
+            if (_isRecoveringFromFailure ||
+                sender != _stremioPlayer ||
+                _recoverySelected == null ||
+                _recoverySources == null ||
+                _recoveryMediaItem == null)
+            {
+                return;
+            }
+
+            _isRecoveringFromFailure = true;
+
+            try
+            {
+                NormalizedPlaybackSource failed = _recoverySelected;
+                MediaItem mediaItem = _recoveryMediaItem;
+                List<NormalizedPlaybackSource> remaining = _recoverySources;
+
+                int failedIndex = remaining.IndexOf(failed);
+                remaining.Remove(failed);
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "Source failed to play (mpv error); removed from this selection. addon={0} index={1} remaining={2}",
+                        !string.IsNullOrWhiteSpace(failed.SourceAddonName)
+                            ? failed.SourceAddonName
+                            : "(unnamed addon)",
+                        failedIndex,
+                        remaining.Count));
+
+                // ClosePlayer clears the active playback identity (and
+                // would defer a Home refocus); keep a copy so the next
+                // source still records Watch State against the same item.
+                string canonicalKey = _activePlaybackCanonicalKey;
+                ContentType contentType = _activePlaybackContentType;
+                MediaItem activeItem = _activePlaybackMediaItem;
+
+                _recoverySelected = null;
+
+                ClosePlayer();
+
+                _activePlaybackCanonicalKey = canonicalKey;
+                _activePlaybackContentType = contentType;
+                _activePlaybackMediaItem = activeItem;
+
+                // Let ClosePlayer's deferred Home refocus (Input priority)
+                // run first so it cannot steal focus from the selector.
+                await Dispatcher.InvokeAsync(
+                    () => { },
+                    System.Windows.Threading.DispatcherPriority.ContextIdle);
+
+                // An empty list shows the selector's existing "No playable
+                // sources found." state.
+                NormalizedPlaybackSource next =
+                    await ShowSourceSelectorAsync(remaining, mediaItem);
+
+                if (next == null)
+                {
+                    _recoverySources = null;
+                    _recoveryMediaItem = null;
+                    _activePlaybackCanonicalKey = null;
+                    _activePlaybackMediaItem = null;
+                    return;
+                }
+
+                // Re-arm before starting: the next source's own error may
+                // arrive while PlayVideoAsync is still awaiting.
+                _isRecoveringFromFailure = false;
+
+                await StartPlaybackAsync(next, 0);
+            }
+            catch (Exception ex)
+            {
+                // Message deliberately omitted from the UI: exception text
+                // from the player layer can embed the playback URL.
+                StremioVideoCenterLogger.Info(
+                    "Source recovery failed: " + ex.GetType().Name);
+
+                ClosePlayer();
+                MessageBox.Show("Unable to start playback.");
+            }
+            finally
+            {
+                _isRecoveringFromFailure = false;
             }
         }
 
@@ -3909,6 +4198,9 @@ namespace StremioVideoCenter
             // revisit Home or move the Hero carousel.
             RefreshMyList();
             RefreshHeroMyListButtonState();
+            RefreshRecommendations(clearImmediately: false);
+
+            ShowToast(nowInList ? "Added to My List" : "Removed from My List");
 
             return nowInList;
         }
@@ -3964,10 +4256,13 @@ namespace StremioVideoCenter
                 return;
             }
 
-            _myListService.Toggle(activeProfileId.Value, heroMediaItem);
+            bool nowInList = _myListService.Toggle(activeProfileId.Value, heroMediaItem);
 
             RefreshMyList();
             RefreshHeroMyListButtonState();
+            RefreshRecommendations(clearImmediately: false);
+
+            ShowToast(nowInList ? "Added to My List" : "Removed from My List");
         }
 
         // Reflects whether the currently displayed Hero item is already
@@ -4135,7 +4430,8 @@ namespace StremioVideoCenter
                 mediaItem.Title,
                 mediaItem.PosterPath,
                 mediaItem.Year,
-                mediaItem.Type);
+                mediaItem.Type,
+                mediaItem.Genres);
         }
 
         private void StremioPlayer_PlaybackStateChanged(
@@ -4189,6 +4485,10 @@ namespace StremioVideoCenter
             object sender,
             EventArgs e)
         {
+            // User closed the player: drop the recovery context.
+            _recoverySources = null;
+            _recoveryMediaItem = null;
+
             ClosePlayer();
         }
 
@@ -4219,12 +4519,17 @@ namespace StremioVideoCenter
                 // persistence itself.
                 RefreshContinueWatching();
 
+                // Slice 17C: playback may have changed history/completion.
+                RefreshRecommendations(clearImmediately: false);
+
                 try
                 {
                     _stremioPlayer.CloseRequested -=
                         StremioPlayer_CloseRequested;
                     _stremioPlayer.PlaybackStateChanged -=
                         StremioPlayer_PlaybackStateChanged;
+                    _stremioPlayer.PlaybackFailed -=
+                        StremioPlayer_PlaybackFailed;
                     _stremioPlayer.DisposePlayer();
                 }
                 catch
@@ -4250,6 +4555,9 @@ namespace StremioVideoCenter
             // sets these fresh before playback starts again.
             _activePlaybackCanonicalKey = null;
             _activePlaybackMediaItem = null;
+
+            // No player open: nothing left to recover from.
+            _recoverySelected = null;
 
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;

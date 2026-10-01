@@ -46,14 +46,13 @@ namespace StremioVideoCenter.Services
             }
         }
 
-        // Per-instance, not shared: mpv overwrites --log-file on every launch,
-        // so a fixed shared path meant a failed launch's log was silently lost
-        // the moment any later attempt (including a manual retry) ran. Deriving
-        // the filename from the already-unique pipe name gives every launch its
-        // own permanent log file instead.
+        // Single stable file, overwritten by mpv (--log-file truncates) on
+        // each new session, so the latest log is always at one known path.
+        // Deliberately NOT derived from _pipeName: the IPC pipe name must
+        // stay unique per instance, but the log filename need not be.
         public string LogFilePath
         {
-            get { return Path.Combine(Path.GetTempPath(), _pipeName + ".log"); }
+            get { return Path.Combine(Path.GetTempPath(), "StremioVideoCenter_Mpv.log"); }
         }
 
         // Launches mpv.exe embedded into hostHandle and connects the JSON IPC

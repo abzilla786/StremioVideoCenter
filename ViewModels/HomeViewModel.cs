@@ -120,6 +120,31 @@ namespace StremioVideoCenter.ViewModels
         public ObservableCollection<MediaItem> MyList { get; }
             = new ObservableCollection<MediaItem>();
 
+        // Slice 17C: personalised "RECOMMENDED FOR YOU" row. Filled/cleared
+        // by StremioVideoCenterView from PersonalisationService results for
+        // the ACTIVE profile only; hidden (HasRecommended = false) whenever
+        // it is empty, same convention as MyList/ContinueWatching.
+        public ObservableCollection<MediaItem> Recommended { get; }
+            = new ObservableCollection<MediaItem>();
+
+        private bool _hasRecommended;
+
+        public bool HasRecommended
+        {
+            get { return _hasRecommended; }
+
+            private set
+            {
+                if (_hasRecommended == value)
+                {
+                    return;
+                }
+
+                _hasRecommended = value;
+                OnPropertyChanged(nameof(HasRecommended));
+            }
+        }
+
         private bool _hasContinueWatching;
 
         public bool HasContinueWatching
@@ -208,6 +233,7 @@ namespace StremioVideoCenter.ViewModels
         {
             ContinueWatching.CollectionChanged += ContinueWatching_CollectionChanged;
             MyList.CollectionChanged += MyList_CollectionChanged;
+            Recommended.CollectionChanged += Recommended_CollectionChanged;
 
             LoadHeroFallbackData();
         }
@@ -220,6 +246,32 @@ namespace StremioVideoCenter.ViewModels
         private void MyList_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
         {
             HasMyList = MyList.Count > 0;
+        }
+
+        private void Recommended_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
+        {
+            HasRecommended = Recommended.Count > 0;
+        }
+
+        // Slice 17C: replaces the row's contents (UI thread only). The
+        // MediaItem instances may be shared with the catalogue cache, so
+        // callers must never mutate them.
+        public void SetRecommended(IEnumerable<MediaItem> items)
+        {
+            Recommended.Clear();
+
+            if (items == null)
+            {
+                return;
+            }
+
+            foreach (MediaItem item in items)
+            {
+                if (item != null)
+                {
+                    Recommended.Add(item);
+                }
+            }
         }
 
 

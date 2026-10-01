@@ -26,7 +26,15 @@ namespace StremioVideoCenter.Models
         public double DurationSeconds { get; set; }
         public double Volume { get; set; }
         public bool IsMuted { get; set; }
+        // True only for a genuine normal end of playback (mpv's
+        // eof-reached property, or end-file reason=eof) - never for
+        // error/stop/quit/redirect end-file reasons.
         public bool ReachedEndOfFile { get; set; }
+
+        // Last mpv end-file reason and file_error (null if absent), kept
+        // for diagnostics/failure handling. Contains no URL.
+        public string EndFileReason { get; set; }
+        public string EndFileError { get; set; }
 
         public IReadOnlyList<MpvTrackInfo> AudioTracks { get; set; }
         public IReadOnlyList<MpvTrackInfo> SubtitleTracks { get; set; }

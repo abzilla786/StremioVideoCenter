@@ -109,6 +109,7 @@
     <Compile Include="Controls\Player\Menus\TrackSelectionMenu.xaml.cs">
       <DependentUpon>TrackSelectionMenu.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\ToastHost.cs" />
     <Compile Include="Controls\Player\MpvHost.cs" />
     <Compile Include="Controls\Player\PlayerFocusController.cs" />
     <Compile Include="Controls\Player\PlayerSession.cs" />
@@ -159,6 +160,8 @@
     <Compile Include="Services\WatchHistoryService.cs" />
     <Compile Include="Models\MyListEntry.cs" />
     <Compile Include="Services\MyListService.cs" />
+    <Compile Include="Models\TasteProfile.cs" />
+    <Compile Include="Services\PersonalisationService.cs" />
     <Compile Include="StremioVideoCenter.cs" />
     <Compile Include="StremioVideoCenterSettings.cs" />
     <Compile Include="StremioVideoCenterSettingsView.xaml.cs">

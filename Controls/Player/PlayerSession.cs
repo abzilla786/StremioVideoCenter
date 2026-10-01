@@ -22,6 +22,7 @@ namespace StremioVideoCenterControls.Player
         private const int ObserveIdTrackList = 4;
         private const int ObserveIdAudioId = 5;
         private const int ObserveIdSubId = 6;
+        private const int ObserveIdEofReached = 7;
 
         private readonly MpvHost _host;
         private MpvProcessService _process;
@@ -42,6 +43,10 @@ namespace StremioVideoCenterControls.Player
         public event EventHandler StateChanged;
         public event EventHandler TracksChanged;
         public event EventHandler EndOfFileReached;
+
+        // Raised (on the IPC thread) only for end-file reason=error with a
+        // non-empty file_error. State.EndFileError carries the message.
+        public event EventHandler PlaybackFailed;
         public event EventHandler Disconnected;
 
         public PlayerSession(MpvHost host)
@@ -127,6 +132,11 @@ namespace StremioVideoCenterControls.Player
                 await _ipc.ObservePropertyAsync(ObserveIdTrackList, "track-list").ConfigureAwait(true);
                 await _ipc.ObservePropertyAsync(ObserveIdAudioId, "aid").ConfigureAwait(true);
                 await _ipc.ObservePropertyAsync(ObserveIdSubId, "sid").ConfigureAwait(true);
+
+                // mpv runs with --keep-open=yes, which suppresses end-file at
+                // a normal EOF (the player just pauses on the last frame), so
+                // eof-reached is how a genuine normal end is observed.
+                await _ipc.ObservePropertyAsync(ObserveIdEofReached, "eof-reached").ConfigureAwait(true);
             }
             catch
             {
@@ -163,6 +173,8 @@ namespace StremioVideoCenterControls.Player
 
             await _host.WaitForAndAttachMpvWindowAsync(_process.ProcessId, 3000).ConfigureAwait(true);
             State.ReachedEndOfFile = false;
+            State.EndFileReason = null;
+            State.EndFileError = null;
             RaiseStateChanged();
         }
 
@@ -177,6 +189,8 @@ namespace StremioVideoCenterControls.Player
             await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
             await _host.WaitForAndAttachMpvWindowAsync(_process.ProcessId, 3000).ConfigureAwait(true);
             State.ReachedEndOfFile = false;
+            State.EndFileReason = null;
+            State.EndFileError = null;
             RaiseStateChanged();
         }
 
@@ -262,25 +276,60 @@ namespace StremioVideoCenterControls.Player
                     break;
 
                 case "end-file":
-                    // DIAGNOSTIC ONLY: logs mpv's end-file reason/file_error
-                    // and nothing else - never the raw event, which can
-                    // carry the playback URL. Does not change EOF handling.
-                    LogEndFileDiagnostic(e.Raw);
-
-                    State.ReachedEndOfFile = true;
-                    RaiseStateChanged();
-
-                    EventHandler eofHandler = EndOfFileReached;
-                    if (eofHandler != null)
-                        eofHandler(this, EventArgs.Empty);
+                    HandleEndFile(e.Raw);
                     break;
             }
         }
 
-        private static void LogEndFileDiagnostic(JObject raw)
+        // Reason-aware end-file handling. Only reason=eof counts as a
+        // normal end; error/stop/quit/redirect never set ReachedEndOfFile.
+        // A genuine failure (reason=error WITH a file_error) additionally
+        // raises PlaybackFailed. Nothing here inspects the URL, size,
+        // duration or addon.
+        private void HandleEndFile(JObject raw)
         {
-            string reason = null;
-            string fileError = null;
+            string reason;
+            string fileError;
+            ParseEndFile(raw, out reason, out fileError);
+
+            // Diagnostic: reason/file_error only, never the raw event
+            // (which can carry the playback URL).
+            StremioVideoCenterLogger.Info(
+                "MPV end-file: reason=" + (string.IsNullOrEmpty(reason) ? "(null)" : reason) +
+                ", file_error=" + (string.IsNullOrEmpty(fileError) ? "(null)" : fileError));
+
+            State.EndFileReason = string.IsNullOrEmpty(reason) ? null : reason;
+            State.EndFileError = string.IsNullOrEmpty(fileError) ? null : fileError;
+
+            bool isEof = string.Equals(reason, "eof", StringComparison.OrdinalIgnoreCase);
+            bool isFailure =
+                string.Equals(reason, "error", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrEmpty(fileError);
+
+            if (isEof)
+                State.ReachedEndOfFile = true;
+
+            RaiseStateChanged();
+
+            if (isEof)
+            {
+                EventHandler eofHandler = EndOfFileReached;
+                if (eofHandler != null)
+                    eofHandler(this, EventArgs.Empty);
+            }
+
+            if (isFailure)
+            {
+                EventHandler failedHandler = PlaybackFailed;
+                if (failedHandler != null)
+                    failedHandler(this, EventArgs.Empty);
+            }
+        }
+
+        private static void ParseEndFile(JObject raw, out string reason, out string fileError)
+        {
+            reason = null;
+            fileError = null;
 
             try
             {
@@ -300,9 +349,6 @@ namespace StremioVideoCenterControls.Player
                 // Diagnostic only - never let logging affect playback.
             }
 
-            StremioVideoCenterLogger.Info(
-                "MPV end-file: reason=" + (string.IsNullOrEmpty(reason) ? "(null)" : reason) +
-                ", file_error=" + (string.IsNullOrEmpty(fileError) ? "(null)" : fileError));
         }
 
         private void HandlePropertyChange(JObject raw)
@@ -321,6 +367,15 @@ namespace StremioVideoCenterControls.Player
                 case "mute":
                     if (data != null && data.Type == JTokenType.Boolean)
                         State.IsMuted = data.Value<bool>();
+                    break;
+
+                case "eof-reached":
+                    // true = playback genuinely reached its end (kept open);
+                    // false/unavailable = not at the end.
+                    State.ReachedEndOfFile =
+                        data != null &&
+                        data.Type == JTokenType.Boolean &&
+                        data.Value<bool>();
                     break;
 
                 case "volume":

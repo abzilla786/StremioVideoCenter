@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace StremioVideoCenter.Models
 {
@@ -65,5 +66,11 @@ namespace StremioVideoCenter.Models
         public string Year { get; set; }
 
         public string Type { get; set; }
+
+        // Slice 17C: series/movie-level genres for personalisation, copied
+        // from the MediaItem in play when this entry is recorded. Null for
+        // entries saved before 17C (no backfill) - treated as "no genre
+        // signal". Never overwritten with an empty value.
+        public List<string> Genres { get; set; }
     }
 }

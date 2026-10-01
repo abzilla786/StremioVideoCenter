@@ -80,7 +80,8 @@ namespace StremioVideoCenter.Services
             string title,
             string posterPath,
             string year,
-            string displayType)
+            string displayType,
+            IEnumerable<string> genres = null)
         {
             if (string.IsNullOrWhiteSpace(seriesCanonicalKey))
             {
@@ -116,6 +117,23 @@ namespace StremioVideoCenter.Services
             entry.Year = year;
             entry.Type = displayType;
             entry.LastWatchedUtc = DateTime.UtcNow;
+
+            // Slice 17C: only ever replaced by a non-empty genre list, so a
+            // replay started from a source that carries no genres (e.g.
+            // Continue Watching) never erases genres recorded earlier.
+            if (genres != null)
+            {
+                List<string> cleaned = genres
+                    .Where(genre => !string.IsNullOrWhiteSpace(genre))
+                    .Select(genre => genre.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (cleaned.Count > 0)
+                {
+                    entry.Genres = cleaned;
+                }
+            }
 
             EnforceRetentionCap(profileId);
 
