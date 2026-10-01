@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -306,6 +307,24 @@ namespace StremioVideoCenter.Services
         // sideloaded category resources - see KitsuAnimeAttributes.
         // Categories' own remarks for why this cannot be done by
         // direct deserialization.
+        // Slice 17C fix: title -> slug for every category Kitsu has returned
+        // this session. My List/History store only category TITLES, but
+        // filter[categories] needs the SLUG, so personalisation resolves the
+        // real slug here instead of guessing one from the title.
+        private static readonly ConcurrentDictionary<string, string> _categorySlugsByTitle =
+            new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // Null when this category has not been seen in any Kitsu response yet.
+        public static string ResolveCategorySlug(string title)
+        {
+            string slug;
+
+            return !string.IsNullOrWhiteSpace(title) &&
+                   _categorySlugsByTitle.TryGetValue(title.Trim(), out slug)
+                ? slug
+                : null;
+        }
+
         private static void ResolveCategories(
             List<KitsuAnimeResource> items,
             List<KitsuCategoryResource> includedCategories)
@@ -358,6 +377,13 @@ namespace StremioVideoCenter.Services
                             Title = category.Attributes.Title,
                             Slug = category.Attributes.Slug
                         });
+
+                        if (!string.IsNullOrWhiteSpace(category.Attributes.Title) &&
+                            !string.IsNullOrWhiteSpace(category.Attributes.Slug))
+                        {
+                            _categorySlugsByTitle[category.Attributes.Title.Trim()] =
+                                category.Attributes.Slug;
+                        }
                     }
                 }
             }

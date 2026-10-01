@@ -37,7 +37,11 @@ namespace StremioVideoCenter.Services
     public class PersonalisationService
     {
         public const int RowSize = 25;
-        private const int MaxGenresPerType = 2;
+        // Genres tried per type, best affinity first. Stops as soon as
+        // MinCandidatesBeforeStopping usable candidates exist; a genre that
+        // yields nothing (unusable slug, transient failure) does not end
+        // the search - the next-best genre is tried instead.
+        private const int MaxGenreAttempts = 4;
         private const int MinCandidatesBeforeStopping = 12;
 
         private static readonly ContentType[] TypeOrder =
@@ -297,11 +301,11 @@ namespace StremioVideoCenter.Services
         {
             var result = new List<MediaItem>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            int queried = 0;
+            int attempts = 0;
 
-            // A few more genres than will be queried, so unusable ones
-            // (not in Cinemeta's own genre list) can be skipped.
-            foreach (string genre in taste.GetTopGenres(type, 6))
+            // More genres than attempts, so unusable ones (not in
+            // Cinemeta's own genre list, no Kitsu slug) can be skipped.
+            foreach (string genre in taste.GetTopGenres(type, 8))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -311,6 +315,11 @@ namespace StremioVideoCenter.Services
                 {
                     continue;
                 }
+
+                StremioVideoCenterLogger.Info(
+                    "Personalisation candidates: type=" + type +
+                    " genre=" + genre +
+                    " count=" + items.Count);
 
                 foreach (MediaItem item in items)
                 {
@@ -331,7 +340,7 @@ namespace StremioVideoCenter.Services
                     }
                 }
 
-                if (++queried >= MaxGenresPerType || result.Count >= MinCandidatesBeforeStopping)
+                if (++attempts >= MaxGenreAttempts || result.Count >= MinCandidatesBeforeStopping)
                 {
                     break;
                 }
@@ -353,7 +362,12 @@ namespace StremioVideoCenter.Services
             {
                 if (type == ContentType.Anime)
                 {
-                    string slug = ToKitsuSlug(genre);
+                    // Real slug if Kitsu has returned this category; the
+                    // derived slug is only a fallback for the (rare) case
+                    // where it has not been seen yet this session.
+                    string slug =
+                        CatalogueService.ResolveAnimeCategorySlug(genre) ??
+                        ToKitsuSlug(genre);
 
                     return string.IsNullOrEmpty(slug)
                         ? null
@@ -383,9 +397,10 @@ namespace StremioVideoCenter.Services
             }
         }
 
-        // Kitsu category slugs are the lower-case, hyphenated form of the
-        // category title. Kitsu has no categories-listing endpoint to
-        // verify this against; an unmatched slug just returns no items.
+        // Fallback only (see FetchGenreAsync): the lower-case, hyphenated
+        // form of the category title. Kitsu has no categories-listing
+        // endpoint to verify this against; an unmatched slug just returns
+        // no items, and the next genre is then tried.
         private static string ToKitsuSlug(string genre)
         {
             if (string.IsNullOrWhiteSpace(genre))

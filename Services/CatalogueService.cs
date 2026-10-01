@@ -464,6 +464,13 @@ namespace StremioVideoCenter.Services
                 tmdbFallbackFetch: null);
         }
 
+        // Real Kitsu slug for a category title (as stored in My List/History
+        // genres), or null if Kitsu has not returned that category yet.
+        public static string ResolveAnimeCategorySlug(string genreTitle)
+        {
+            return KitsuService.ResolveCategorySlug(genreTitle);
+        }
+
         public async Task<List<MediaItem>> GetAnimeCategoryRecommendationCandidatesAsync(string categorySlug)
         {
             if (string.IsNullOrWhiteSpace(categorySlug))
@@ -487,7 +494,14 @@ namespace StremioVideoCenter.Services
 
             List<MediaItem> items = MapKitsuItemsToMediaItems(result?.Items, RecommendationCandidateTake);
 
-            SetCached(cacheKey, items);
+            // Only cache a real result. BrowseAnimeAsync is fail-soft (a
+            // timeout/error comes back as an empty list), so caching an
+            // empty result would lock anime recommendations out for the
+            // whole 30-minute TTL after one transient Kitsu failure.
+            if (items.Count > 0)
+            {
+                SetCached(cacheKey, items);
+            }
 
             return items;
         }
