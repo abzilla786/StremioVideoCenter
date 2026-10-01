@@ -1604,6 +1604,17 @@ namespace StremioVideoCenter
                 return;
             }
 
+            // This handler is attached to the view root, so as a tunneling
+            // event it runs BEFORE any overlay's own ScrollViewer and used
+            // to mark every wheel event handled, scrolling the hidden Home
+            // page instead. Episode Browser and Source Selector have their
+            // own ScrollViewers: leave the event unhandled so it reaches
+            // the one under the pointer.
+            if (_activeEpisodeBrowser != null || _activeSourceSelector != null)
+            {
+                return;
+            }
+
             double amount =
                 e.Delta * 0.8;
 
