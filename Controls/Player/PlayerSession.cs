@@ -262,6 +262,11 @@ namespace StremioVideoCenterControls.Player
                     break;
 
                 case "end-file":
+                    // DIAGNOSTIC ONLY: logs mpv's end-file reason/file_error
+                    // and nothing else - never the raw event, which can
+                    // carry the playback URL. Does not change EOF handling.
+                    LogEndFileDiagnostic(e.Raw);
+
                     State.ReachedEndOfFile = true;
                     RaiseStateChanged();
 
@@ -270,6 +275,34 @@ namespace StremioVideoCenterControls.Player
                         eofHandler(this, EventArgs.Empty);
                     break;
             }
+        }
+
+        private static void LogEndFileDiagnostic(JObject raw)
+        {
+            string reason = null;
+            string fileError = null;
+
+            try
+            {
+                JToken reasonToken = raw != null ? raw["reason"] : null;
+                JToken fileErrorToken = raw != null ? raw["file_error"] : null;
+
+                reason = reasonToken != null && reasonToken.Type == JTokenType.String
+                    ? reasonToken.Value<string>()
+                    : null;
+
+                fileError = fileErrorToken != null && fileErrorToken.Type == JTokenType.String
+                    ? fileErrorToken.Value<string>()
+                    : null;
+            }
+            catch
+            {
+                // Diagnostic only - never let logging affect playback.
+            }
+
+            StremioVideoCenterLogger.Info(
+                "MPV end-file: reason=" + (string.IsNullOrEmpty(reason) ? "(null)" : reason) +
+                ", file_error=" + (string.IsNullOrEmpty(fileError) ? "(null)" : fileError));
         }
 
         private void HandlePropertyChange(JObject raw)
