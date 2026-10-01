@@ -165,6 +165,13 @@ namespace StremioVideoCenter
         // the other dedicated pages.
         private HistoryView _activeHistoryView;
 
+        // Non-null only while a MyListView is actively shown (Slice 17B) -
+        // same lifecycle discipline as _activeHistoryView directly above:
+        // created fresh per visit, torn down immediately when the user
+        // closes it. Checked in RouteButtonToActiveOverlayOrHome alongside
+        // the other dedicated pages.
+        private MyListView _activeMyListView;
+
         // Identifies the piece of content the CURRENTLY OPEN player
         // session (_stremioPlayer) is playing, for Watch State purposes
         // only - set right before playback actually starts in
@@ -464,25 +471,28 @@ namespace StremioVideoCenter
 
             if (DataContext is HomeViewModel vm)
             {
-                // Cinemeta-First Addon Settings Architecture: TMDB is
-                // now OPTIONAL (Part 12). tmdbService is null when no
-                // API key is configured - Hero (TMDB-only, unchanged)
-                // simply keeps its fallback data in that case, while the
-                // catalogue always loads (CatalogueService falls back to
-                // Cinemeta - which needs no credential - when
-                // tmdbService is null; see CatalogueService's own class
-                // remarks). Hero and the catalogue remain independent
-                // consumers running concurrently, each still failing
-                // safe on its own.
+                // TMDB Removal migration (approved Migration Plan, Phase
+                // 1 - Hero, revised by Slice 17's Kitsu lock-in): Hero
+                // no longer depends on tmdbService at all - it is now
+                // Cinemeta/Kitsu-sourced (see LoadHeroSafeAsync) and
+                // always attempts to load, unconditionally, the same
+                // pattern the catalogue already used before this phase.
+                // tmdbService is still threaded through to
+                // LoadCatalogueSafeAsync only - the Movie/TV catalogue's
+                // TMDB fallback remains (CatalogueService falls back to
+                // Cinemeta when tmdbService is null). The Anime rows are
+                // no longer TMDB-related at all as of Slice 17 -
+                // CatalogueService.GetFeaturedAnimeAsync/
+                // GetPopularAnimeAsync/GetNewAnimeAsync are now
+                // Kitsu-backed and ignore tmdbService entirely (see that
+                // class's own remarks).
                 TmdbService tmdbService =
                     !string.IsNullOrWhiteSpace(_tmdbAccessToken)
                         ? new TmdbService(_tmdbAccessToken)
                         : null;
 
                 Task heroTask =
-                    tmdbService != null
-                        ? LoadHeroSafeAsync(vm, tmdbService)
-                        : Task.CompletedTask;
+                    LoadHeroSafeAsync(vm);
 
                 Task catalogueTask =
                     LoadCatalogueSafeAsync(vm, tmdbService);
@@ -493,6 +503,15 @@ namespace StremioVideoCenter
             }
 
             UpdateHeroIndicators();
+
+            // Slice 17B: the real Cinemeta/Kitsu-sourced Hero items just
+            // finished loading (or the fallback Hero data remains) -
+            // refresh the My List button now that CurrentHeroItem reflects
+            // whichever item index 0 actually is. OnActiveProfileChanged
+            // already ran once above (inside ShowProfileSelectionAsync,
+            // before Hero had loaded), so this is specifically to pick up
+            // real Hero content instead of the static fallback slide.
+            RefreshHeroMyListButtonState();
 
             await Dispatcher.BeginInvoke(
                 new Action(() =>
@@ -525,14 +544,29 @@ namespace StremioVideoCenter
         // =========================================================
 
         private async Task LoadHeroSafeAsync(
-            HomeViewModel vm,
-            TmdbService tmdbService)
+            HomeViewModel vm)
         {
             try
             {
+                // TMDB Removal migration (Phase 1 - Hero): Cinemeta
+                // (Movie/TV) + Kitsu (Anime) candidate sourcing - see
+                // HeroRecommendationService's own class remarks. Fresh,
+                // local instances, matching this project's existing
+                // convention of constructing these per call site rather
+                // than sharing a field-level instance (see
+                // LoadCatalogueSafeAsync's identical CinemetaService
+                // construction just below, and ShowEpisodeBrowserAsync's
+                // own CinemetaService/KitsuService construction).
+                CinemetaService cinemetaService =
+                    new CinemetaService();
+
+                KitsuService kitsuService =
+                    new KitsuService();
+
                 HeroRecommendationService recommendationService =
                     new HeroRecommendationService(
-                        tmdbService);
+                        cinemetaService,
+                        kitsuService);
 
                 await vm.LoadHeroRecommendationsAsync(
                     recommendationService);
@@ -563,8 +597,11 @@ namespace StremioVideoCenter
                 CinemetaService cinemetaService =
                     new CinemetaService();
 
+                KitsuService kitsuService =
+                    new KitsuService();
+
                 CatalogueService catalogueService =
-                    new CatalogueService(tmdbService, cinemetaService);
+                    new CatalogueService(tmdbService, cinemetaService, kitsuService);
 
                 await vm.LoadCatalogueAsync(
                     catalogueService);
@@ -817,6 +854,11 @@ namespace StremioVideoCenter
 
             UpdateHeroIndicators();
 
+            // Slice 17B: the My List button must immediately reflect
+            // whichever Hero item the carousel just moved to - never the
+            // previous item's stale membership state.
+            RefreshHeroMyListButtonState();
+
             if (vm.CurrentHeroItem != null)
             {
                 RestartHeroRotationFor(
@@ -851,6 +893,10 @@ namespace StremioVideoCenter
                 index;
 
             UpdateHeroIndicators();
+
+            // Slice 17B: same reasoning as ChangeHero above - the My List
+            // button must track whichever Hero item is now displayed.
+            RefreshHeroMyListButtonState();
 
             if (vm.CurrentHeroItem != null)
             {
@@ -1644,7 +1690,7 @@ namespace StremioVideoCenter
 
             StremioVideoCenterLogger.Info(
                 string.Format(
-                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activeHistory={9} activePlayer={10}",
+                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activeHistory={9} activeMyList={10} activePlayer={11}",
                     seq,
                     button,
                     _activeEpisodeBrowser != null,
@@ -1655,6 +1701,7 @@ namespace StremioVideoCenter
                     _activeAnimePage != null,
                     _activeSearchPage != null,
                     _activeHistoryView != null,
+                    _activeMyListView != null,
                     _stremioPlayer != null));
 
             // Controller navigation stabilisation fix: record the exact
@@ -1780,6 +1827,14 @@ namespace StremioVideoCenter
             if (_activeHistoryView != null)
             {
                 return _activeHistoryView.HandleControllerInput(button);
+            }
+
+            // My List (Slice 17B) owns input while its overlay is open -
+            // same "most specific overlay wins" ordering as History
+            // directly above.
+            if (_activeMyListView != null)
+            {
+                return _activeMyListView.HandleControllerInput(button);
             }
 
             // Player owns input while playback is active.
@@ -2623,6 +2678,13 @@ namespace StremioVideoCenter
         private void OnActiveProfileChanged()
         {
             RefreshContinueWatching();
+
+            // Slice 17B: My List is profile-scoped exactly like Continue
+            // Watching above - both the Home row and the Hero My List
+            // button must reflect the newly-active profile's membership,
+            // never the previous profile's stale state.
+            RefreshMyList();
+            RefreshHeroMyListButtonState();
         }
 
         // Rebuilds HomeViewModel.ContinueWatching from WatchStateService's
@@ -2849,6 +2911,147 @@ namespace StremioVideoCenter
             RoutedEventArgs e)
         {
             await ShowHistoryAsync();
+        }
+
+        // =========================================================
+        // MY LIST (Slice 17B - My List UI + Hero Integration)
+        // =========================================================
+        //
+        // Same overlay-host pattern as ShowHistoryAsync above. Builds
+        // display MediaItems from MyListService's entries for the active
+        // profile - My List never routes playback itself; selecting a
+        // card goes through the same HandleMediaSelectedAsync every other
+        // catalogue card already uses, so a Movie entry plays directly
+        // and a TV/Anime entry opens the Episode Browser exactly like
+        // picking that show from a catalogue row would.
+        //
+        // Removing an entry (MyListView.EntryRemoveRequested) updates the
+        // underlying MyListService immediately, then refreshes both the
+        // open MyListView itself (so the grid/empty-state/focus update
+        // without closing the overlay) and the Home row / Hero button
+        // (RefreshMyList/RefreshHeroMyListButtonState) so nothing is left
+        // stale once the user eventually returns to Home or the Hero.
+        private async Task ShowMyListAsync()
+        {
+            var myListView = new MyListView();
+
+            myListView.Initialize(BuildMyListDisplayEntries());
+
+            var completionSource =
+                new TaskCompletionSource<bool>();
+
+            EventHandler onClosed = null;
+            EventHandler<MediaItemSelectedEventArgs> onMediaSelected = null;
+            EventHandler<MyListEntryRemovedEventArgs> onEntryRemoveRequested = null;
+
+            onClosed = (sender, args) =>
+            {
+                completionSource.TrySetResult(true);
+            };
+
+            onMediaSelected = async (sender, args) =>
+            {
+                await HandleMediaSelectedAsync(args.Item);
+            };
+
+            onEntryRemoveRequested = (sender, args) =>
+            {
+                Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+                if (_myListService == null || !activeProfileId.HasValue || args == null)
+                {
+                    return;
+                }
+
+                _myListService.Remove(activeProfileId.Value, args.CanonicalKey);
+
+                RefreshMyList();
+                RefreshHeroMyListButtonState();
+
+                myListView.UpdateEntries(BuildMyListDisplayEntries());
+            };
+
+            myListView.Closed += onClosed;
+            myListView.MediaSelected += onMediaSelected;
+            myListView.EntryRemoveRequested += onEntryRemoveRequested;
+
+            _activeMyListView = myListView;
+
+            MyListHost.Children.Add(myListView);
+            MyListHost.Visibility = Visibility.Visible;
+
+            myListView.Focus();
+
+            await completionSource.Task;
+
+            myListView.Closed -= onClosed;
+            myListView.MediaSelected -= onMediaSelected;
+            myListView.EntryRemoveRequested -= onEntryRemoveRequested;
+
+            MyListHost.Children.Remove(myListView);
+            MyListHost.Visibility = Visibility.Collapsed;
+
+            _activeMyListView = null;
+
+            FocusFirstAvailableSection();
+        }
+
+        // Builds the display MediaItems MyListView shows, from
+        // MyListService's entries for the active profile - denormalised
+        // metadata only, no network calls (same discipline as
+        // BuildHistoryDisplayItems above).
+        private List<MyListEntry> BuildMyListDisplayEntries()
+        {
+            var entries = new List<MyListEntry>();
+
+            if (_myListService == null)
+            {
+                return entries;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (!activeProfileId.HasValue)
+            {
+                return entries;
+            }
+
+            entries.AddRange(_myListService.GetEntriesForProfile(activeProfileId.Value));
+
+            return entries;
+        }
+
+        private async void NavigationMyListButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            await ShowMyListAsync();
+        }
+
+        // Rebuilds HomeViewModel.MyList from MyListService's current
+        // entries for the active profile - see HomeViewModel.LoadMyList's
+        // own remarks. Same shape as RefreshContinueWatching above, called
+        // from OnActiveProfileChanged and after any My List mutation
+        // (Source Selector toggle, Hero toggle, My List page removal) so
+        // the Home row never shows stale membership.
+        private void RefreshMyList()
+        {
+            HomeViewModel vm = DataContext as HomeViewModel;
+
+            if (vm == null)
+            {
+                return;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (_myListService == null || !activeProfileId.HasValue)
+            {
+                vm.MyList.Clear();
+                return;
+            }
+
+            vm.LoadMyList(_myListService, activeProfileId.Value);
         }
 
         // =========================================================
@@ -3291,7 +3494,8 @@ namespace StremioVideoCenter
                     : null;
 
             var cinemetaService = new CinemetaService();
-            var catalogueService = new CatalogueService(tmdbService, cinemetaService);
+            var kitsuService = new KitsuService();
+            var catalogueService = new CatalogueService(tmdbService, cinemetaService, kitsuService);
 
             page.Initialize(isTv, catalogueService);
 
@@ -3384,17 +3588,18 @@ namespace StremioVideoCenter
             AnimePageHost.Children.Add(page);
             AnimePageHost.Visibility = Visibility.Visible;
 
-            TmdbService tmdbService =
-                !string.IsNullOrWhiteSpace(_tmdbAccessToken)
-                    ? new TmdbService(_tmdbAccessToken)
-                    : null;
-
-            var cinemetaService = new CinemetaService();
-            var catalogueService = new CatalogueService(tmdbService, cinemetaService);
-            var animeFlvCatalogueService = new AnimeFlvCatalogueService();
+            // TMDB Removal migration (Phase 3 - Anime catalogue): this
+            // page no longer needs a CatalogueService/TmdbService at
+            // all - Kitsu (via KitsuService.BrowseAnimeAsync) is now
+            // the sole source for the Anime Browse filter/discovery
+            // section. Slice 17 UI/navigation fix: the page's own
+            // "Browse AnimeFLV" section has been removed (AnimeFLV's
+            // generic addon/service architecture is untouched elsewhere),
+            // so AnimeBrowseView.Initialize no longer takes an
+            // AnimeFlvCatalogueService.
             var kitsuService = new KitsuService();
 
-            page.Initialize(catalogueService, animeFlvCatalogueService, kitsuService);
+            page.Initialize(kitsuService);
 
             await completionSource.Task;
 
@@ -3539,6 +3744,7 @@ namespace StremioVideoCenter
 
             EventHandler<SourceSelectedEventArgs> onSelected = null;
             EventHandler onCancelled = null;
+            EventHandler onMyListToggleRequested = null;
 
             onSelected = (sender, args) =>
             {
@@ -3550,8 +3756,17 @@ namespace StremioVideoCenter
                 completionSource.TrySetResult(null);
             };
 
+            // Slice 17B: the selector never talks to MyListService itself -
+            // it only tells us its My List button was pressed, and we tell
+            // it back what to show (see HandleSourceSelectorMyListToggle).
+            onMyListToggleRequested = (sender, args) =>
+            {
+                HandleSourceSelectorMyListToggle(selector, mediaItem);
+            };
+
             selector.SourceSelected += onSelected;
             selector.SelectionCancelled += onCancelled;
+            selector.MyListToggleRequested += onMyListToggleRequested;
 
             _activeSourceSelector = selector;
 
@@ -3559,6 +3774,7 @@ namespace StremioVideoCenter
             SourceSelectorHost.Visibility = Visibility.Visible;
 
             selector.Populate(sources, mediaItem);
+            selector.SetMyListState(IsMediaItemInMyList(mediaItem));
 
             // This is the point the user's diagnostic request calls out
             // specifically: the Source Selector control has now been
@@ -3584,6 +3800,7 @@ namespace StremioVideoCenter
 
             selector.SourceSelected -= onSelected;
             selector.SelectionCancelled -= onCancelled;
+            selector.MyListToggleRequested -= onMyListToggleRequested;
 
             SourceSelectorHost.Children.Remove(selector);
             SourceSelectorHost.Visibility = Visibility.Collapsed;
@@ -3594,6 +3811,182 @@ namespace StremioVideoCenter
 
             return result;
         }
+
+        // =========================================================
+        // SOURCE SELECTOR MY LIST INTEGRATION (Slice 17B)
+        // =========================================================
+        //
+        // The only place this view wires SourceSelectorView's My List
+        // button to MyListService - the control itself never calls the
+        // service (see its own remarks on staying self-contained). Movies
+        // add the movie; an episode-shaped MediaItem (Season/Episode both
+        // populated, as EpisodeBrowserView.BuildEpisodeMediaItem produces)
+        // adds the series, because MediaItem.StremioId is always the
+        // show/movie-level id (see MediaItem.Season/.Episode remarks) -
+        // MyListService.Add/Toggle already use it verbatim, so no
+        // special-casing by content type is needed here.
+
+        private bool IsMediaItemInMyList(MediaItem mediaItem)
+        {
+            if (_myListService == null ||
+                mediaItem == null ||
+                string.IsNullOrWhiteSpace(mediaItem.StremioId))
+            {
+                return false;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (!activeProfileId.HasValue)
+            {
+                return false;
+            }
+
+            return _myListService.IsInMyList(activeProfileId.Value, mediaItem.StremioId);
+        }
+
+        private void HandleSourceSelectorMyListToggle(
+            SourceSelectorView selector,
+            MediaItem mediaItem)
+        {
+            if (_myListService == null || mediaItem == null)
+            {
+                return;
+            }
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (!activeProfileId.HasValue)
+            {
+                return;
+            }
+
+            bool nowInList = _myListService.Toggle(activeProfileId.Value, mediaItem);
+            selector.SetMyListState(nowInList);
+
+            // Slice 17B: a Source Selector toggle changes the same
+            // underlying MyListService state the Home row and Hero button
+            // display - both must reflect it immediately, not only once
+            // the user happens to revisit Home or move the Hero carousel.
+            RefreshMyList();
+            RefreshHeroMyListButtonState();
+        }
+
+        // =========================================================
+        // HERO WATCH NOW / MY LIST INTEGRATION (Slice 17B)
+        // =========================================================
+        //
+        // HeroItem carries its own canonical StremioId/Type/Genres
+        // directly (see that class's "SLICE 17B" remarks), so both
+        // handlers below build a MediaItem from the CURRENTLY DISPLAYED
+        // Hero item (vm.CurrentHeroItem) and route through the exact same
+        // pipelines every other card on this page already uses - no
+        // separate Hero playback or My List architecture.
+
+        // Watch Now must NOT autoplay - it routes into the same
+        // HandleMediaSelectedAsync pipeline a catalogue card's selection
+        // uses: a Movie plays directly through the existing flow, a TV/
+        // Anime item opens the Episode Browser first. Nothing here
+        // bypasses Source Selector.
+        private async void HeroWatchNowButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            HomeViewModel vm = DataContext as HomeViewModel;
+
+            MediaItem heroMediaItem = BuildMediaItemFromHeroItem(vm?.CurrentHeroItem);
+
+            if (heroMediaItem == null)
+            {
+                return;
+            }
+
+            await HandleMediaSelectedAsync(heroMediaItem);
+        }
+
+        // Toggles the currently displayed Hero item's My List membership
+        // via MyListService (same source of truth as Source Selector's
+        // own toggle above), then refreshes the Hero button itself plus
+        // the Home row so nothing is left stale.
+        private void HeroMyListButton_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            HomeViewModel vm = DataContext as HomeViewModel;
+
+            MediaItem heroMediaItem = BuildMediaItemFromHeroItem(vm?.CurrentHeroItem);
+
+            Guid? activeProfileId = _profileService?.GetActiveProfileId();
+
+            if (_myListService == null || heroMediaItem == null || !activeProfileId.HasValue)
+            {
+                return;
+            }
+
+            _myListService.Toggle(activeProfileId.Value, heroMediaItem);
+
+            RefreshMyList();
+            RefreshHeroMyListButtonState();
+        }
+
+        // Reflects whether the currently displayed Hero item is already
+        // in My List - called whenever the Hero carousel moves
+        // (ChangeHero/SetHeroIndex), whenever the active profile changes
+        // (OnActiveProfileChanged), after initial Hero load, and after
+        // any My List mutation that could affect this item (the Hero
+        // toggle itself and Source Selector's toggle, above). Always
+        // re-reads MyListService directly - never a cached flag - so it
+        // can never go stale.
+        private void RefreshHeroMyListButtonState()
+        {
+            if (HeroMyListButton == null)
+            {
+                return;
+            }
+
+            HomeViewModel vm = DataContext as HomeViewModel;
+
+            MediaItem heroMediaItem = BuildMediaItemFromHeroItem(vm?.CurrentHeroItem);
+
+            bool isInList = IsMediaItemInMyList(heroMediaItem);
+
+            HeroMyListButton.Content = isInList
+                ? "✓  IN MY LIST"
+                : "＋  MY LIST";
+
+            HeroMyListButton.ToolTip = isInList
+                ? "Remove from My List"
+                : "Add to My List";
+        }
+
+        // Builds a MediaItem from the given HeroItem - the same shape
+        // every other card's MediaItem already takes (StremioId/Title/
+        // PosterPath/Year/Type/Genres), so it can be handed to
+        // HandleMediaSelectedAsync, MyListService, or GetContentType
+        // without any Hero-specific special-casing in those methods.
+        // Returns null for a HeroItem with no resolvable canonical
+        // identity, mirroring MyListService.Add/Toggle's own
+        // StremioId-required guard.
+        private MediaItem BuildMediaItemFromHeroItem(HeroItem heroItem)
+        {
+            if (heroItem == null || string.IsNullOrWhiteSpace(heroItem.StremioId))
+            {
+                return null;
+            }
+
+            return new MediaItem
+            {
+                StremioId = heroItem.StremioId,
+                Title = heroItem.Title,
+                PosterPath = heroItem.PosterUrl,
+                Year = heroItem.Year,
+                Type = heroItem.Type,
+                Genres = heroItem.Genres != null
+                    ? new List<string>(heroItem.Genres)
+                    : new List<string>()
+            };
+        }
+
         // =========================================================
         // WATCH STATE INTEGRATION (Slice 16B)
         // =========================================================

@@ -44,9 +44,16 @@
             </Setter>
         </Style>
 
-        <!-- Same dark ComboBoxItem popup fix as CatalogueBrowseView - the
-             default ComboBoxItem template doesn't inherit the ComboBox's
-             own Background/Foreground (it renders in a separate popup). -->
+        <!-- Filter styling parity fix: replaced with the EXACT
+             FilterComboItemStyle CatalogueBrowseView (Movies/TV) uses,
+             including its IsSelected trigger (keeps the currently-applied
+             filter visibly marked even when set programmatically by
+             MoveKitsuFilterDropDownSelection below, which never raises a
+             mouse-driven "highlight") - see that file's identical remark.
+             The previous version here had no IsSelected trigger and a
+             different Padding/FontSize; this page's filters must now
+             match Movie/TV's pixel-for-pixel rather than have their own
+             divergent readability tweak. -->
         <Style x:Key="FilterComboItemStyle" TargetType="ComboBoxItem">
             <Setter Property="Background" Value="#1A1A1F" />
             <Setter Property="Foreground" Value="White" />
@@ -55,9 +62,29 @@
                 <Trigger Property="IsHighlighted" Value="True">
                     <Setter Property="Background" Value="#E91E63" />
                 </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#E91E63" />
+                </Trigger>
             </Style.Triggers>
         </Style>
 
+        <!-- Filter styling parity fix: replaced with the EXACT
+             FilterComboStyle CatalogueBrowseView (Movies/TV) uses,
+             including its custom ControlTemplate. This is the actual fix
+             for the "light/white ComboBox background" readability bug -
+             the previous version here had ordinary Setters only (no
+             Template), and the default OS ComboBox chrome does not
+             template-bind its visible "closed" box to Background/
+             Foreground/BorderBrush setters at all - only the dropdown
+             popup honoured them, so the closed control always rendered
+             with the OS theme's own light chrome regardless of what was
+             set. See CatalogueBrowseView's identical remark on this same
+             style for the full explanation. Also fixes the A/Enter-does-
+             not-open-the-dropdown issue together with the matching
+             code-behind (ActivateKitsuFilterCombo/MoveKitsuFilterDropDown
+             Selection in AnimeBrowseView.xaml.cs) - the FilterToggle part
+             below is only the mouse hit-target; keyboard/controller drive
+             IsDropDownOpen directly from code, exactly as Movie/TV do. -->
         <Style x:Key="FilterComboStyle" TargetType="ComboBox">
             <Setter Property="Background" Value="#1A1A1F" />
             <Setter Property="Foreground" Value="White" />
@@ -68,17 +95,79 @@
             <Setter Property="Margin" Value="0,0,12,0" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="ItemContainerStyle" Value="{StaticResource FilterComboItemStyle}" />
-        </Style>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="FilterBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="3">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter Grid.Column="0"
+                                                      Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      Margin="{TemplateBinding Padding}"
+                                                      HorizontalAlignment="Left"
+                                                      VerticalAlignment="Center"
+                                                      IsHitTestVisible="False"
+                                                      TextElement.Foreground="{TemplateBinding Foreground}" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="&#x25BC;"
+                                               Foreground="{TemplateBinding Foreground}"
+                                               FontSize="9"
+                                               Margin="0,0,10,0"
+                                               VerticalAlignment="Center" />
+                                </Grid>
+                            </Border>
 
-        <Style x:Key="SearchBoxStyle" TargetType="TextBox">
-            <Setter Property="Background" Value="#1A1A1F" />
-            <Setter Property="Foreground" Value="White" />
-            <Setter Property="BorderBrush" Value="#55555F" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="10,6" />
-            <Setter Property="MinWidth" Value="220" />
-            <Setter Property="CaretBrush" Value="White" />
-            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                            <ToggleButton x:Name="FilterToggle"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          Opacity="0"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" />
+
+                            <Popup x:Name="FilterPopup"
+                                   Placement="Bottom"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   PopupAnimation="Slide"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}">
+                                <Border Background="#1A1A1F"
+                                        BorderBrush="#55555F"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="240"
+                                        Margin="0,2,0,0">
+                                    <ScrollViewer SnapsToDevicePixels="True"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="FilterBorder" Property="Background" Value="#2A2A32" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="FilterBorder" Property="BorderBrush" Value="#E91E63" />
+                                <Setter TargetName="FilterBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsDropDownOpen" Value="True">
+                                <Setter TargetName="FilterBorder" Property="BorderBrush" Value="#E91E63" />
+                                <Setter TargetName="FilterBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="SearchButtonStyle" TargetType="Button">
@@ -122,6 +211,58 @@
                     <Setter Property="BorderThickness" Value="2" />
                 </Trigger>
             </Style.Triggers>
+        </Style>
+
+        <!-- Slice 17 addition - one toggle "chip" per Kitsu category,
+             population is dynamic (see AnimeBrowseView.xaml.cs
+             PopulateCategoryToggles/RegisterDiscoveredCategories),
+             never a hard-coded list. Same visual language as the other
+             filter controls (dark surface, pink #E91E63 accent on
+             selection/focus, matching FilterComboStyle/SearchButtonStyle).
+             UI/navigation fix: FontSize bumped (12 -> 13) and unselected
+             Foreground contrast raised (#CCCCCC -> #E4E4E8) for
+             readability against the dark chip background; selected/
+             focused states (below) were already high-contrast and are
+             unchanged. -->
+        <Style x:Key="CategoryToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="#E4E4E8" />
+            <Setter Property="BorderBrush" Value="#55555F" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="13,7" />
+            <Setter Property="Margin" Value="0,0,8,8" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="ChipBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="14"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ChipBorder" Property="Background" Value="#E91E63" />
+                                <Setter TargetName="ChipBorder" Property="BorderBrush" Value="#E91E63" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ChipBorder" Property="BorderBrush" Value="#E91E63" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="ChipBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="ChipBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!--
@@ -228,7 +369,7 @@
         </StackPanel>
 
         <!-- ========================================================= -->
-        <!-- CONTENT (single scroll - TMDB rows, then AnimeFLV browse)  -->
+        <!-- CONTENT (single scroll - Kitsu Browse only)                -->
         <!-- ========================================================= -->
 
         <ScrollViewer Grid.Row="1"
@@ -237,110 +378,110 @@
             <StackPanel Margin="32,0,32,40">
 
                 <!-- =====================================================
-                     TMDB-DERIVED FEATURED / POPULAR / NEW ANIME
+                     BROWSE ANIME (Slice 17 - Kitsu locked in as Zino's
+                     permanent anime provider)
                      =====================================================
-                     Exactly the same TMDB-backed anime rows Home already
-                     shows (CatalogueService.GetFeaturedAnimeAsync/
-                     GetPopularAnimeAsync/GetNewAnimeAsync - unchanged
-                     logic, only reused here) - genuinely ranked rows, not
-                     fabricated. Honestly empty (TmdbEmptyText) when no
-                     TmdbService is configured, exactly like Home's own
-                     rows are in that case. -->
+                     Replaces the old TMDB-backed Featured/Popular/New
+                     rows and the single-row "Popular on Kitsu" row
+                     entirely - a genuine, combinable, server-side
+                     filtered discovery experience against Kitsu's own
+                     API (KitsuService.BrowseAnimeAsync), not another
+                     fixed ranked row. Category chips below are
+                     populated dynamically from fetched results (see
+                     AnimeBrowseView.xaml.cs PopulateCategoryToggles) -
+                     never a hard-coded genre list, since Kitsu has no
+                     dedicated categories-listing endpoint. Filters only
+                     take effect when Apply is pressed (KitsuApplyFilters
+                     Button), not on every focus movement or toggle. -->
 
-                <controls:MediaSection x:Name="FeaturedAnimeSection" Title="FEATURED" />
-                <controls:MediaSection x:Name="PopularAnimeSection" Title="POPULAR" />
-                <controls:MediaSection x:Name="NewAnimeSection" Title="NEW RELEASES" />
-
-                <!-- =====================================================
-                     KITSU-DERIVED POPULAR ROW (Slice 15 Kitsu Migration)
-                     =====================================================
-                     Real, ranked catalogue row from Kitsu (Zino's anime
-                     metadata/catalogue source) sorted by Kitsu's own
-                     userCount attribute - a confirmed, real sortable
-                     field, not an invented "trending" endpoint (see
-                     KitsuService's own remarks). Unlike the AnimeFLV
-                     browse grid below, every item here carries a real
-                     "kitsu:" id that a StreamProvider addon declaring
-                     the kitsu idPrefix (Comet - live-verified; Torrentio,
-                     documented but not independently re-verified this
-                     slice) can actually resolve streams for. Independent
-                     of the TMDB rows above - honestly empty
-                     (KitsuEmptyText) if Kitsu can't be reached, never
-                     mixed with TMDB/AnimeFLV data. -->
-
-                <controls:MediaSection x:Name="KitsuPopularSection" Title="POPULAR ON KITSU" />
-
-                <TextBlock x:Name="KitsuEmptyText"
-                           Text="Couldn't load Kitsu's Popular Anime row right now."
-                           Foreground="#AAAAAA"
-                           FontSize="14"
-                           TextWrapping="Wrap"
-                           Visibility="Collapsed"
-                           Margin="8,4,8,24" />
-
-                <TextBlock x:Name="TmdbEmptyText"
-                           Text="TMDB isn't configured, so ranked Featured/Popular/New Anime rows aren't available. Browse AnimeFLV directly below instead."
-                           Foreground="#AAAAAA"
-                           FontSize="14"
-                           TextWrapping="Wrap"
-                           Visibility="Collapsed"
-                           Margin="8,4,8,24" />
-
-                <!-- =====================================================
-                     ANIMEFLV BROWSE (genre or search - live-verified this
-                     slice, see AnimeFlvCatalogueService's class remarks)
-                     =====================================================
-                     AnimeFLV exposes no unfiltered/ranked catalog at all
-                     - every one of its 13 real catalogs requires either a
-                     "search" or a "genre" extra (live-verified against
-                     its manifest.json this slice). That is why this
-                     section is a genre/search BROWSER rather than another
-                     "Featured"/"Popular" row - a ranked row here would
-                     have to be invented, which this project's own
-                     instructions forbid. -->
-
-                <Border Height="1" Background="#22222A" Margin="0,8,0,20" />
-
-                <TextBlock Text="Browse AnimeFLV"
+                <TextBlock Text="Browse Anime"
                            Foreground="White"
                            FontSize="18"
                            FontWeight="Bold"
                            Margin="0,0,0,6" />
 
-                <TextBlock Text="AnimeFLV has no ranked or unfiltered catalogue - every request needs a genre or a search term. Pick a genre, or search by title."
+                <TextBlock Text="Combine as many filters as you like, then press Apply - Kitsu receives one combined query rather than Zino downloading its full catalogue."
                            Foreground="#666670"
                            FontSize="12"
                            TextWrapping="Wrap"
                            Margin="0,0,0,14" />
 
-                <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
 
-                    <TextBlock Text="Genre:" Foreground="#AAAAAA" FontSize="13" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <ComboBox x:Name="GenreCombo"
-                              Style="{StaticResource FilterComboStyle}"
-                              SelectionChanged="GenreCombo_SelectionChanged" />
+                    <!-- UI/navigation fix: filter label Foreground/FontSize
+                         raised (#AAAAAA/12 -> #C8C8CE/13) for readability;
+                         ComboBox focus visual now comes from
+                         FilterComboStyle's own IsKeyboardFocused trigger
+                         above. -->
+                    <StackPanel Orientation="Vertical" Margin="0,0,12,0">
+                        <TextBlock Text="Type" Foreground="#C8C8CE" FontSize="13" Margin="0,0,0,4" />
+                        <ComboBox x:Name="KitsuTypeCombo" Style="{StaticResource FilterComboStyle}" Margin="0" />
+                    </StackPanel>
 
-                    <TextBox x:Name="SearchBox"
-                             Style="{StaticResource SearchBoxStyle}"
-                             Margin="16,0,0,0"
-                             VerticalContentAlignment="Center"
-                             KeyDown="SearchBox_KeyDown" />
+                    <StackPanel Orientation="Vertical" Margin="0,0,12,0">
+                        <TextBlock Text="Season" Foreground="#C8C8CE" FontSize="13" Margin="0,0,0,4" />
+                        <ComboBox x:Name="KitsuSeasonCombo" Style="{StaticResource FilterComboStyle}" Margin="0" />
+                    </StackPanel>
 
-                    <Button x:Name="SearchButton"
-                            Content="Search"
-                            Style="{StaticResource SearchButtonStyle}"
-                            Click="SearchButton_Click" />
+                    <StackPanel Orientation="Vertical" Margin="0,0,12,0">
+                        <TextBlock Text="Year" Foreground="#C8C8CE" FontSize="13" Margin="0,0,0,4" />
+                        <ComboBox x:Name="KitsuYearCombo" Style="{StaticResource FilterComboStyle}" Margin="0" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Vertical" Margin="0,0,12,0">
+                        <TextBlock Text="Status" Foreground="#C8C8CE" FontSize="13" Margin="0,0,0,4" />
+                        <ComboBox x:Name="KitsuStatusCombo" Style="{StaticResource FilterComboStyle}" Margin="0" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock Text="Sort" Foreground="#C8C8CE" FontSize="13" Margin="0,0,0,4" />
+                        <ComboBox x:Name="KitsuSortCombo" Style="{StaticResource FilterComboStyle}" Margin="0" />
+                    </StackPanel>
 
                 </StackPanel>
 
-                <TextBlock x:Name="AnimeFlvLoadingText"
+                <TextBlock Text="Categories"
+                           Foreground="#C8C8CE"
+                           FontSize="13"
+                           Margin="0,0,0,6" />
+
+                <ItemsControl x:Name="KitsuCategoryItemsControl" Focusable="False" Margin="0,0,0,4">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <ToggleButton Content="{Binding Title}"
+                                          IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                                          Style="{StaticResource CategoryToggleStyle}"
+                                          Focusable="True" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock x:Name="KitsuCategoryHintText"
+                           Text="More categories appear here as results load."
+                           Foreground="#555560"
+                           FontSize="11"
+                           Margin="0,0,0,14" />
+
+                <Button x:Name="KitsuApplyFiltersButton"
+                        Content="Apply Filters"
+                        Style="{StaticResource SearchButtonStyle}"
+                        Click="KitsuApplyFiltersButton_Click"
+                        HorizontalAlignment="Left"
+                        Margin="0,0,0,18" />
+
+                <TextBlock x:Name="KitsuBrowseLoadingText"
                            Text="Loading..."
                            Foreground="#CCCCCC"
                            FontSize="14"
                            Margin="8,0,8,12"
                            Visibility="Collapsed" />
 
-                <ItemsControl x:Name="AnimeFlvItemsControl" Focusable="False">
+                <ItemsControl x:Name="KitsuBrowseItemsControl" Focusable="False">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel Orientation="Horizontal" />
@@ -356,18 +497,18 @@
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
 
-                <TextBlock x:Name="AnimeFlvEmptyText"
-                           Text="No AnimeFLV results right now - this addon scrapes its source live, so an empty or slow result can happen even for a valid genre or search term."
+                <TextBlock x:Name="KitsuBrowseEmptyText"
+                           Text="No anime found for these filters."
                            Foreground="#AAAAAA"
                            FontSize="14"
                            TextWrapping="Wrap"
                            Visibility="Collapsed"
                            Margin="8,20,8,0" />
 
-                <Button x:Name="AnimeFlvLoadMoreButton"
+                <Button x:Name="KitsuBrowseLoadMoreButton"
                         Content="Load More"
                         Style="{StaticResource LoadMoreButtonStyle}"
-                        Click="AnimeFlvLoadMoreButton_Click"
+                        Click="KitsuBrowseLoadMoreButton_Click"
                         HorizontalAlignment="Center"
                         Margin="0,20,0,0"
                         Visibility="Collapsed" />

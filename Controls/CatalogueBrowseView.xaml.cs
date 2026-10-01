@@ -764,14 +764,33 @@ namespace StremioVideoCenterControls
         // FilterComboItemStyle dropdown) - just driven explicitly rather
         // than through WPF's normal input plumbing.
 
+        // Dropdown-focus fix (ported from AnimeBrowseView's own proven
+        // fix for the identical bug): opening a ComboBox's dropdown makes
+        // WPF move real keyboard focus from the ComboBox itself onto its
+        // currently-selected ComboBoxItem inside the popup - confirmed
+        // live there (IsKeyboardFocused on the ComboBox goes false,
+        // IsKeyboardFocusWithin stays true), so the plain IsKeyboardFocused
+        // checks this method used before went blind the instant the
+        // dropdown opened. Every caller below (MoveFilterDropDownSelection
+        // for Up/Down, ActivateFilterCombo for a second Enter/A to
+        // confirm/close) would then silently no-op, leaving WPF's own
+        // native ComboBoxItem key handling to run instead - which tracks
+        // its own "highlighted" preview item independently of
+        // SelectedIndex, so arrowing through the list looked like it
+        // moved something but never changed what Filter_SelectionChanged
+        // actually applied. ActivateFilterCombo below re-asserts focus on
+        // the ComboBox itself right after toggling it open, but that
+        // re-focus is deferred a frame (see its own remark), so this also
+        // accepts IsKeyboardFocusWithin while the dropdown is open as a
+        // fallback for the brief window before that runs.
         private ComboBox GetFocusedFilterCombo()
         {
-            if (GenreCombo.IsKeyboardFocused)
+            if (GenreCombo.IsKeyboardFocused || (GenreCombo.IsDropDownOpen && GenreCombo.IsKeyboardFocusWithin))
             {
                 return GenreCombo;
             }
 
-            if (YearCombo.IsKeyboardFocused)
+            if (YearCombo.IsKeyboardFocused || (YearCombo.IsDropDownOpen && YearCombo.IsKeyboardFocusWithin))
             {
                 return YearCombo;
             }
@@ -817,6 +836,17 @@ namespace StremioVideoCenterControls
         // Returns false (does nothing) when the filter bar doesn't have
         // focus, so callers can fall through to their own activation
         // logic for whatever else is focused.
+        // Dropdown-focus fix (ported from AnimeBrowseView): re-asserts
+        // focus on the ComboBox itself right after toggling it open, since
+        // WPF would otherwise hand real keyboard focus to the newly-
+        // visible ComboBoxItem instead of leaving it on the ComboBox - see
+        // GetFocusedFilterCombo's own remark for the full explanation.
+        // Deferred past the layout pass that does that hand-off via
+        // DispatcherPriority.Input, same convention AnimeBrowseView's own
+        // copy already uses for post-layout focus. Needed in both
+        // directions - right after opening, and again after closing,
+        // since closing the popup leaves focus sitting on the now-hidden
+        // item otherwise.
         private bool ActivateFilterCombo()
         {
             ComboBox combo = GetFocusedFilterCombo();
@@ -827,6 +857,8 @@ namespace StremioVideoCenterControls
             }
 
             combo.IsDropDownOpen = !combo.IsDropDownOpen;
+
+            Dispatcher.BeginInvoke(new Action(() => combo.Focus()), DispatcherPriority.Input);
 
             return true;
         }
@@ -871,9 +903,13 @@ namespace StremioVideoCenterControls
         {
             // Filter controls task: while a filter's dropdown is open,
             // Up/Down move its own selection instead of navigating this
-            // page - checked first, ahead of every other case below,
-            // since focus itself never leaves the ComboBox while its
-            // popup is open.
+            // page - checked first, ahead of every other case below.
+            // Checked via IsAnyFilterDropDownOpen() rather than which
+            // control currently has focus, since opening the dropdown
+            // itself moves real keyboard focus off the ComboBox (see
+            // GetFocusedFilterCombo/ActivateFilterCombo's own dropdown-
+            // focus-fix remarks) - IsDropDownOpen is the state that
+            // actually stays reliable for the duration the popup is up.
             if (IsAnyFilterDropDownOpen())
             {
                 MoveFilterDropDownSelection(direction);

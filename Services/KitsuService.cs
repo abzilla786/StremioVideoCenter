@@ -140,6 +140,229 @@ namespace StremioVideoCenter.Services
             return await GetCollectionAsync(url);
         }
 
+        // =========================================================
+        // BROWSE (Slice 17: Kitsu locked in as Zino's permanent anime
+        // provider - general-purpose filtered/sorted catalogue query
+        // for the Anime Browse page, per this slice's directive to add
+        // ONE general-purpose method rather than many narrow ones.
+        // GetPopularAnimeAsync/SearchAnimeAsync/GetAnimeAsync/
+        // GetEpisodesAsync above are unchanged and still used by
+        // Hero/Search/Episode Browser exactly as before.)
+        // =========================================================
+        //
+        // Every filter/sort semantic below was LIVE-VERIFIED this
+        // slice against real kitsu.io responses (not assumed from
+        // documentation alone, per this slice's own instruction):
+        //
+        //   - categorySlugs: comma-joined into filter[categories].
+        //     Live-verified as AND/intersection, NOT OR/union -
+        //     filter[categories]=action (6378 results) and
+        //     filter[categories]=comedy (7576) versus filter
+        //     [categories]=action,comedy (1945 - far below either
+        //     individual count, only explainable as an intersection).
+        //     Do not change this to OR semantics without re-verifying.
+        //
+        //   - season/seasonYear: filter[seasonYear] is documented as
+        //     paired with filter[season] ("2020 is the season year for
+        //     December 2019") - live-verified together this slice
+        //     (filter[season]=spring&filter[seasonYear]=2024 returned
+        //     only Spring 2024 titles). When a year is selected but no
+        //     season is, this method uses Kitsu's separate, independent
+        //     filter[year] (plain release year - live-verified this
+        //     slice both as a single value and a Ruby-range) instead of
+        //     sending seasonYear without a season.
+        //
+        //   - subtype: a single value here (the Anime Browse page's
+        //     Media Type/Format filter is single-select - All/TV/
+        //     Movie/OVA/ONA/Special). Note for any future caller that
+        //     widens this to multiple values: live-verified this slice
+        //     as OR/union, NOT AND (filter[subtype]=movie,special
+        //     returned exactly count(movie)+count(special) with zero
+        //     overlap) - the OPPOSITE semantics from categories above.
+        //
+        //   - status: passed straight through to filter[status] (tba/
+        //     unreleased/upcoming/current/finished) - live-verified
+        //     working (filter[status]=current correctly returned only
+        //     currently-airing titles, e.g. One Piece).
+        //
+        //   - sort: passed straight through as Kitsu's own sort key
+        //     (e.g. "popularityRank", "ratingRank", "-startDate") -
+        //     live-verified this slice against real responses: an
+        //     ascending sort=popularityRank returned items whose own
+        //     PopularityRank attribute was exactly 1, 2, 3, 4... in
+        //     order (same check for ratingRank). This method does not
+        //     interpret or validate the value - the Anime Browse page
+        //     owns the Popular/Top Rated/Newest -> Kitsu-sort-key
+        //     mapping.
+        //
+        //   - Combined filters: live-verified this slice up to a full
+        //     5-way combination (categories AND + subtype + status +
+        //     season + seasonYear + sort together) against a real
+        //     response - Kitsu receives one combined query rather than
+        //     Zino downloading a full catalogue and filtering locally,
+        //     per this slice's explicit requirement.
+        //
+        //   - Empty results: live-verified this slice as a clean 200
+        //     response with meta.count=0 and an empty data array - no
+        //     error, no exception, nothing for a caller to special-case
+        //     beyond checking TotalCount/Items.Count.
+        //
+        // Always requests include=categories so each returned item's
+        // Attributes.Categories can be resolved (see ResolveCategories
+        // below) - this is also how the Anime Browse page's category
+        // filter options are meant to be derived from real results
+        // (Kitsu has no dedicated categories-listing endpoint in its
+        // documented API - confirmed absent again this slice), rather
+        // than a hard-coded master genre list.
+        public async Task<KitsuBrowseResult> BrowseAnimeAsync(
+            List<string> categorySlugs = null,
+            string season = null,
+            int? seasonYear = null,
+            string status = null,
+            string subtype = null,
+            string sort = null,
+            int offset = 0,
+            int limit = MaxPageLimit)
+        {
+            var queryParts = new List<string>();
+
+            if (categorySlugs != null && categorySlugs.Count > 0)
+            {
+                queryParts.Add(
+                    "filter%5Bcategories%5D=" +
+                    Uri.EscapeDataString(string.Join(",", categorySlugs)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(subtype))
+            {
+                queryParts.Add("filter%5Bsubtype%5D=" + Uri.EscapeDataString(subtype));
+            }
+
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                queryParts.Add("filter%5Bstatus%5D=" + Uri.EscapeDataString(status));
+            }
+
+            if (!string.IsNullOrWhiteSpace(season))
+            {
+                queryParts.Add("filter%5Bseason%5D=" + Uri.EscapeDataString(season));
+
+                if (seasonYear.HasValue)
+                {
+                    queryParts.Add("filter%5BseasonYear%5D=" + seasonYear.Value);
+                }
+            }
+            else if (seasonYear.HasValue)
+            {
+                // No season selected - use the plain, independent
+                // release-year filter instead of sending seasonYear
+                // without a season (see method remarks above).
+                queryParts.Add("filter%5Byear%5D=" + seasonYear.Value);
+            }
+
+            if (!string.IsNullOrWhiteSpace(sort))
+            {
+                queryParts.Add("sort=" + Uri.EscapeDataString(sort));
+            }
+
+            queryParts.Add("include=categories");
+            queryParts.Add("page%5Blimit%5D=" + ClampLimit(limit));
+            queryParts.Add("page%5Boffset%5D=" + Math.Max(0, offset));
+
+            string url = BaseUrl + "/anime?" + string.Join("&", queryParts);
+
+            try
+            {
+                string json = await DownloadStringAsync(url);
+
+                KitsuAnimeCollectionResponse response =
+                    Deserialize<KitsuAnimeCollectionResponse>(json);
+
+                List<KitsuAnimeResource> items =
+                    response?.Data ?? new List<KitsuAnimeResource>();
+
+                ResolveCategories(items, response?.Included);
+
+                return new KitsuBrowseResult
+                {
+                    Items = items,
+                    TotalCount = response?.Meta?.Count ?? items.Count
+                };
+            }
+            catch
+            {
+                // Unreachable/malformed - honest empty result, same
+                // fail-soft policy as every other method in this class.
+                return new KitsuBrowseResult
+                {
+                    Items = new List<KitsuAnimeResource>(),
+                    TotalCount = 0
+                };
+            }
+        }
+
+        // Resolves each item's Attributes.Categories from the raw
+        // relationships.categories references plus the response's
+        // sideloaded category resources - see KitsuAnimeAttributes.
+        // Categories' own remarks for why this cannot be done by
+        // direct deserialization.
+        private static void ResolveCategories(
+            List<KitsuAnimeResource> items,
+            List<KitsuCategoryResource> includedCategories)
+        {
+            if (items == null || items.Count == 0)
+            {
+                return;
+            }
+
+            var categoriesById = new Dictionary<string, KitsuCategoryResource>();
+
+            if (includedCategories != null)
+            {
+                foreach (var category in includedCategories)
+                {
+                    if (category?.Id != null && !categoriesById.ContainsKey(category.Id))
+                    {
+                        categoriesById[category.Id] = category;
+                    }
+                }
+            }
+
+            foreach (var item in items)
+            {
+                if (item?.Attributes == null)
+                {
+                    continue;
+                }
+
+                item.Attributes.Categories = new List<KitsuCategoryInfo>();
+
+                List<KitsuResourceIdentifier> categoryRefs =
+                    item.Relationships?.Categories?.Data;
+
+                if (categoryRefs == null)
+                {
+                    continue;
+                }
+
+                foreach (var reference in categoryRefs)
+                {
+                    KitsuCategoryResource category;
+
+                    if (reference?.Id != null &&
+                        categoriesById.TryGetValue(reference.Id, out category) &&
+                        category.Attributes != null)
+                    {
+                        item.Attributes.Categories.Add(new KitsuCategoryInfo
+                        {
+                            Title = category.Attributes.Title,
+                            Slug = category.Attributes.Slug
+                        });
+                    }
+                }
+            }
+        }
+
         private async Task<List<KitsuAnimeResource>> GetCollectionAsync(string url)
         {
             try
@@ -572,6 +795,48 @@ namespace StremioVideoCenter.Services
 
         [DataMember(Name = "attributes")]
         public KitsuAnimeAttributes Attributes { get; set; }
+
+        // Slice 17 addition - only the "categories" relationship is
+        // mapped (the raw {id,type} references BrowseAnimeAsync
+        // cross-references against a response's sideloaded category
+        // resources to populate Attributes.Categories). Every other
+        // method in this class ignores this field entirely (harmless -
+        // a JSON:API resource always carries its relationships
+        // whether or not a caller asked for the matching include, and
+        // an undeserialized/unused field is not an error).
+        [DataMember(Name = "relationships")]
+        public KitsuAnimeRelationships Relationships { get; set; }
+    }
+
+    // =============================================================
+    // KITSU ANIME RELATIONSHIPS (Slice 17 addition - categories only)
+    // =============================================================
+
+    [DataContract]
+    public class KitsuAnimeRelationships
+    {
+        [DataMember(Name = "categories")]
+        public KitsuRelationshipData Categories { get; set; }
+    }
+
+    [DataContract]
+    public class KitsuRelationshipData
+    {
+        [DataMember(Name = "data")]
+        public List<KitsuResourceIdentifier> Data { get; set; }
+    }
+
+    // A bare JSON:API resource identifier ({id, type}) - the shape
+    // every relationship's "data" array uses, live-confirmed this
+    // slice against a real anime resource's relationships.categories.
+    [DataContract]
+    public class KitsuResourceIdentifier
+    {
+        [DataMember(Name = "id")]
+        public string Id { get; set; }
+
+        [DataMember(Name = "type")]
+        public string Type { get; set; }
     }
 
     [DataContract]
@@ -616,6 +881,58 @@ namespace StremioVideoCenter.Services
 
         [DataMember(Name = "coverImage")]
         public KitsuImageSet CoverImage { get; set; }
+
+        // =========================================================
+        // SLICE 17 ADDITIONS (Kitsu locked in as Zino's permanent
+        // anime provider - Anime Browse filter/sort architecture)
+        // =========================================================
+        //
+        // Both confirmed real, readonly integer resource attributes
+        // (Kitsu's own schemas/resources/media.yml) and live-verified
+        // this slice against real responses: sort=popularityRank
+        // returned items whose own PopularityRank was exactly
+        // 1, 2, 3, 4... in ascending order (rank 1 = most popular),
+        // same check for RatingRank (rank 1 = highest rated). Used by
+        // the Anime Browse page's "Popular"/"Top Rated" sort options
+        // instead of the userCount-based sort GetPopularAnimeAsync
+        // still uses (that method is left unchanged - see its remarks).
+        [DataMember(Name = "popularityRank")]
+        public int? PopularityRank { get; set; }
+
+        [DataMember(Name = "ratingRank")]
+        public int? RatingRank { get; set; }
+
+        // Resolved (title + slug) category info for this anime -
+        // populated ONLY by KitsuService.BrowseAnimeAsync, which
+        // requests include=categories and cross-references the
+        // response's sideloaded category resources against this
+        // item's relationships (see KitsuAnimeResource.Relationships
+        // and BrowseAnimeAsync/ResolveCategories below).
+        //
+        // Deliberately NOT a [DataMember]: "categories" is a JSON:API
+        // to-many RELATIONSHIP on the anime resource (relationships.
+        // categories.data = [{id,type:"categories"}]), not a plain
+        // attribute - live-confirmed this slice via a real
+        // ?include=categories response. It cannot be populated by
+        // direct deserialization the way every other field on this
+        // class is, so DataContractJsonSerializer simply leaves it
+        // null (extra/missing fields are silently ignored, not an
+        // error) and BrowseAnimeAsync fills it in afterwards. Always
+        // null/empty for anime resources returned by any other method
+        // in this class (SearchAnimeAsync, GetPopularAnimeAsync,
+        // GetAnimeAsync) - none of them request include=categories.
+        public List<KitsuCategoryInfo> Categories { get; set; }
+    }
+
+    // One resolved category, as attached to KitsuAnimeAttributes.
+    // Categories above by BrowseAnimeAsync. Title is Kitsu's display
+    // name (e.g. "Action"); Slug is the value filter[categories]
+    // itself expects (e.g. "action") - live-confirmed this slice
+    // that filter[categories] takes the slug, not the title.
+    public class KitsuCategoryInfo
+    {
+        public string Title { get; set; }
+        public string Slug { get; set; }
     }
 
     // Multilingual title set - canonicalTitle is usually already the
@@ -711,5 +1028,85 @@ namespace StremioVideoCenter.Services
 
         [DataMember(Name = "length")]
         public int? Length { get; set; }
+    }
+
+    // =============================================================
+    // KITSU CATEGORY RESOURCE (Slice 17 addition)
+    // =============================================================
+    //
+    // Field set live-confirmed against a real GET /anime?filter
+    // [categories]=action&include=categories response's "included"
+    // array this slice - id/title/slug/description/childCount/
+    // totalMediaCount/nsfw/createdAt/updatedAt are all real fields;
+    // only the ones BrowseAnimeAsync actually needs (title, slug) are
+    // mapped here, matching this project's existing convention of not
+    // mapping every field a response happens to contain (see
+    // KitsuImageSet's own remarks on its ignored "meta.dimensions").
+
+    [DataContract]
+    public class KitsuCategoryResource
+    {
+        [DataMember(Name = "id")]
+        public string Id { get; set; }
+
+        [DataMember(Name = "type")]
+        public string Type { get; set; }
+
+        [DataMember(Name = "attributes")]
+        public KitsuCategoryAttributes Attributes { get; set; }
+    }
+
+    [DataContract]
+    public class KitsuCategoryAttributes
+    {
+        [DataMember(Name = "title")]
+        public string Title { get; set; }
+
+        [DataMember(Name = "slug")]
+        public string Slug { get; set; }
+    }
+
+    // =============================================================
+    // KITSU ANIME COLLECTION RESPONSE (Slice 17 addition - used only
+    // by BrowseAnimeAsync)
+    // =============================================================
+    //
+    // A separate response shape from KitsuCollectionResponse (used by
+    // SearchAnimeAsync/GetPopularAnimeAsync, left unchanged) because
+    // this one additionally carries the sideloaded "included" category
+    // resources (only present when the request used include=
+    // categories, which BrowseAnimeAsync always does) and the
+    // top-level "meta.count" total, neither of which the existing
+    // callers need.
+
+    [DataContract]
+    public class KitsuAnimeCollectionResponse
+    {
+        [DataMember(Name = "data")]
+        public List<KitsuAnimeResource> Data { get; set; }
+
+        [DataMember(Name = "included")]
+        public List<KitsuCategoryResource> Included { get; set; }
+
+        [DataMember(Name = "meta")]
+        public KitsuCollectionMeta Meta { get; set; }
+    }
+
+    [DataContract]
+    public class KitsuCollectionMeta
+    {
+        [DataMember(Name = "count")]
+        public int Count { get; set; }
+    }
+
+    // Return shape for BrowseAnimeAsync - TotalCount is Kitsu's real
+    // meta.count (the full matching-result count across every page,
+    // not just this page's Items.Count), so the Anime Browse page can
+    // know whether further pages exist without guessing from a full
+    // page's worth of results.
+    public class KitsuBrowseResult
+    {
+        public List<KitsuAnimeResource> Items { get; set; }
+        public int TotalCount { get; set; }
     }
 }

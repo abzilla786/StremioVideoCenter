@@ -16,22 +16,29 @@ using System.Windows.Threading;
 namespace StremioVideoCenterControls
 {
     // =============================================================
-    // ANIME BROWSE VIEW (Slice 15 - dedicated Anime page)
+    // ANIME BROWSE VIEW (Slice 15 - dedicated Anime page; Slice 17 -
+    // Kitsu locked in as Zino's permanent anime provider; Slice 17
+    // UI/navigation fixes - AnimeFLV section removed)
     // =============================================================
     //
-    // Two independent content areas, both real and both honestly
-    // labelled - never merged into one fabricated "catalogue":
+    // A single content area: BROWSE ANIME (Kitsu) - a combinable,
+    // server-side filtered discovery experience against Kitsu's own API
+    // (KitsuService.BrowseAnimeAsync) - Type/Category/Season/Year/
+    // Status/Sort, all combinable, applied on demand via the Apply
+    // Filters button. Replaces the old TMDB-backed Featured/Popular/New
+    // rows and the old single-row "Popular on Kitsu" row entirely (TMDB
+    // Removal migration, Phase 3 - Anime catalogue). Category filter
+    // options are derived from fetched results, never a hard-coded list
+    // (see RegisterDiscoveredCategories) - Kitsu has no dedicated
+    // categories-listing endpoint in its documented API.
     //
-    //   - FEATURED / POPULAR / NEW ANIME: the same TMDB-backed rows
-    //     Home already shows (CatalogueService.GetFeaturedAnimeAsync/
-    //     GetPopularAnimeAsync/GetNewAnimeAsync - unchanged logic).
-    //     Honestly empty when no TmdbService is configured.
-    //   - BROWSE ANIMEFLV: a genre-or-search browser against
-    //     AnimeFlvCatalogueService's own two real, live-verified
-    //     catalogs (see that class's remarks). AnimeFLV has no
-    //     unfiltered/ranked catalog at all - every one of its 13 real
-    //     catalogs requires either "search" or "genre" - so this is
-    //     deliberately a browser, not another "Featured"/"Popular" row.
+    // The previous "Browse AnimeFLV" genre/search section (a browser
+    // against AnimeFlvCatalogueService's own catalogs) has been removed
+    // from this page per the Slice 17 UI/navigation fix request - the
+    // Anime page is now Kitsu-only. AnimeFlvCatalogueService itself and
+    // its addon registration are untouched (this removal is scoped to
+    // this page's UI only - see that class for where it may still be
+    // used elsewhere).
     //
     // Same overlay conventions as CatalogueBrowseView/EpisodeBrowserView/
     // SourceSelectorView - Closed/MediaSelected events bridged into an
@@ -45,7 +52,10 @@ namespace StremioVideoCenterControls
         // identical remark on FilteredCardWidth.
         private const double CardWidth = 206;
 
-        private const int AnimeFlvPageSize = 25;
+        // Kitsu's own documented/enforced page[limit] maximum (see
+        // KitsuService.MaxPageLimit) - used as this page's own Kitsu
+        // Browse page size.
+        private const int KitsuBrowsePageSize = 20;
 
         public event EventHandler Closed;
         public event EventHandler<MediaItemSelectedEventArgs> MediaSelected;
@@ -55,8 +65,6 @@ namespace StremioVideoCenterControls
         // remarks.
         public event EventHandler<string> NavigationRequested;
 
-        private CatalogueService _catalogueService;
-        private AnimeFlvCatalogueService _animeFlvCatalogueService;
         private KitsuService _kitsuService;
 
         // Persistent hero navigation task: same header-row Left/Right
@@ -64,41 +72,35 @@ namespace StremioVideoCenterControls
         // _headerNavButtons.
         private Button[] _headerNavButtons;
 
-        private readonly ObservableCollection<MediaItem> _featuredItems = new ObservableCollection<MediaItem>();
-        private readonly ObservableCollection<MediaItem> _popularItems = new ObservableCollection<MediaItem>();
-        private readonly ObservableCollection<MediaItem> _newItems = new ObservableCollection<MediaItem>();
-        private readonly ObservableCollection<MediaItem> _kitsuPopularItems = new ObservableCollection<MediaItem>();
-        private readonly ObservableCollection<MediaItem> _animeFlvItems = new ObservableCollection<MediaItem>();
+        // Slice 17 - Kitsu Browse filter combos, in Left/Right cycling
+        // order (same _headerNavButtons array convention).
+        private ComboBox[] _kitsuFilterCombos;
 
-        private bool _suppressGenreEvents;
+        private readonly ObservableCollection<MediaItem> _kitsuBrowseItems = new ObservableCollection<MediaItem>();
 
-        // Search mode wins over genre mode whenever a search has been
-        // explicitly submitted - null means "genre-browse mode" (the
-        // default, since AnimeFLV requires one or the other and genre
-        // needs no typed input from the user).
-        private string _activeSearchQuery;
-        private string _activeGenre;
+        // Category chips - an ObservableCollection so newly-discovered
+        // categories can be appended (Add) without disturbing already-
+        // realized containers, which would otherwise reset any chip the
+        // user had already toggled on (see RegisterDiscoveredCategories).
+        private readonly ObservableCollection<KitsuCategoryOption> _discoveredCategories = new ObservableCollection<KitsuCategoryOption>();
+        private readonly HashSet<string> _knownCategorySlugs = new HashSet<string>();
 
-        private int _animeFlvSkip;
-        private int _animeFlvLoadToken;
-        private bool _isLoadingAnimeFlv;
+        private int _kitsuBrowseOffset;
+        private int _kitsuBrowseTotalCount;
+        private int _kitsuBrowseLoadToken;
+        private bool _isLoadingKitsuBrowse;
 
         public AnimeBrowseView()
         {
             InitializeComponent();
 
             // Catches the bubbling MediaCard.SelectedEvent from the raw
-            // MediaCards inside AnimeFlvItemsControl - see
+            // MediaCards inside KitsuBrowseItemsControl - see
             // CatalogueBrowseView's identical remark on
             // FilteredMediaCard_Selected for why this is needed (the
             // WrapPanel grid isn't wrapped in a MediaSection, so nothing
             // else already consumes the event on the way up).
-            AddHandler(MediaCard.SelectedEvent, new RoutedEventHandler(AnimeFlvMediaCard_Selected));
-
-            FeaturedAnimeSection.MediaSelected += Section_MediaSelected;
-            PopularAnimeSection.MediaSelected += Section_MediaSelected;
-            NewAnimeSection.MediaSelected += Section_MediaSelected;
-            KitsuPopularSection.MediaSelected += Section_MediaSelected;
+            AddHandler(MediaCard.SelectedEvent, new RoutedEventHandler(MediaCard_Selected));
 
             _headerNavButtons =
                 new[]
@@ -109,100 +111,378 @@ namespace StremioVideoCenterControls
                     QuickNavAnimeButton,
                     CloseButton
                 };
+
+            _kitsuFilterCombos =
+                new[]
+                {
+                    KitsuTypeCombo,
+                    KitsuSeasonCombo,
+                    KitsuYearCombo,
+                    KitsuStatusCombo,
+                    KitsuSortCombo
+                };
         }
 
         // =========================================================
         // INITIALIZE
         // =========================================================
-
-        public void Initialize(CatalogueService catalogueService, AnimeFlvCatalogueService animeFlvCatalogueService, KitsuService kitsuService)
+        //
+        // TMDB Removal migration (Phase 3 - Anime catalogue): no longer
+        // takes a CatalogueService - Kitsu (via BrowseAnimeAsync) is now
+        // the sole source for this page. Slice 17 UI/navigation fixes:
+        // no longer takes an AnimeFlvCatalogueService either - the
+        // "Browse AnimeFLV" section has been removed from this page (see
+        // class remarks).
+        public void Initialize(KitsuService kitsuService)
         {
-            if (catalogueService == null)
-            {
-                throw new ArgumentNullException(nameof(catalogueService));
-            }
-
-            if (animeFlvCatalogueService == null)
-            {
-                throw new ArgumentNullException(nameof(animeFlvCatalogueService));
-            }
-
             if (kitsuService == null)
             {
                 throw new ArgumentNullException(nameof(kitsuService));
             }
 
-            _catalogueService = catalogueService;
-            _animeFlvCatalogueService = animeFlvCatalogueService;
             _kitsuService = kitsuService;
 
-            FeaturedAnimeSection.Items = _featuredItems;
-            PopularAnimeSection.Items = _popularItems;
-            NewAnimeSection.Items = _newItems;
-            KitsuPopularSection.Items = _kitsuPopularItems;
-            AnimeFlvItemsControl.ItemsSource = _animeFlvItems;
+            KitsuBrowseItemsControl.ItemsSource = _kitsuBrowseItems;
+            KitsuCategoryItemsControl.ItemsSource = _discoveredCategories;
 
-            PopulateGenreCombo();
+            PopulateKitsuFilterCombos();
 
-            // All three areas load independently and concurrently - none
-            // waits on another, matching Home's own fail-soft,
-            // independent-row loading approach.
-            BeginLoadTmdbRows();
-            BeginLoadKitsuPopular();
-            BeginLoadAnimeFlv();
+            BeginLoadKitsuBrowse();
+
+            // UI/navigation fix: the page previously received no initial
+            // keyboard/controller focus at all when entering from Hero/
+            // quick-nav, leaving Up/Down/Left/Right dead until the user
+            // clicked something first. Same Dispatcher.BeginInvoke(...,
+            // DispatcherPriority.Input) pattern CatalogueBrowseView's own
+            // LoadDefaultViewAsync uses for its initial focus - run here
+            // rather than after the Kitsu Browse load completes, since
+            // the filter row is already fully populated and focusable as
+            // soon as Initialize returns. Every visit to this page gets a
+            // brand-new AnimeBrowseView instance (see
+            // StremioVideoCenterView.ShowAnimePageAsync), so there is no
+            // prior focus state for this instance to preserve or
+            // restore - unconditionally focusing the first filter control
+            // here matches CatalogueBrowseView's own identical precedent.
+            Dispatcher.BeginInvoke(new Action(FocusFirstAvailable), DispatcherPriority.Input);
         }
 
-        // Initialize stays synchronous (matching the un-awaited
-        // "page.Initialize(...)" call site in
-        // StremioVideoCenterView.ShowAnimePageAsync) - these async-void
-        // shims are the same fire-and-forget-from-a-sync-context pattern
-        // already used by MediaCard's own Loaded handler.
-        private async void BeginLoadTmdbRows()
+        private async void BeginLoadKitsuBrowse()
         {
-            await LoadTmdbRowsAsync();
-        }
-
-        private async void BeginLoadAnimeFlv()
-        {
-            await LoadAnimeFlvPageAsync(focusFirstResult: false);
-        }
-
-        private async void BeginLoadKitsuPopular()
-        {
-            await LoadKitsuPopularAsync();
+            await LoadKitsuBrowsePageAsync(focusFirstResult: false);
         }
 
         // =========================================================
-        // KITSU-BACKED POPULAR ROW (Slice 15 Kitsu Migration)
+        // KITSU BROWSE FILTER COMBOS (Slice 17)
         // =========================================================
         //
-        // Independent of both the TMDB rows and the AnimeFLV browse grid
-        // below - a third, separate data source, never blended with
-        // either. Fail-soft: an unreachable Kitsu just leaves this row
-        // empty (KitsuEmptyText), exactly like the TMDB rows' own
-        // TmdbEmptyText behaviour when TMDB isn't configured.
-        private async Task LoadKitsuPopularAsync()
+        // KitsuFilterOption pairs a display label with the literal
+        // Kitsu filter/sort value BrowseAnimeAsync expects (or null for
+        // "All"/"Any" - no filter sent for that dimension) - every
+        // value here is one live-verified this slice against a real
+        // kitsu.io response (see KitsuService.BrowseAnimeAsync remarks),
+        // never guessed from documentation alone.
+        private class KitsuFilterOption
         {
-            List<KitsuAnimeResource> results;
+            public string Label;
+            public string Value;
+
+            public override string ToString()
+            {
+                return Label;
+            }
+        }
+
+        // One discovered category, shown as a toggle chip. IsSelected is
+        // plain (no INotifyPropertyChanged) - the ToggleButton's own
+        // IsChecked TwoWay binding pushes user toggles into it, and this
+        // class never needs to push a value back out to the UI from code
+        // (selected slugs are read directly at Apply-time - see
+        // GetSelectedCategorySlugs).
+        private class KitsuCategoryOption
+        {
+            public string Title { get; set; }
+            public string Slug { get; set; }
+            public bool IsSelected { get; set; }
+        }
+
+        private void PopulateKitsuFilterCombos()
+        {
+            PopulateCombo(KitsuTypeCombo, new[]
+            {
+                new KitsuFilterOption { Label = "All", Value = null },
+                new KitsuFilterOption { Label = "TV", Value = "TV" },
+                new KitsuFilterOption { Label = "Movie", Value = "movie" },
+                new KitsuFilterOption { Label = "OVA", Value = "OVA" },
+                new KitsuFilterOption { Label = "ONA", Value = "ONA" },
+                new KitsuFilterOption { Label = "Special", Value = "special" }
+            });
+
+            PopulateCombo(KitsuSeasonCombo, new[]
+            {
+                new KitsuFilterOption { Label = "Any", Value = null },
+                new KitsuFilterOption { Label = "Winter", Value = "winter" },
+                new KitsuFilterOption { Label = "Spring", Value = "spring" },
+                new KitsuFilterOption { Label = "Summer", Value = "summer" },
+                new KitsuFilterOption { Label = "Fall", Value = "fall" }
+            });
+
+            var yearOptions = new List<KitsuFilterOption> { new KitsuFilterOption { Label = "Any", Value = null } };
+
+            // A generous, simple descending range - Kitsu's own catalogue
+            // goes back decades and this needs no live catalogue lookup
+            // to build (unlike categories, a year is not something that
+            // benefits from being "discovered" from results).
+            int currentYear = DateTime.Now.Year;
+
+            for (int year = currentYear + 1; year >= 1960; year--)
+            {
+                yearOptions.Add(new KitsuFilterOption { Label = year.ToString(), Value = year.ToString() });
+            }
+
+            PopulateCombo(KitsuYearCombo, yearOptions);
+
+            PopulateCombo(KitsuStatusCombo, new[]
+            {
+                new KitsuFilterOption { Label = "Any", Value = null },
+                new KitsuFilterOption { Label = "Currently Airing", Value = "current" },
+                new KitsuFilterOption { Label = "Finished", Value = "finished" },
+                new KitsuFilterOption { Label = "Upcoming", Value = "upcoming" },
+                new KitsuFilterOption { Label = "TBA", Value = "tba" },
+                new KitsuFilterOption { Label = "Unreleased", Value = "unreleased" }
+            });
+
+            PopulateCombo(KitsuSortCombo, new[]
+            {
+                new KitsuFilterOption { Label = "Popular", Value = "popularityRank" },
+                new KitsuFilterOption { Label = "Top Rated", Value = "ratingRank" },
+                new KitsuFilterOption { Label = "Newest", Value = "-startDate" }
+            });
+        }
+
+        private static void PopulateCombo(ComboBox combo, IEnumerable<KitsuFilterOption> options)
+        {
+            combo.Items.Clear();
+
+            foreach (KitsuFilterOption option in options)
+            {
+                combo.Items.Add(option);
+            }
+
+            combo.SelectedIndex = 0;
+        }
+
+        // =========================================================
+        // KITSU BROWSE (Slice 17 - replaces the old TMDB rows and the
+        // old single-row "Popular on Kitsu" row)
+        // =========================================================
+
+        private async void KitsuApplyFiltersButton_Click(object sender, RoutedEventArgs e)
+        {
+            await RestartKitsuBrowseAsync();
+        }
+
+        private async Task RestartKitsuBrowseAsync()
+        {
+            _kitsuBrowseOffset = 0;
+            _kitsuBrowseTotalCount = 0;
+            _kitsuBrowseItems.Clear();
+            KitsuBrowseEmptyText.Visibility = Visibility.Collapsed;
+            KitsuBrowseLoadMoreButton.Visibility = Visibility.Collapsed;
+
+            await LoadKitsuBrowsePageAsync(focusFirstResult: true);
+        }
+
+        private async Task LoadKitsuBrowsePageAsync(bool focusFirstResult)
+        {
+            _isLoadingKitsuBrowse = true;
+            KitsuBrowseLoadMoreButton.IsEnabled = false;
+
+            int requestOffset = _kitsuBrowseOffset;
+            int loadToken = ++_kitsuBrowseLoadToken;
+
+            if (requestOffset == 0)
+            {
+                KitsuBrowseLoadingText.Visibility = Visibility.Visible;
+            }
+
+            List<string> categorySlugs = GetSelectedCategorySlugs();
+            string subtype = (KitsuTypeCombo.SelectedItem as KitsuFilterOption)?.Value;
+            string season = (KitsuSeasonCombo.SelectedItem as KitsuFilterOption)?.Value;
+            string yearValue = (KitsuYearCombo.SelectedItem as KitsuFilterOption)?.Value;
+            int? seasonYear = !string.IsNullOrWhiteSpace(yearValue) ? int.Parse(yearValue) : (int?)null;
+            string status = (KitsuStatusCombo.SelectedItem as KitsuFilterOption)?.Value;
+            string sort = (KitsuSortCombo.SelectedItem as KitsuFilterOption)?.Value;
+
+            KitsuBrowseResult result;
 
             try
             {
-                results = await _kitsuService.GetPopularAnimeAsync();
+                result = await _kitsuService.BrowseAnimeAsync(
+                    categorySlugs,
+                    season,
+                    seasonYear,
+                    status,
+                    subtype,
+                    sort,
+                    requestOffset,
+                    KitsuBrowsePageSize);
             }
             catch
             {
-                results = new List<KitsuAnimeResource>();
+                result = new KitsuBrowseResult { Items = new List<KitsuAnimeResource>(), TotalCount = 0 };
             }
 
-            List<MediaItem> mapped = (results ?? new List<KitsuAnimeResource>())
+            if (loadToken != _kitsuBrowseLoadToken)
+            {
+                // A newer Apply superseded this request while it was
+                // still in flight - discard rather than mix stale
+                // results in with the new filter selection's.
+                return;
+            }
+
+            KitsuBrowseLoadingText.Visibility = Visibility.Collapsed;
+
+            List<KitsuAnimeResource> page = result?.Items ?? new List<KitsuAnimeResource>();
+
+            RegisterDiscoveredCategories(page);
+
+            List<MediaItem> mapped = page
                 .Select(MapKitsuToMediaItem)
                 .Where(item => item != null)
                 .ToList();
 
-            ReplaceCollection(_kitsuPopularItems, mapped);
+            foreach (MediaItem item in mapped)
+            {
+                _kitsuBrowseItems.Add(item);
+            }
 
-            KitsuPopularSection.Visibility = mapped.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            KitsuEmptyText.Visibility = mapped.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+            _kitsuBrowseOffset = requestOffset + page.Count;
+            _kitsuBrowseTotalCount = result?.TotalCount ?? _kitsuBrowseItems.Count;
+
+            bool hasAny = _kitsuBrowseItems.Count > 0;
+            KitsuBrowseEmptyText.Visibility = hasAny ? Visibility.Collapsed : Visibility.Visible;
+
+            // Real pagination against Kitsu's own meta.count total (see
+            // KitsuBrowseResult) - unlike AnimeFLV's own short-page
+            // heuristic (that addon exposes no total-count field), Kitsu
+            // does, so this only offers another page when one actually
+            // exists.
+            KitsuBrowseLoadMoreButton.Visibility =
+                (hasAny && _kitsuBrowseOffset < _kitsuBrowseTotalCount) ? Visibility.Visible : Visibility.Collapsed;
+            KitsuBrowseLoadMoreButton.IsEnabled = true;
+
+            _isLoadingKitsuBrowse = false;
+
+            if (focusFirstResult && hasAny)
+            {
+                Dispatcher.BeginInvoke(new Action(() => FocusKitsuCard(0)), DispatcherPriority.Input);
+            }
+        }
+
+        private async void KitsuBrowseLoadMoreButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_isLoadingKitsuBrowse)
+            {
+                return;
+            }
+
+            // Load More focus fix: LoadKitsuBrowsePageAsync disables this
+            // button for the duration of the request, which drops
+            // keyboard focus the instant the control the user just
+            // activated becomes disabled - WPF never restores it
+            // afterward on its own, so every controller/keyboard Load
+            // More press would otherwise silently lose focus. Capture the
+            // intent up front and restore it once loading finishes.
+            bool hadFocus = KitsuBrowseLoadMoreButton.IsKeyboardFocused;
+
+            await LoadKitsuBrowsePageAsync(focusFirstResult: false);
+
+            if (!hadFocus)
+            {
+                return;
+            }
+
+            if (KitsuBrowseLoadMoreButton.Visibility == Visibility.Visible && KitsuBrowseLoadMoreButton.IsEnabled)
+            {
+                // More pages remain - the button is still here, so focus
+                // returns to it exactly where the user left it.
+                KitsuBrowseLoadMoreButton.Focus();
+            }
+            else if (_kitsuBrowseItems.Count > 0)
+            {
+                // That was the last page - Load More just disappeared
+                // out from under the user's focus, so land on the last
+                // card instead of leaving focus lost, matching the same
+                // fallback MoveVertical's own Up-from-Load-More edge uses.
+                FocusKitsuCard(_kitsuBrowseItems.Count - 1);
+            }
+        }
+
+        // Reads which category chips are currently toggled on - the
+        // slugs BrowseAnimeAsync combines with AND semantics (see that
+        // method's own remarks on the live-verified comma-delimited
+        // filter[categories] behaviour).
+        private List<string> GetSelectedCategorySlugs()
+        {
+            return _discoveredCategories
+                .Where(option => option.IsSelected)
+                .Select(option => option.Slug)
+                .ToList();
+        }
+
+        // Appends any category not already known to _discoveredCategories
+        // (Add only - never Clear/replace, so an already-toggled chip's
+        // IsSelected state survives a later page/Apply that discovers
+        // further categories - see this collection's own field remarks).
+        // This is how the Anime Browse page's category filter options are
+        // derived from real results rather than a hard-coded list, per
+        // this slice's explicit instruction.
+        private void RegisterDiscoveredCategories(List<KitsuAnimeResource> items)
+        {
+            if (items == null)
+            {
+                return;
+            }
+
+            var newOptions = new List<KitsuCategoryOption>();
+
+            foreach (KitsuAnimeResource item in items)
+            {
+                List<KitsuCategoryInfo> categories = item?.Attributes?.Categories;
+
+                if (categories == null)
+                {
+                    continue;
+                }
+
+                foreach (KitsuCategoryInfo category in categories)
+                {
+                    if (string.IsNullOrWhiteSpace(category?.Slug) ||
+                        string.IsNullOrWhiteSpace(category.Title) ||
+                        !_knownCategorySlugs.Add(category.Slug))
+                    {
+                        continue;
+                    }
+
+                    newOptions.Add(new KitsuCategoryOption
+                    {
+                        Title = category.Title,
+                        Slug = category.Slug
+                    });
+                }
+            }
+
+            if (newOptions.Count == 0)
+            {
+                return;
+            }
+
+            foreach (KitsuCategoryOption option in newOptions.OrderBy(o => o.Title, StringComparer.OrdinalIgnoreCase))
+            {
+                _discoveredCategories.Add(option);
+            }
+
+            KitsuCategoryHintText.Visibility = Visibility.Collapsed;
         }
 
         // Maps a KitsuAnimeResource into the same MediaItem shape every
@@ -238,7 +518,7 @@ namespace StremioVideoCenterControls
                 ReleaseDate = item.Attributes.StartDate,
                 Rating = item.Attributes.AverageRating,
                 Type = "Anime",
-                Genres = new List<string>(),
+                Genres = item.Attributes.Categories?.Select(c => c.Title).ToList() ?? new List<string>(),
                 PosterPath = poster ?? string.Empty,
                 BackdropUrl = item.Attributes.CoverImage?.Large ?? string.Empty
             };
@@ -251,275 +531,7 @@ namespace StremioVideoCenterControls
             return mediaItem;
         }
 
-        // =========================================================
-        // TMDB-BACKED FEATURED / POPULAR / NEW ANIME
-        // =========================================================
-
-        private async Task LoadTmdbRowsAsync()
-        {
-            Task<List<MediaItem>> featuredTask = SafeFetchAsync(() => _catalogueService.GetFeaturedAnimeAsync());
-            Task<List<MediaItem>> popularTask = SafeFetchAsync(() => _catalogueService.GetPopularAnimeAsync());
-            Task<List<MediaItem>> newTask = SafeFetchAsync(() => _catalogueService.GetNewAnimeAsync());
-
-            await Task.WhenAll(featuredTask, popularTask, newTask);
-
-            List<MediaItem> featured = featuredTask.Result;
-            List<MediaItem> popular = popularTask.Result;
-            List<MediaItem> newest = newTask.Result;
-
-            ReplaceCollection(_featuredItems, featured);
-            ReplaceCollection(_popularItems, popular);
-            ReplaceCollection(_newItems, newest);
-
-            FeaturedAnimeSection.Visibility = featured.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            PopularAnimeSection.Visibility = popular.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            NewAnimeSection.Visibility = newest.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-
-            bool anyContent = featured.Count > 0 || popular.Count > 0 || newest.Count > 0;
-            TmdbEmptyText.Visibility = anyContent ? Visibility.Collapsed : Visibility.Visible;
-        }
-
-        private static async Task<List<MediaItem>> SafeFetchAsync(Func<Task<List<MediaItem>>> fetch)
-        {
-            try
-            {
-                List<MediaItem> result = await fetch();
-                return result ?? new List<MediaItem>();
-            }
-            catch
-            {
-                return new List<MediaItem>();
-            }
-        }
-
-        private static void ReplaceCollection(ObservableCollection<MediaItem> target, List<MediaItem> source)
-        {
-            target.Clear();
-
-            if (source == null)
-            {
-                return;
-            }
-
-            foreach (MediaItem item in source)
-            {
-                target.Add(item);
-            }
-        }
-
-        private void Section_MediaSelected(object sender, MediaItemSelectedEventArgs e)
-        {
-            RaiseMediaSelected(e.Item);
-        }
-
-        // =========================================================
-        // ANIMEFLV GENRE COMBO
-        // =========================================================
-
-        private void PopulateGenreCombo()
-        {
-            _suppressGenreEvents = true;
-
-            GenreCombo.Items.Clear();
-
-            foreach (string genre in AnimeFlvCatalogueService.GenreOptions)
-            {
-                GenreCombo.Items.Add(genre);
-            }
-
-            // AnimeFLV's "genre" extra is REQUIRED on this catalog (see
-            // AnimeFlvCatalogueService remarks) - there is no "Any"/
-            // unfiltered option to default to, so the first verified
-            // genre is selected and loaded automatically instead of
-            // leaving the browser empty until the user picks one.
-            GenreCombo.SelectedIndex = 0;
-
-            _activeGenre = GenreCombo.SelectedItem as string;
-
-            _suppressGenreEvents = false;
-        }
-
-        private async void GenreCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (_suppressGenreEvents)
-            {
-                return;
-            }
-
-            string genre = GenreCombo.SelectedItem as string;
-
-            if (string.IsNullOrEmpty(genre))
-            {
-                return;
-            }
-
-            // Picking a genre switches back to genre-browse mode even if
-            // a search was active - the search box is cleared so the UI
-            // never implies both are active at once (AnimeFLV can only
-            // ever answer one or the other per request).
-            _activeGenre = genre;
-            _activeSearchQuery = null;
-            SearchBox.Text = string.Empty;
-
-            await RestartAnimeFlvAsync();
-        }
-
-        // =========================================================
-        // ANIMEFLV SEARCH
-        // =========================================================
-
-        private async void SearchButton_Click(object sender, RoutedEventArgs e)
-        {
-            await SubmitSearchAsync();
-        }
-
-        private async void SearchBox_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.Key == Key.Enter)
-            {
-                e.Handled = true;
-                await SubmitSearchAsync();
-            }
-        }
-
-        private async Task SubmitSearchAsync()
-        {
-            string query = SearchBox.Text?.Trim();
-
-            if (string.IsNullOrEmpty(query))
-            {
-                return;
-            }
-
-            _activeSearchQuery = query;
-
-            await RestartAnimeFlvAsync();
-        }
-
-        // =========================================================
-        // ANIMEFLV FETCH / PAGINATION
-        // =========================================================
-
-        private async Task RestartAnimeFlvAsync()
-        {
-            _animeFlvSkip = 0;
-            _animeFlvItems.Clear();
-            AnimeFlvEmptyText.Visibility = Visibility.Collapsed;
-            AnimeFlvLoadMoreButton.Visibility = Visibility.Collapsed;
-
-            await LoadAnimeFlvPageAsync(focusFirstResult: true);
-        }
-
-        private async Task LoadAnimeFlvPageAsync(bool focusFirstResult)
-        {
-            _isLoadingAnimeFlv = true;
-            AnimeFlvLoadMoreButton.IsEnabled = false;
-
-            int requestSkip = _animeFlvSkip;
-            int loadToken = ++_animeFlvLoadToken;
-
-            if (requestSkip == 0)
-            {
-                AnimeFlvLoadingText.Visibility = Visibility.Visible;
-            }
-
-            List<AnimeFlvCatalogItem> page;
-
-            try
-            {
-                page = !string.IsNullOrEmpty(_activeSearchQuery)
-                    ? await _animeFlvCatalogueService.GetSearchCatalogAsync(_activeSearchQuery, requestSkip)
-                    : await _animeFlvCatalogueService.GetGenreCatalogAsync(_activeGenre, requestSkip);
-            }
-            catch
-            {
-                page = new List<AnimeFlvCatalogItem>();
-            }
-
-            if (loadToken != _animeFlvLoadToken)
-            {
-                // A newer genre/search selection superseded this request
-                // while it was still in flight - discard rather than mix
-                // stale results in with the new selection's.
-                return;
-            }
-
-            AnimeFlvLoadingText.Visibility = Visibility.Collapsed;
-
-            List<MediaItem> mapped = page
-                .Select(MapToMediaItem)
-                .Where(item => item != null)
-                .ToList();
-
-            foreach (MediaItem item in mapped)
-            {
-                _animeFlvItems.Add(item);
-            }
-
-            _animeFlvSkip = requestSkip + page.Count;
-
-            bool hasAny = _animeFlvItems.Count > 0;
-            AnimeFlvEmptyText.Visibility = hasAny ? Visibility.Collapsed : Visibility.Visible;
-
-            // A short page is treated as "no more results" - the addon's
-            // own catalog protocol exposes no total-count field to track
-            // against instead (same reasoning as CatalogueBrowseView's
-            // identical Cinemeta pagination).
-            AnimeFlvLoadMoreButton.Visibility =
-                (hasAny && page.Count >= AnimeFlvPageSize) ? Visibility.Visible : Visibility.Collapsed;
-            AnimeFlvLoadMoreButton.IsEnabled = true;
-
-            _isLoadingAnimeFlv = false;
-
-            if (focusFirstResult && hasAny)
-            {
-                Dispatcher.BeginInvoke(new Action(() => FocusAnimeFlvCard(0)), DispatcherPriority.Input);
-            }
-        }
-
-        private async void AnimeFlvLoadMoreButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (_isLoadingAnimeFlv)
-            {
-                return;
-            }
-
-            await LoadAnimeFlvPageAsync(focusFirstResult: false);
-        }
-
-        // Maps AnimeFlvCatalogItem (the addon's own Stremio "meta preview
-        // object" shape - see AnimeFlvCatalogueService remarks) into the
-        // same MediaItem shape every other catalogue source in this
-        // project already produces. StremioId is the item's own native
-        // id used verbatim (may be a non-"tt" id, e.g. "animeflv:...") -
-        // PlaySelectedMediaAsync already sends a show-level MediaItem's
-        // StremioId as ContentRequest.ExplicitStremioId unconditionally,
-        // so this requires no further playback-pipeline changes (see
-        // AnimeFlvCatalogueService's own class remarks).
-        private static MediaItem MapToMediaItem(AnimeFlvCatalogItem item)
-        {
-            if (item == null ||
-                string.IsNullOrWhiteSpace(item.Id) ||
-                string.IsNullOrWhiteSpace(item.Name))
-            {
-                return null;
-            }
-
-            return new MediaItem
-            {
-                StremioId = item.Id,
-                Title = item.Name,
-                Overview = item.Description,
-                Year = item.ReleaseInfo,
-                Rating = item.ImdbRating,
-                Type = "Anime",
-                Genres = item.Genres ?? new List<string>(),
-                PosterPath = item.Poster,
-                BackdropUrl = string.Empty
-            };
-        }
-
-        private void AnimeFlvMediaCard_Selected(object sender, RoutedEventArgs e)
+        private void MediaCard_Selected(object sender, RoutedEventArgs e)
         {
             MediaCard card = e.OriginalSource as MediaCard;
 
@@ -609,23 +621,64 @@ namespace StremioVideoCenterControls
 
         private void AnimeBrowseView_PreviewKeyDown(object sender, KeyEventArgs e)
         {
-            // The search box needs its own text-entry keys (including
-            // Left/Right/Space) to reach the TextBox normally - only
-            // Escape is intercepted globally regardless of focus.
+            // Filter controls fix: Escape while a filter's dropdown is
+            // open dismisses the dropdown instead of closing the whole
+            // page out from under it - same reasoning, and the same
+            // precedent (CatalogueBrowseView_PreviewKeyDown's identical
+            // Escape case), as Movie/TV's filter bar. This page has no
+            // text-entry control (removed along with AnimeFLV), so Escape
+            // is otherwise still intercepted unconditionally.
             if (e.Key == Key.Escape)
             {
-                RaiseClosed();
-                e.Handled = true;
-                return;
-            }
+                if (IsAnyKitsuFilterDropDownOpen())
+                {
+                    CloseAnyKitsuFilterDropDown();
+                }
+                else
+                {
+                    RaiseClosed();
+                }
 
-            if (SearchBox.IsKeyboardFocusWithin)
-            {
+                e.Handled = true;
                 return;
             }
 
             switch (e.Key)
             {
+                case Key.Enter:
+                case Key.Space:
+                    // Filter controls fix: activates the focused filter
+                    // combo (opens its dropdown, or confirms/closes it if
+                    // already open) - mirrors ControllerInput.A's
+                    // ActivateFocusedElement below and CatalogueBrowseView's
+                    // identical Key.Enter/Key.Space case. Left unhandled
+                    // when the filter row doesn't have focus, so this
+                    // never touches a MediaCard's or Button's own existing
+                    // Enter/Space activation (native WPF ButtonBase
+                    // behaviour already handles those once focused).
+                    //
+                    // Category activation fix: tried next when the filter
+                    // row doesn't have focus, so a focused category chip
+                    // toggles on Enter too - previously Space alone
+                    // happened to already toggle a chip (left unhandled
+                    // here, it fell through to the ToggleButton's own
+                    // native Space handling), but Enter did nothing at
+                    // all, since WPF never binds Enter to a ToggleButton's
+                    // Click the way it does for Space. Routing both keys
+                    // through the same explicit toggle here makes them
+                    // behave identically and explicitly, rather than
+                    // leaving Space to work only by accident.
+                    if (ActivateKitsuFilterCombo())
+                    {
+                        e.Handled = true;
+                    }
+                    else if (ActivateKitsuCategoryChip())
+                    {
+                        e.Handled = true;
+                    }
+
+                    break;
+
                 case Key.Up:
                     MoveVertical(-1);
                     e.Handled = true;
@@ -657,6 +710,15 @@ namespace StremioVideoCenterControls
             switch (button)
             {
                 case ControllerInput.B:
+                    // Filter controls fix: same dropdown-first precedence
+                    // as the keyboard Escape case above, and the same
+                    // precedent as CatalogueBrowseView's own B handling.
+                    if (IsAnyKitsuFilterDropDownOpen())
+                    {
+                        CloseAnyKitsuFilterDropDown();
+                        return true;
+                    }
+
                     RaiseClosed();
                     return true;
 
@@ -690,6 +752,29 @@ namespace StremioVideoCenterControls
         // Enter/Space path) needs this.
         private bool ActivateFocusedElement()
         {
+            // Filter controls fix: checked first, since the Kitsu filter
+            // combos are neither a ButtonBase nor a MediaCard - without
+            // this, controller A on a focused filter combo would silently
+            // fall through both checks below and do nothing, exactly
+            // mirroring why CatalogueBrowseView's own ActivateFocusedElement
+            // checks its ActivateFilterCombo() first.
+            if (ActivateKitsuFilterCombo())
+            {
+                return true;
+            }
+
+            // Category activation fix: checked next, and specifically
+            // ahead of the generic ButtonBase fallback right below - a
+            // category chip IS a ButtonBase (ToggleButton derives from
+            // it), so without this check that fallback would silently
+            // swallow controller A on a focused chip (returning true,
+            // "handled") without ever actually toggling it. See
+            // ActivateKitsuCategoryChip's own remark for why.
+            if (ActivateKitsuCategoryChip())
+            {
+                return true;
+            }
+
             if (Keyboard.FocusedElement is ButtonBase focusedButton)
             {
                 focusedButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -697,6 +782,45 @@ namespace StremioVideoCenterControls
             }
 
             return ActivateFocusedCard();
+        }
+
+        // Category activation fix: A/Enter on a focused category chip
+        // toggles it the same way a mouse click already does - flips the
+        // ToggleButton's own IsChecked, which the chip's
+        // IsChecked="{Binding IsSelected, Mode=TwoWay}" binding pushes
+        // straight into the bound KitsuCategoryOption, exactly as a click
+        // does. This can't reuse the generic ButtonBase fallback above
+        // (RaiseEvent(ButtonBase.ClickEvent)): ToggleButton's own
+        // OnClick() override is what flips IsChecked, and it runs BEFORE
+        // that override raises Click - externally raising the Click
+        // routed event only replays the "something was clicked"
+        // notification, it never invokes the override that does the
+        // actual toggling, so that fallback alone reported "handled"
+        // without ever checking/unchecking the chip (the live bug this
+        // fixes). Toggling here never touches Apply Filters - selected
+        // categories are only read at Apply-time (GetSelectedCategorySlugs),
+        // not applied on change - and leaves focus exactly where it was,
+        // same as a mouse click does, so Left/Right/Up/Down and repeated
+        // toggling keep working unchanged.
+        private bool ActivateKitsuCategoryChip()
+        {
+            int index = GetFocusedKitsuCategoryIndex();
+
+            if (index < 0)
+            {
+                return false;
+            }
+
+            ToggleButton toggle = GetKitsuCategoryContainer(index);
+
+            if (toggle == null)
+            {
+                return false;
+            }
+
+            toggle.IsChecked = !(toggle.IsChecked ?? false);
+
+            return true;
         }
 
         private bool ActivateFocusedCard()
@@ -745,50 +869,198 @@ namespace StremioVideoCenterControls
         }
 
         // =========================================================
-        // FOCUS MOVEMENT
+        // FOCUS MOVEMENT (Slice 17 rewrite, revised by the Slice 17
+        // UI/navigation fixes)
         // =========================================================
         //
-        // Same shape as CatalogueBrowseView's identical section: three
-        // stacked MediaSections use their own FocusFirstCard/
-        // MoveHorizontal, the AnimeFLV WrapPanel grid uses an estimated
-        // columns-per-row (see CardWidth's remarks). Both areas are
-        // always visible at once here (unlike CatalogueBrowseView's
-        // mutually-exclusive default/filtered views), so vertical
-        // movement simply tries the TMDB sections first, then falls
-        // through to the AnimeFLV grid.
+        // Top-to-bottom zone chain, each wired bidirectionally to its
+        // neighbour, same Up/Down/Left/Right philosophy as every other
+        // overlay in this project (CatalogueBrowseView/SearchView):
+        //
+        //   Header row -> Kitsu filter combos -> Kitsu category chips ->
+        //   Apply Filters button -> Kitsu results grid -> Load More
+        //
+        // (The AnimeFLV grid that used to sit after the Kitsu grid is
+        // gone along with the rest of that section - see class remarks.)
+        //
+        // Filter controls fix: Load More is now wired into this custom
+        // Up/Down chain (Down out of the grid's last row when Load More
+        // is visible; Up from Load More back to the grid's last card -
+        // see IsFocusedKitsuCardInLastRow/the KitsuBrowseLoadMoreButton.
+        // IsKeyboardFocused branch below). It previously relied on WPF's
+        // default Tab traversal only, which this page's hand-rolled
+        // directional navigation never naturally reaches - the fix for
+        // "Load More cannot receive focus" via controller/keyboard.
+        //
+        // Category chips are the one zone that isn't a simple linear
+        // step: they wrap across multiple visual rows (WrapPanel), so
+        // Up/Down within them has to move a row at a time rather than
+        // always exiting the zone - see MoveKitsuCategoryChipsVertical/
+        // BuildKitsuCategoryRows below (the fix for the "trapped in
+        // categories" issue - Up/Down previously always left the chip
+        // area entirely regardless of which row was focused).
 
-        // Despite the name (kept for minimal diff against the rest of
-        // this file's existing remarks/method chain), this now also
-        // includes KitsuPopularSection (Slice 15 Kitsu Migration) - the
-        // stacked-MediaSection chain above the AnimeFLV browse grid,
-        // regardless of which provider backs each row.
-        private MediaSection[] GetVisibleTmdbSections()
+        // Filter controls fix: returns the actual focused combo (not just
+        // whether one has focus) so ActivateKitsuFilterCombo/
+        // MoveKitsuFilterDropDownSelection below can operate on it -
+        // mirrors CatalogueBrowseView's own GetFocusedFilterCombo, plus one
+        // addition CatalogueBrowseView's copy doesn't need yet: opening a
+        // ComboBox's dropdown makes WPF move real keyboard focus from the
+        // ComboBox itself onto its currently-selected ComboBoxItem inside
+        // the popup (confirmed live - IsKeyboardFocused on the ComboBox
+        // goes false, IsKeyboardFocusWithin stays true), so a plain
+        // IsKeyboardFocused check alone goes blind the instant the
+        // dropdown opens. ActivateKitsuFilterCombo below re-asserts focus
+        // on the ComboBox itself right after toggling it open, but that
+        // re-focus is deferred a frame (see its remark), so this also
+        // accepts IsKeyboardFocusWithin while the dropdown is open as a
+        // fallback for the brief window before that runs.
+        private ComboBox GetFocusedKitsuFilterCombo()
         {
-            return new[] { FeaturedAnimeSection, PopularAnimeSection, NewAnimeSection, KitsuPopularSection }
-                .Where(section => section.Visibility == Visibility.Visible)
-                .ToArray();
+            return Array.Find(_kitsuFilterCombos, combo =>
+                combo != null &&
+                (combo.IsKeyboardFocused || (combo.IsDropDownOpen && combo.IsKeyboardFocusWithin)));
         }
 
-        private MediaSection GetFocusedTmdbSection()
+        private bool IsFocusInKitsuFilterRow()
         {
-            foreach (MediaSection section in GetVisibleTmdbSections())
+            return GetFocusedKitsuFilterCombo() != null;
+        }
+
+        private bool IsFocusInKitsuCategoryChips()
+        {
+            return GetFocusedKitsuCategoryIndex() >= 0;
+        }
+
+        private bool IsFocusInKitsuGrid()
+        {
+            return GetFocusedKitsuCardIndex() >= 0;
+        }
+
+        // =========================================================
+        // KITSU FILTER COMBO DROPDOWN OPERATION (filter controls fix)
+        // =========================================================
+        //
+        // This view's PreviewKeyDown/HandleControllerInput already claim
+        // every Up/Down/Left/Right/Enter/A themselves before a focused
+        // child control would ever see them, so a focused combo would
+        // never naturally receive an arrow key or Enter/A on its own -
+        // same reasoning, and the same solution, as CatalogueBrowseView's
+        // own identically-named region: give the filter row its own
+        // small, self-contained operation model that drives the ordinary
+        // WPF ComboBox (IsDropDownOpen/SelectedIndex) explicitly rather
+        // than through WPF's normal input plumbing. Reused verbatim here
+        // rather than shared, matching this project's existing per-
+        // overlay convention (see FilterComboStyle's own remark in the
+        // XAML on why the style itself is duplicated too).
+
+        private bool IsAnyKitsuFilterDropDownOpen()
+        {
+            return Array.Exists(_kitsuFilterCombos, combo => combo != null && combo.IsDropDownOpen);
+        }
+
+        private void CloseAnyKitsuFilterDropDown()
+        {
+            foreach (ComboBox combo in _kitsuFilterCombos)
             {
-                if (section.IsKeyboardFocusWithin)
+                if (combo != null)
                 {
-                    return section;
+                    combo.IsDropDownOpen = false;
                 }
             }
-
-            return null;
         }
 
-        private bool IsFocusInAnimeFlvGrid()
+        // A/Enter on the filter row: opens the focused combo's dropdown
+        // if closed, or confirms (closes) it if already open. Returns
+        // false (does nothing) when the filter row doesn't have focus, so
+        // callers can fall through to their own activation logic for
+        // whatever else is focused - mirrors CatalogueBrowseView's own
+        // ActivateFilterCombo. Selection is never applied automatically
+        // (AnimeBrowseView has no SelectionChanged handler on any of
+        // these combos - unlike Movie/TV, this page's filters only take
+        // effect when Apply Filters is pressed), so opening or moving a
+        // dropdown's selection can never accidentally trigger Apply
+        // Filters.
+        //
+        // Live-verified fix (not yet needed by CatalogueBrowseView's own
+        // copy, so not shared): opening the dropdown makes WPF hand real
+        // keyboard focus to the newly-visible ComboBoxItem instead of
+        // leaving it on the ComboBox - confirmed by instrumenting this
+        // method and watching IsKeyboardFocused flip to false the instant
+        // IsDropDownOpen becomes true. Left alone, every subsequent
+        // GetFocusedKitsuFilterCombo() call (Up/Down inside the dropdown,
+        // and a second Enter to confirm/close it) would find no focused
+        // combo and silently no-op, leaving WPF's own native ComboBoxItem
+        // key handling to run instead - which tracks its own "highlighted"
+        // preview item independently of SelectedIndex, so arrowing through
+        // the list looked like it worked but never changed what Apply
+        // Filters would actually send. Re-asserting focus on the combo
+        // itself, deferred past the layout pass that does the hand-off
+        // (same DispatcherPriority.Input convention this file already
+        // uses for post-layout focus elsewhere), keeps every later call in
+        // this region seeing the right combo as focused in both
+        // directions - right after opening, and again after closing,
+        // since closing the popup leaves focus sitting on the now-hidden
+        // item otherwise.
+        private bool ActivateKitsuFilterCombo()
         {
-            return GetFocusedAnimeFlvCardIndex() >= 0;
+            ComboBox combo = GetFocusedKitsuFilterCombo();
+
+            if (combo == null)
+            {
+                return false;
+            }
+
+            combo.IsDropDownOpen = !combo.IsDropDownOpen;
+
+            Dispatcher.BeginInvoke(new Action(() => combo.Focus()), DispatcherPriority.Input);
+
+            return true;
+        }
+
+        // Moves the focused filter's selection directly by one item
+        // rather than letting WPF's own arrow-key-in-open-dropdown
+        // handling run (which this view's own tunneling PreviewKeyDown/
+        // HandleControllerInput would still intercept first) - mirrors
+        // CatalogueBrowseView's own MoveFilterDropDownSelection.
+        private void MoveKitsuFilterDropDownSelection(int direction)
+        {
+            ComboBox combo = GetFocusedKitsuFilterCombo();
+
+            if (combo == null || combo.Items.Count == 0)
+            {
+                return;
+            }
+
+            int target = combo.SelectedIndex + direction;
+            target = Math.Max(0, Math.Min(target, combo.Items.Count - 1));
+
+            combo.SelectedIndex = target;
+
+            FrameworkElement container =
+                combo.ItemContainerGenerator.ContainerFromIndex(target) as FrameworkElement;
+
+            container?.BringIntoView();
         }
 
         private void MoveVertical(int direction)
         {
+            // Filter controls fix: while a filter's dropdown is open,
+            // Up/Down move its own selection instead of navigating this
+            // page - checked first, ahead of every other case below.
+            // Checked via IsAnyKitsuFilterDropDownOpen() rather than which
+            // control currently has focus, since opening the dropdown
+            // itself moves real keyboard focus off the ComboBox (see
+            // GetFocusedKitsuFilterCombo/ActivateKitsuFilterCombo's own
+            // remarks) - IsDropDownOpen is the state that actually stays
+            // reliable for the duration the popup is up. Mirrors
+            // CatalogueBrowseView's own MoveVertical.
+            if (IsAnyKitsuFilterDropDownOpen())
+            {
+                MoveKitsuFilterDropDownSelection(direction);
+                return;
+            }
+
             // Dedicated-page Back navigation task, extended by the
             // persistent hero navigation task: same top-layer <-> content
             // chaining as CatalogueBrowseView/SearchView - see those
@@ -805,81 +1077,117 @@ namespace StremioVideoCenterControls
                 return;
             }
 
-            if (IsFocusInAnimeFlvGrid())
+            if (IsFocusInKitsuFilterRow())
             {
-                if (direction < 0 && GetFocusedAnimeFlvCardIndex() < GetAnimeFlvColumnsPerRow())
+                if (direction < 0)
                 {
-                    // Moving up out of the grid's first row - land back on
-                    // the last visible TMDB section, if there is one, or
-                    // on the Back button if there isn't.
-                    MediaSection[] sections = GetVisibleTmdbSections();
-
-                    if (sections.Length > 0)
-                    {
-                        sections[sections.Length - 1].FocusFirstCard();
-                        return;
-                    }
-
                     CloseButton.Focus();
                     return;
                 }
 
-                MoveAnimeFlvGrid(0, direction);
+                if (_discoveredCategories.Count > 0)
+                {
+                    FocusKitsuCategoryToggle(0);
+                }
+                else
+                {
+                    KitsuApplyFiltersButton.Focus();
+                }
+
                 return;
             }
 
-            MediaSection[] visibleSections = GetVisibleTmdbSections();
-            MediaSection current = GetFocusedTmdbSection();
-            int index = Array.IndexOf(visibleSections, current);
-
-            if (index < 0)
+            if (IsFocusInKitsuCategoryChips())
             {
-                FocusFirstAvailable();
+                MoveKitsuCategoryChipsVertical(direction);
                 return;
             }
 
-            int target = index + direction;
-
-            if (target < 0)
+            if (KitsuApplyFiltersButton.IsKeyboardFocused)
             {
-                // Dedicated-page Back navigation task: moving up out of
-                // the topmost TMDB section reaches the Back button
-                // instead of clamping in place.
-                CloseButton.Focus();
+                if (direction < 0)
+                {
+                    if (_discoveredCategories.Count > 0)
+                    {
+                        FocusKitsuCategoryToggle(_discoveredCategories.Count - 1);
+                    }
+                    else
+                    {
+                        KitsuTypeCombo.Focus();
+                    }
+                }
+                else if (_kitsuBrowseItems.Count > 0)
+                {
+                    FocusKitsuCard(0);
+                }
+
                 return;
             }
 
-            if (target >= visibleSections.Length)
+            // Load More focus fix: Up from the Load More button returns
+            // to the results grid's last card (when there is one) -
+            // mirrors the same "clamp at the edge, don't trap" philosophy
+            // as every other zone boundary in this chain. Down is a no-op
+            // - Load More is the last element in the page.
+            if (KitsuBrowseLoadMoreButton.IsKeyboardFocused)
             {
-                // Moving down past the last TMDB section - hand off to
-                // the AnimeFLV grid, which is always beneath them.
-                FocusAnimeFlvCard(0);
+                if (direction < 0 && _kitsuBrowseItems.Count > 0)
+                {
+                    FocusKitsuCard(_kitsuBrowseItems.Count - 1);
+                }
+
                 return;
             }
 
-            visibleSections[target].FocusFirstCard();
+            if (IsFocusInKitsuGrid())
+            {
+                if (direction < 0 && GetFocusedKitsuCardIndex() < GetKitsuColumnsPerRow())
+                {
+                    // Moving up out of the Kitsu grid's first row.
+                    KitsuApplyFiltersButton.Focus();
+                    return;
+                }
+
+                // Load More focus fix: Down out of the grid's last row
+                // reaches Load More (when it's actually visible) instead
+                // of MoveKitsuGrid silently clamping in place forever -
+                // the fix for "Load More cannot receive focus" (previously
+                // there was no path into this control at all besides a
+                // mouse click or WPF's default Tab traversal).
+                if (direction > 0 &&
+                    IsFocusedKitsuCardInLastRow() &&
+                    KitsuBrowseLoadMoreButton.Visibility == Visibility.Visible)
+                {
+                    KitsuBrowseLoadMoreButton.Focus();
+                    return;
+                }
+
+                MoveKitsuGrid(0, direction);
+            }
         }
 
         // Dedicated-page Back navigation task: Down from the Back button
-        // needs to reach whichever content actually comes first - a
-        // visible TMDB section, or the AnimeFLV grid if none are visible
-        // (same fallback order the "no focus yet" branch above uses).
+        // needs to reach whichever content actually comes first - the
+        // Kitsu filter row is always present (unlike the old TMDB
+        // sections, which could be entirely absent when TMDB wasn't
+        // configured), so it is always the landing target.
         private void FocusFirstAvailable()
         {
-            MediaSection[] sections = GetVisibleTmdbSections();
-
-            if (sections.Length > 0)
-            {
-                sections[0].FocusFirstCard();
-            }
-            else
-            {
-                FocusAnimeFlvCard(0);
-            }
+            KitsuTypeCombo.Focus();
         }
 
         private void MoveHorizontal(int direction)
         {
+            // Filter controls fix: Left/Right while a dropdown is open
+            // would otherwise step focus to the next filter with the
+            // popup still showing - consumed as a no-op instead, exactly
+            // mirroring why Up/Down are repurposed above while a dropdown
+            // is open (and CatalogueBrowseView's own identical check).
+            if (IsAnyKitsuFilterDropDownOpen())
+            {
+                return;
+            }
+
             // Persistent hero navigation task: checked first, same as
             // CatalogueBrowseView's own MoveHorizontal - Left/Right while
             // any header-row button has focus cycles the quick-nav
@@ -890,13 +1198,22 @@ namespace StremioVideoCenterControls
                 return;
             }
 
-            if (IsFocusInAnimeFlvGrid())
+            if (IsFocusInKitsuFilterRow())
             {
-                MoveAnimeFlvGrid(direction, 0);
+                MoveKitsuFilterRowHorizontal(direction);
                 return;
             }
 
-            GetFocusedTmdbSection()?.MoveHorizontal(direction);
+            if (IsFocusInKitsuCategoryChips())
+            {
+                MoveKitsuCategoryChipsHorizontal(direction);
+                return;
+            }
+
+            if (IsFocusInKitsuGrid())
+            {
+                MoveKitsuGrid(direction, 0);
+            }
         }
 
         private bool IsHeaderRowFocused()
@@ -927,12 +1244,218 @@ namespace StremioVideoCenterControls
         }
 
         // =========================================================
-        // ANIMEFLV GRID FOCUS MOVEMENT
+        // KITSU FILTER ROW / CATEGORY CHIPS / RESULTS GRID FOCUS
+        // MOVEMENT (Slice 17)
         // =========================================================
 
-        private int GetAnimeFlvColumnsPerRow()
+        private void MoveKitsuFilterRowHorizontal(int direction)
         {
-            double width = AnimeFlvItemsControl.ActualWidth;
+            int currentIndex =
+                Array.FindIndex(
+                    _kitsuFilterCombos,
+                    combo => combo != null && combo.IsKeyboardFocused);
+
+            if (currentIndex < 0)
+            {
+                return;
+            }
+
+            int target =
+                Math.Max(
+                    0,
+                    Math.Min(currentIndex + direction, _kitsuFilterCombos.Length - 1));
+
+            _kitsuFilterCombos[target]?.Focus();
+        }
+
+        // Category chips are variable-width (unlike a fixed-width
+        // MediaCard grid), so Left/Right below is a simple flat index
+        // +/-1 rather than attempting grid math off an unreliable
+        // width/count estimate. Up/Down between wrapped visual rows is
+        // handled separately by MoveKitsuCategoryChipsVertical, which
+        // reads each chip's real rendered position instead (see that
+        // method's own remarks).
+        // ItemsControl's default container is a ContentPresenter, not the
+        // DataTemplate's own root element directly - same as the
+        // MediaCard container lookup elsewhere in this file
+        // (GetFocusedKitsuCardIndex), so this needs the same
+        // FindVisualChild descent rather than a direct cast.
+        private ToggleButton GetKitsuCategoryContainer(int index)
+        {
+            if (index < 0 || index >= KitsuCategoryItemsControl.Items.Count)
+            {
+                return null;
+            }
+
+            ContentPresenter presenter =
+                KitsuCategoryItemsControl.ItemContainerGenerator.ContainerFromIndex(index) as ContentPresenter;
+
+            return presenter != null ? FindVisualChild<ToggleButton>(presenter) : null;
+        }
+
+        private int GetFocusedKitsuCategoryIndex()
+        {
+            for (int i = 0; i < KitsuCategoryItemsControl.Items.Count; i++)
+            {
+                ToggleButton toggle = GetKitsuCategoryContainer(i);
+
+                if (toggle != null && toggle.IsKeyboardFocusWithin)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private void FocusKitsuCategoryToggle(int index)
+        {
+            if (index < 0 || index >= KitsuCategoryItemsControl.Items.Count)
+            {
+                return;
+            }
+
+            ToggleButton toggle = GetKitsuCategoryContainer(index);
+
+            if (toggle == null)
+            {
+                Dispatcher.BeginInvoke(
+                    new Action(() => FocusKitsuCategoryToggle(index)),
+                    DispatcherPriority.Loaded);
+
+                return;
+            }
+
+            toggle.Focus();
+            toggle.BringIntoView();
+        }
+
+        private void MoveKitsuCategoryChipsHorizontal(int direction)
+        {
+            int current = GetFocusedKitsuCategoryIndex();
+
+            if (current < 0)
+            {
+                return;
+            }
+
+            int target =
+                Math.Max(
+                    0,
+                    Math.Min(current + direction, KitsuCategoryItemsControl.Items.Count - 1));
+
+            FocusKitsuCategoryToggle(target);
+        }
+
+        // =========================================================
+        // CATEGORY CHIP ROW-AWARE UP/DOWN (UI/navigation fix - the
+        // category area previously trapped Up/Down: it always exited
+        // the zone entirely regardless of which wrapped row was
+        // focused, so a user two or three rows into the chips could
+        // never move to the row directly above/below, only jump straight
+        // to the filter row or Apply Filters)
+        // =========================================================
+        //
+        // WrapPanel exposes no row/column API, so each chip's row is
+        // inferred from its own real rendered Y position relative to the
+        // ItemsControl (WrapPanel lays children out left-to-right and
+        // only starts a new row at a new Y offset, so chips sharing a Y
+        // are, by construction, on the same visual row) - robust to the
+        // chips' variable widths, unlike trying to precompute columns
+        // from an average width.
+        private List<List<int>> BuildKitsuCategoryRows()
+        {
+            var rows = new List<List<int>>();
+            var rowTops = new List<double>();
+
+            int count = KitsuCategoryItemsControl.Items.Count;
+
+            for (int i = 0; i < count; i++)
+            {
+                ToggleButton toggle = GetKitsuCategoryContainer(i);
+
+                if (toggle == null || !toggle.IsVisible)
+                {
+                    continue;
+                }
+
+                Point topLeft;
+
+                try
+                {
+                    topLeft = toggle.TransformToAncestor(KitsuCategoryItemsControl).Transform(new Point(0, 0));
+                }
+                catch (InvalidOperationException)
+                {
+                    // Not connected to this ancestor yet (mid-layout) -
+                    // skip rather than fail the whole navigation move.
+                    continue;
+                }
+
+                int rowIndex = rowTops.FindIndex(top => Math.Abs(top - topLeft.Y) < 1.0);
+
+                if (rowIndex < 0)
+                {
+                    rowTops.Add(topLeft.Y);
+                    rows.Add(new List<int>());
+                    rowIndex = rows.Count - 1;
+                }
+
+                rows[rowIndex].Add(i);
+            }
+
+            return rows;
+        }
+
+        private void MoveKitsuCategoryChipsVertical(int direction)
+        {
+            int current = GetFocusedKitsuCategoryIndex();
+
+            if (current < 0)
+            {
+                return;
+            }
+
+            List<List<int>> rows = BuildKitsuCategoryRows();
+            int currentRow = rows.FindIndex(row => row.Contains(current));
+
+            if (currentRow < 0)
+            {
+                return;
+            }
+
+            int currentColumn = rows[currentRow].IndexOf(current);
+            int targetRow = currentRow + direction;
+
+            if (targetRow < 0)
+            {
+                // Moving up out of the first category row - back to the
+                // filter row (matches the old behaviour for this edge).
+                KitsuTypeCombo.Focus();
+                return;
+            }
+
+            if (targetRow >= rows.Count)
+            {
+                // Moving down out of the last category row - onward to
+                // Apply Filters (matches the old behaviour for this edge).
+                KitsuApplyFiltersButton.Focus();
+                return;
+            }
+
+            List<int> targetRowIndices = rows[targetRow];
+            int targetColumn = Math.Min(currentColumn, targetRowIndices.Count - 1);
+
+            FocusKitsuCategoryToggle(targetRowIndices[targetColumn]);
+        }
+
+        // Same estimated-columns-per-row approach as used for AnimeFLV's
+        // own card grid, before that section was removed - valid here
+        // because MediaCard (unlike the category chips above) has a
+        // fixed width.
+        private int GetKitsuColumnsPerRow()
+        {
+            double width = KitsuBrowseItemsControl.ActualWidth;
 
             if (width <= 0)
             {
@@ -944,37 +1467,58 @@ namespace StremioVideoCenterControls
             return Math.Max(1, columns);
         }
 
-        private void MoveAnimeFlvGrid(int deltaColumns, int deltaRows)
+        // Load More focus fix: true when the focused card is in the
+        // grid's last visual row - same index-math shape as
+        // CatalogueBrowseView's own IsFocusedFilteredCardInTopRow, just
+        // checking the opposite edge (this grid's Down-exit target is
+        // Load More, not a zone above it).
+        private bool IsFocusedKitsuCardInLastRow()
         {
-            int count = AnimeFlvItemsControl.Items.Count;
+            int index = GetFocusedKitsuCardIndex();
+
+            if (index < 0)
+            {
+                return false;
+            }
+
+            int count = KitsuBrowseItemsControl.Items.Count;
+            int columns = GetKitsuColumnsPerRow();
+            int lastRowStart = ((count - 1) / columns) * columns;
+
+            return index >= lastRowStart;
+        }
+
+        private void MoveKitsuGrid(int deltaColumns, int deltaRows)
+        {
+            int count = KitsuBrowseItemsControl.Items.Count;
 
             if (count == 0)
             {
                 return;
             }
 
-            int current = GetFocusedAnimeFlvCardIndex();
+            int current = GetFocusedKitsuCardIndex();
 
             if (current < 0)
             {
-                FocusAnimeFlvCard(0);
+                FocusKitsuCard(0);
                 return;
             }
 
-            int columns = GetAnimeFlvColumnsPerRow();
+            int columns = GetKitsuColumnsPerRow();
             int target = current + deltaColumns + (deltaRows * columns);
 
             target = Math.Max(0, Math.Min(target, count - 1));
 
-            FocusAnimeFlvCard(target);
+            FocusKitsuCard(target);
         }
 
-        private int GetFocusedAnimeFlvCardIndex()
+        private int GetFocusedKitsuCardIndex()
         {
-            for (int i = 0; i < AnimeFlvItemsControl.Items.Count; i++)
+            for (int i = 0; i < KitsuBrowseItemsControl.Items.Count; i++)
             {
                 ContentPresenter presenter =
-                    AnimeFlvItemsControl.ItemContainerGenerator.ContainerFromIndex(i) as ContentPresenter;
+                    KitsuBrowseItemsControl.ItemContainerGenerator.ContainerFromIndex(i) as ContentPresenter;
 
                 if (presenter == null)
                 {
@@ -992,20 +1536,20 @@ namespace StremioVideoCenterControls
             return -1;
         }
 
-        private void FocusAnimeFlvCard(int index)
+        private void FocusKitsuCard(int index)
         {
-            if (index < 0 || index >= AnimeFlvItemsControl.Items.Count)
+            if (index < 0 || index >= KitsuBrowseItemsControl.Items.Count)
             {
                 return;
             }
 
             ContentPresenter presenter =
-                AnimeFlvItemsControl.ItemContainerGenerator.ContainerFromIndex(index) as ContentPresenter;
+                KitsuBrowseItemsControl.ItemContainerGenerator.ContainerFromIndex(index) as ContentPresenter;
 
             if (presenter == null)
             {
                 Dispatcher.BeginInvoke(
-                    new Action(() => FocusAnimeFlvCard(index)),
+                    new Action(() => FocusKitsuCard(index)),
                     DispatcherPriority.Loaded);
 
                 return;

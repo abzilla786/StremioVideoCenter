@@ -53,8 +53,20 @@ namespace StremioVideoCenterControls
     {
         private readonly List<Button> _sourceButtons = new List<Button>();
 
+        // Slice 17B: the MediaItem currently on display, kept only so the
+        // header's My List button can be re-focused/re-styled after a
+        // toggle. This control never reads MyListService or a profile
+        // itself (see the class remarks above on staying self-contained) -
+        // it only remembers what Populate() was given and tells the caller
+        // "the My List button was pressed" via MyListToggleRequested. The
+        // caller (which owns MyListService and the active profile) decides
+        // what that means and reports the resulting state back via
+        // SetMyListState.
+        private MediaItem _currentMediaItem;
+
         public event EventHandler<SourceSelectedEventArgs> SourceSelected;
         public event EventHandler SelectionCancelled;
+        public event EventHandler MyListToggleRequested;
 
         public SourceSelectorView()
         {
@@ -80,6 +92,8 @@ namespace StremioVideoCenterControls
 
         public void Populate(List<NormalizedPlaybackSource> sources, MediaItem mediaItem = null)
         {
+            _currentMediaItem = mediaItem;
+
             PopulateHeader(mediaItem);
 
             SourceListPanel.Children.Clear();
@@ -321,6 +335,31 @@ namespace StremioVideoCenterControls
             }
 
             return string.Join("   \u00B7   ", parts);
+        }
+
+        // =========================================================
+        // MY LIST (Slice 17B)
+        // =========================================================
+        //
+        // Reflects a state the caller already determined (via MyListService
+        // and the active profile) - this control never queries or persists
+        // anything itself. Safe to call any time after Populate(); called
+        // once with the initial state right after Populate(), and again
+        // after MyListToggleRequested has been handled, so the button
+        // always shows the current state immediately.
+        public void SetMyListState(bool isInMyList)
+        {
+            MyListButton.Content = isInMyList ? "✓ IN MY LIST" : "+ MY LIST";
+            MyListButton.ToolTip = isInMyList ? "Remove from My List" : "Add to My List";
+        }
+
+        private void MyListButton_Click(object sender, RoutedEventArgs e)
+        {
+            EventHandler handler = MyListToggleRequested;
+            if (handler != null)
+            {
+                handler(this, EventArgs.Empty);
+            }
         }
 
         private void ShowEmptyState()
@@ -647,6 +686,20 @@ namespace StremioVideoCenterControls
                     e.Handled = true;
                     break;
 
+                case Key.Left:
+                    if (MoveHeaderFocus(-1))
+                    {
+                        e.Handled = true;
+                    }
+                    break;
+
+                case Key.Right:
+                    if (MoveHeaderFocus(1))
+                    {
+                        e.Handled = true;
+                    }
+                    break;
+
                 case Key.Enter:
                     ActivateFocused();
                     e.Handled = true;
@@ -680,6 +733,12 @@ namespace StremioVideoCenterControls
                     MoveFocus(1);
                     return true;
 
+                case ControllerInput.DPadLeft:
+                    return MoveHeaderFocus(-1);
+
+                case ControllerInput.DPadRight:
+                    return MoveHeaderFocus(1);
+
                 case ControllerInput.A:
                     ActivateFocused();
                     return true;
@@ -687,6 +746,28 @@ namespace StremioVideoCenterControls
                 case ControllerInput.B:
                     RaiseSelectionCancelled();
                     return true;
+            }
+
+            return false;
+        }
+
+        // Left/Right moves only between the two header buttons (My List
+        // and Close) - every other control in this view is part of the
+        // single vertical source list (see MoveFocus), which has no
+        // horizontal neighbours, so this is a no-op (returns false) unless
+        // one of the header buttons is actually focused.
+        private bool MoveHeaderFocus(int direction)
+        {
+            if (MyListButton.IsKeyboardFocused && direction > 0)
+            {
+                FocusElement(CloseButton);
+                return true;
+            }
+
+            if (CloseButton.IsKeyboardFocused && direction < 0)
+            {
+                FocusElement(MyListButton);
+                return true;
             }
 
             return false;

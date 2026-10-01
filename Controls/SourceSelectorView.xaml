@@ -47,6 +47,49 @@
         </Style>
 
         <!--
+            My List button style (Slice 17B). Same Border/ControlTemplate
+            shape and same focus/hover triggers as CloseButtonStyle above -
+            kept as its own local style rather than sharing CloseButtonStyle
+            because this button shows text content and needs auto width
+            and padding instead of a fixed 40x40 glyph box.
+        -->
+        <Style x:Key="MyListButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#99000000" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#55FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="MyListBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="MyListBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="MyListBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="MyListBorder" Property="Background" Value="#DD333333" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!--
             Source item button style. The visible focus/hover states are the
             important part for controller/keyboard navigation - mouse click
             and keyboard/controller activation both end up going through
@@ -119,6 +162,11 @@
             accent bar beside it, plus an optional media-context line
             (title/year/type/rating) below - populated only when the
             calling MediaItem actually has that data (see Populate()).
+
+            Slice 17B: a My List button now sits to the left of Close,
+            grouped with it in one right-aligned StackPanel - "an option
+            next to the Exit button to add the item to My List", per the
+            original requirement. Nothing else in this header changes.
         -->
 
         <StackPanel Grid.Row="0" Margin="32,28,32,20">
@@ -137,15 +185,27 @@
                                VerticalAlignment="Center" />
                 </StackPanel>
 
-                <Button x:Name="CloseButton"
-                        Style="{StaticResource CloseButtonStyle}"
-                        Content="&#x2715;"
-                        ToolTip="Close"
-                        Click="CloseButton_Click"
-                        HorizontalAlignment="Right"
-                        Width="40"
-                        Height="40"
-                        FontSize="18" />
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right">
+
+                    <Button x:Name="MyListButton"
+                            Style="{StaticResource MyListButtonStyle}"
+                            Content="+ MY LIST"
+                            ToolTip="Add to My List"
+                            Click="MyListButton_Click"
+                            Height="40"
+                            Margin="0,0,12,0" />
+
+                    <Button x:Name="CloseButton"
+                            Style="{StaticResource CloseButtonStyle}"
+                            Content="&#x2715;"
+                            ToolTip="Close"
+                            Click="CloseButton_Click"
+                            Width="40"
+                            Height="40"
+                            FontSize="18" />
+
+                </StackPanel>
             </Grid>
 
             <TextBlock x:Name="MediaInfoText"

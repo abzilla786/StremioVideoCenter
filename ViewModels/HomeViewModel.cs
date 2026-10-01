@@ -398,16 +398,73 @@ namespace StremioVideoCenter.ViewModels
 
 
         // =========================================================
+        // LOAD MY LIST (Slice 17B)
+        // =========================================================
+        //
+        // My List is derived entirely from MyListService's stored
+        // entries for the active profile - mirrors LoadContinueWatching
+        // above exactly (same "reconstruct display MediaItems each call"
+        // shape), called at app startup and on every profile switch via
+        // StremioVideoCenterView.OnActiveProfileChanged/RefreshMyList.
+        // No separate collection is persisted here - MyListService
+        // remains the single source of truth (same discipline as Watch
+        // State for Continue Watching).
+        //
+        // Each reconstructed MediaItem's StremioId is the entry's
+        // CanonicalKey (always the show/movie-level identity - never
+        // episode-qualified, per MyListEntry's own contract), so
+        // selecting a My List card on Home routes through
+        // HandleMediaSelectedAsync exactly like any other catalogue
+        // card: Movie -> existing movie flow, TV/Anime -> Episode
+        // Browser.
+        public void LoadMyList(MyListService myListService, Guid profileId)
+        {
+            MyList.Clear();
+
+            if (myListService == null)
+            {
+                return;
+            }
+
+            // Display limit only, same 25-item convention every other
+            // Home row already uses (CatalogueService.DefaultTake /
+            // LoadContinueWatching above) - never touches the underlying
+            // stored My List entries themselves. GetEntriesForProfile
+            // already orders most-recently-added first.
+            IEnumerable<MyListEntry> entries = myListService
+                .GetEntriesForProfile(profileId)
+                .Take(25);
+
+            foreach (MyListEntry entry in entries)
+            {
+                var mediaItem = new MediaItem
+                {
+                    StremioId = entry.CanonicalKey,
+                    Title = entry.Title,
+                    PosterPath = entry.PosterPath,
+                    Year = entry.Year,
+                    Type = entry.Type,
+                    Genres = entry.Genres != null
+                        ? new List<string>(entry.Genres)
+                        : new List<string>()
+                };
+
+                MyList.Add(mediaItem);
+            }
+        }
+
+
+        // =========================================================
         // HERO FALLBACK DATA
         // =========================================================
         //
-        // Hero is unaffected by this slice's catalogue restructure - it
-        // remains HeroRecommendationService's own TMDB-based
-        // recommendation feed, with this fixed fallback shown until that
-        // loads (or if it never configures). No catalogue/Continue-
-        // Watching/My-List dummy data is seeded here any more (see class
-        // remarks) - only the three pre-existing Hero fallback slides,
-        // unchanged from before this slice.
+        // TMDB Removal migration: HeroRecommendationService is now
+        // Cinemeta (Movie/TV) + Kitsu (Anime) sourced, not TMDB-based -
+        // this fixed fallback (unchanged, static demo content) is shown
+        // until that loads, or if it fails entirely. No catalogue/
+        // Continue-Watching/My-List dummy data is seeded here any more
+        // (see class remarks) - only the three pre-existing Hero
+        // fallback slides.
 
         private void LoadHeroFallbackData()
         {

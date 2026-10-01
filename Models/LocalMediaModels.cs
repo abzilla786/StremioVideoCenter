@@ -52,10 +52,8 @@ namespace StremioVideoCenter.Models
     // Anime is deliberately NOT a distinct value here: disambiguating
     // anime from generic TV by filename pattern alone is unreliable
     // (the same "Title SxxEyy" shape covers both) - that distinction
-    // requires real metadata matching (genre/origin, exactly like
-    // CatalogueService.IsAnimeCandidate already does for TMDB
-    // candidates), which is explicitly out of scope for this
-    // architecture-only slice.
+    // requires real metadata matching (genre/origin), which is
+    // explicitly out of scope for this architecture-only slice.
     public enum LocalMediaKind
     {
         Unknown = 0,

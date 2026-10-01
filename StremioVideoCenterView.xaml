@@ -408,7 +408,8 @@
                             <Button x:Name="NavigationMyListButton"
                                     Content="MY LIST"
                                     Style="{DynamicResource NavigationButtonStyle}"
-                                    IsTabStop="True"/>
+                                    IsTabStop="True"
+                                    Click="NavigationMyListButton_Click"/>
 
                             <Button x:Name="HistoryButton"
                                     Content="HISTORY"
@@ -705,7 +706,8 @@
                                             IsTabStop="True"
                                             MinWidth="175"
                                             MinHeight="52"
-                                            FontSize="15"/>
+                                            FontSize="15"
+                                            Click="HeroWatchNowButton_Click"/>
 
 
                                     <!-- ================================================= -->
@@ -720,7 +722,8 @@
                                             Margin="14,0,0,0"
                                             MinWidth="150"
                                             MinHeight="52"
-                                            FontSize="15"/>
+                                            FontSize="15"
+                                            Click="HeroMyListButton_Click"/>
 
                                 </StackPanel>
 
@@ -1069,6 +1072,19 @@
         -->
         <Grid
             x:Name="HistoryHost"
+            Panel.ZIndex="1000"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <!-- ========================================================= -->
+        <!-- MY LIST HOST (Slice 17B - My List UI + Hero Integration)   -->
+        <!-- ========================================================= -->
+        <!--
+            Same overlay-host pattern as HistoryHost directly above - see
+            StremioVideoCenterView.xaml.cs ShowMyListAsync.
+        -->
+        <Grid
+            x:Name="MyListHost"
             Panel.ZIndex="1000"
             Background="Black"
             Visibility="Collapsed" />

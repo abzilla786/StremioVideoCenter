@@ -16,13 +16,41 @@ namespace StremioVideoCenter.Services
     // Slice 15 (Search, Discovery, Home & Local Media Architecture).
     //
     // A reusable, UI-independent source of real catalogue rows/pages for
-    // Movies and TV. Not Home-specific - Home's six rows AND the
-    // dedicated Movies/TV pages (Featured/Popular/New Releases, with
-    // genre/year filtering and skip-based pagination) both call this
-    // same class. Anime rows remain TMDB-only (see ANIME remarks below) -
-    // AnimeFlvCatalogueService is the separate, parallel client for
-    // AnimeFLV's own genre/search catalogs, kept out of this class per
-    // "keep systems modular, don't tightly couple unrelated systems."
+    // Movies, TV and (as of Slice 17) Anime. Not Home-specific - Home's
+    // six rows AND the dedicated Movies/TV pages (Featured/Popular/New
+    // Releases, with genre/year filtering and skip-based pagination)
+    // both call this same class. AnimeFlvCatalogueService remains the
+    // separate, parallel client for AnimeFLV's own genre/search
+    // catalogs, kept out of this class per "keep systems modular, don't
+    // tightly couple unrelated systems."
+    //
+    // =============================================================
+    // SLICE 17 ANIME CHANGE (Kitsu locked in as Zino's permanent anime
+    // provider)
+    // =============================================================
+    //
+    // The three ANIME methods below (GetFeaturedAnimeAsync/
+    // GetPopularAnimeAsync/GetNewAnimeAsync) were previously TMDB-only
+    // (honestly empty whenever no TmdbService was configured - see this
+    // file's prior-slice remarks, preserved in git history). Per this
+    // slice's explicit instruction ("remove the old TMDB-only Anime
+    // catalogue path rather than leaving TMDB as a hidden fallback"),
+    // they are now backed entirely by KitsuService - the same provider
+    // AnimeBrowseView's own filtered browse uses - and no longer read
+    // _tmdbService at all. TMDB remains this class's Movie/TV fallback
+    // only (unchanged, out of this slice's scope).
+    //
+    // Kitsu has no "Featured"/"Popular"/"New" catalogs of its own (see
+    // KitsuService remarks - no dedicated "trending" endpoint exists),
+    // so these three names are mapped onto Kitsu's real, live-verified
+    // sort keys the same way this file already maps Zino's Movie/TV
+    // terminology onto Cinemeta's real catalog ids (see the SLICE 15
+    // TERMINOLOGY CORRECTION remarks below):
+    //   - Featured -> sort=ratingRank (Kitsu's top-rated ranking)
+    //   - Popular  -> KitsuService.GetPopularAnimeAsync (sort=-userCount,
+    //     left unchanged per this slice's instruction to keep that
+    //     method working exactly as-is for its existing callers)
+    //   - New      -> sort=-startDate (newest-airing first)
     //
     // =============================================================
     // SLICE 15 TERMINOLOGY CORRECTION (supersedes Slice 13's mapping)
@@ -146,20 +174,31 @@ namespace StremioVideoCenter.Services
 
         private readonly TmdbService _tmdbService;
         private readonly CinemetaService _cinemetaService;
+        private readonly KitsuService _kitsuService;
 
         // =========================================================
         // CONSTRUCTOR
         // =========================================================
 
-        public CatalogueService(TmdbService tmdbService, CinemetaService cinemetaService)
+        // kitsuService is required (same as cinemetaService) - Slice 17
+        // makes it the anime rows' sole backbone, exactly as
+        // cinemetaService already is for Movie/TV. tmdbService remains
+        // optional (Movie/TV fallback only).
+        public CatalogueService(TmdbService tmdbService, CinemetaService cinemetaService, KitsuService kitsuService)
         {
             if (cinemetaService == null)
             {
                 throw new ArgumentNullException(nameof(cinemetaService));
             }
 
+            if (kitsuService == null)
+            {
+                throw new ArgumentNullException(nameof(kitsuService));
+            }
+
             _tmdbService = tmdbService;
             _cinemetaService = cinemetaService;
+            _kitsuService = kitsuService;
         }
 
         // =========================================================
@@ -226,46 +265,12 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
-        // ANIME
+        // ANIME (Slice 17: Kitsu-backed - see class-level remarks above)
         // =========================================================
-        //
-        // Unchanged logic from Slice 13's GetTopAnimeAsync/
-        // GetTrendingAnimeAsync/GetRecentlyReleasedAnimeAsync - only
-        // renamed to match the Featured/Popular/New terminology used
-        // everywhere else in this slice, and "take" is now honoured
-        // instead of the old fixed RowSize=10. Still TMDB-only/honestly-
-        // empty when no TmdbService is configured - see the class-level
-        // remarks in the previous slice's version of this file for why
-        // (no verified Cinemeta or AnimeFLV *unfiltered* anime catalogue
-        // exists - AnimeFLV's real, live-verified catalogue this slice
-        // turned out to require either a search term or a genre for
-        // EVERY catalog it exposes, so it cannot honestly back a
-        // "Featured"/"Popular" ranked row either - see
-        // AnimeFlvCatalogueService and claude/Slice15_*.md).
 
-        public Task<List<MediaItem>> GetFeaturedAnimeAsync(int take = DefaultTake)
+        public async Task<List<MediaItem>> GetFeaturedAnimeAsync(int take = DefaultTake)
         {
-            if (_tmdbService == null)
-            {
-                return Task.FromResult(new List<MediaItem>());
-            }
-
-            return GetCachedAsync(
-                "anime-featured:tmdb:" + take,
-                () => _tmdbService.GetTopRatedAnimeAsync(),
-                isTv: true,
-                type: "Anime",
-                take: take);
-        }
-
-        public async Task<List<MediaItem>> GetPopularAnimeAsync(int take = DefaultTake)
-        {
-            if (_tmdbService == null)
-            {
-                return new List<MediaItem>();
-            }
-
-            string cacheKey = "anime-popular:tmdb:" + take;
+            string cacheKey = "anime-featured:kitsu:" + take;
 
             List<MediaItem> cached = TryGetCached(cacheKey);
 
@@ -274,60 +279,132 @@ namespace StremioVideoCenter.Services
                 return cached;
             }
 
-            var candidates = new List<TmdbDiscoveryItem>();
+            KitsuBrowseResult result = await _kitsuService.BrowseAnimeAsync(sort: "ratingRank", limit: take);
 
-            for (int page = 1; page <= 3; page++)
-            {
-                List<TmdbDiscoveryItem> pageResults = await _tmdbService.GetTrendingTvAsync(page);
-
-                if (pageResults == null || pageResults.Count == 0)
-                {
-                    break;
-                }
-
-                candidates.AddRange(pageResults);
-            }
-
-            var seenTmdbIds = new HashSet<int>();
-
-            List<TmdbDiscoveryItem> animeOnly =
-                candidates
-                    .Where(IsAnimeCandidate)
-                    .Where(item => seenTmdbIds.Add(item.Id))
-                    .ToList();
-
-            List<MediaItem> items = await BuildMediaItemsAsync(animeOnly, isTv: true, type: "Anime", take: take);
+            List<MediaItem> items = MapKitsuItemsToMediaItems(result?.Items, take);
 
             SetCached(cacheKey, items);
 
             return items;
         }
 
-        public Task<List<MediaItem>> GetNewAnimeAsync(int take = DefaultTake)
+        public async Task<List<MediaItem>> GetPopularAnimeAsync(int take = DefaultTake)
         {
-            if (_tmdbService == null)
+            string cacheKey = "anime-popular:kitsu:" + take;
+
+            List<MediaItem> cached = TryGetCached(cacheKey);
+
+            if (cached != null)
             {
-                return Task.FromResult(new List<MediaItem>());
+                return cached;
             }
 
-            return GetCachedAsync(
-                "anime-new:tmdb:" + take,
-                () => _tmdbService.GetRecentlyAiredAnimeAsync(),
-                isTv: true,
-                type: "Anime",
-                take: take);
+            List<KitsuAnimeResource> candidates = await _kitsuService.GetPopularAnimeAsync(offset: 0, limit: take);
+
+            List<MediaItem> items = MapKitsuItemsToMediaItems(candidates, take);
+
+            SetCached(cacheKey, items);
+
+            return items;
+        }
+
+        public async Task<List<MediaItem>> GetNewAnimeAsync(int take = DefaultTake)
+        {
+            string cacheKey = "anime-new:kitsu:" + take;
+
+            List<MediaItem> cached = TryGetCached(cacheKey);
+
+            if (cached != null)
+            {
+                return cached;
+            }
+
+            KitsuBrowseResult result = await _kitsuService.BrowseAnimeAsync(sort: "-startDate", limit: take);
+
+            List<MediaItem> items = MapKitsuItemsToMediaItems(result?.Items, take);
+
+            SetCached(cacheKey, items);
+
+            return items;
         }
 
         // =========================================================
-        // ANIME CANDIDATE FILTER
+        // KITSU -> MEDIAITEM MAPPING (Anime rows only)
         // =========================================================
-
-        private static bool IsAnimeCandidate(TmdbDiscoveryItem candidate)
+        //
+        // Mirrors AnimeBrowseView.xaml.cs's own MapKitsuToMediaItem
+        // exactly (same StremioId "kitsu:<id>" convention, same field
+        // mapping) - kept as a separate copy rather than a shared
+        // static helper because the two classes have no existing common
+        // base/util class for this, and duplicating one small mapping
+        // function is preferable to introducing a new cross-cutting
+        // dependency for it (see this project's "avoid unnecessary
+        // abstraction" guidance).
+        private static List<MediaItem> MapKitsuItemsToMediaItems(List<KitsuAnimeResource> items, int take)
         {
-            return candidate != null &&
-                   candidate.GenreIds != null &&
-                   candidate.GenreIds.Contains(16) &&
-                   string.Equals(candidate.OriginalLanguage, "ja", StringComparison.OrdinalIgnoreCase);
+            var result = new List<MediaItem>();
+
+            if (items == null || items.Count == 0)
+            {
+                return result;
+            }
+
+            foreach (KitsuAnimeResource item in items)
+            {
+                if (result.Count >= take)
+                {
+                    break;
+                }
+
+                MediaItem mapped = MapKitsuToMediaItem(item);
+
+                if (mapped != null)
+                {
+                    result.Add(mapped);
+                }
+            }
+
+            return result;
+        }
+
+        private static MediaItem MapKitsuToMediaItem(KitsuAnimeResource item)
+        {
+            if (item == null || string.IsNullOrWhiteSpace(item.Id) || item.Attributes == null)
+            {
+                return null;
+            }
+
+            string title = !string.IsNullOrWhiteSpace(item.Attributes.CanonicalTitle)
+                ? item.Attributes.CanonicalTitle
+                : item.Attributes.Titles?.En;
+
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                return null;
+            }
+
+            string poster = item.Attributes.PosterImage?.Large ?? item.Attributes.PosterImage?.Medium;
+
+            var mediaItem = new MediaItem
+            {
+                StremioId = "kitsu:" + item.Id,
+                TmdbId = null,
+                Title = title,
+                Overview = item.Attributes.Synopsis,
+                ReleaseDate = item.Attributes.StartDate,
+                Rating = item.Attributes.AverageRating,
+                Type = "Anime",
+                Genres = item.Attributes.Categories?.Select(c => c.Title).ToList() ?? new List<string>(),
+                PosterPath = poster ?? string.Empty,
+                BackdropUrl = item.Attributes.CoverImage?.Large ?? string.Empty
+            };
+
+            if (!string.IsNullOrWhiteSpace(item.Attributes.StartDate) && item.Attributes.StartDate.Length >= 4)
+            {
+                mediaItem.Year = item.Attributes.StartDate.Substring(0, 4);
+            }
+
+            return mediaItem;
         }
 
         // =========================================================
@@ -407,33 +484,6 @@ namespace StremioVideoCenter.Services
 
                 items = await BuildMediaItemsAsync(candidates, isTv, mediaItemType, take);
             }
-
-            SetCached(cacheKey, items);
-
-            return items;
-        }
-
-        // =========================================================
-        // TMDB-ONLY CACHE-AWARE FETCH (Anime rows only)
-        // =========================================================
-
-        private async Task<List<MediaItem>> GetCachedAsync(
-            string cacheKey,
-            Func<Task<List<TmdbDiscoveryItem>>> fetchCandidates,
-            bool isTv,
-            string type,
-            int take)
-        {
-            List<MediaItem> cached = TryGetCached(cacheKey);
-
-            if (cached != null)
-            {
-                return cached;
-            }
-
-            List<TmdbDiscoveryItem> candidates = await fetchCandidates();
-
-            List<MediaItem> items = await BuildMediaItemsAsync(candidates, isTv, type, take);
 
             SetCached(cacheKey, items);
 
