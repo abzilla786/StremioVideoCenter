@@ -189,6 +189,20 @@ namespace StremioVideoCenterControls
                 EpisodeContextPanel.Visibility = Visibility.Collapsed;
                 EpisodeThumbnailImage.Source = null;
 
+                // My List is series/movie-level: shown for movies only. An
+                // episode-shaped item is handled by the Episode Browser.
+                MyListButton.Visibility = Visibility.Visible;
+
+                if (mediaItem != null && !string.IsNullOrWhiteSpace(mediaItem.Overview))
+                {
+                    MovieSynopsisText.Text = mediaItem.Overview;
+                    MovieSynopsisText.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    MovieSynopsisText.Visibility = Visibility.Collapsed;
+                }
+
                 string mediaInfo = BuildMediaInfoLine(mediaItem);
 
                 if (!string.IsNullOrWhiteSpace(mediaInfo))
@@ -205,6 +219,8 @@ namespace StremioVideoCenterControls
             }
 
             MediaInfoText.Visibility = Visibility.Collapsed;
+            MovieSynopsisText.Visibility = Visibility.Collapsed;
+            MyListButton.Visibility = Visibility.Collapsed;
             EpisodeContextPanel.Visibility = Visibility.Visible;
 
             EpisodeCodeText.Text =
@@ -764,7 +780,8 @@ namespace StremioVideoCenterControls
                 return true;
             }
 
-            if (CloseButton.IsKeyboardFocused && direction < 0)
+            if (CloseButton.IsKeyboardFocused && direction < 0 &&
+                MyListButton.Visibility == Visibility.Visible)
             {
                 FocusElement(MyListButton);
                 return true;

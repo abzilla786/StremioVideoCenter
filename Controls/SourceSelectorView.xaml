@@ -215,6 +215,18 @@
                        Margin="19,10,0,0"
                        Visibility="Collapsed" />
 
+            <!-- Movie synopsis (MediaItem.Overview). Compact: capped height
+                 and trimmed so a long overview cannot push the source list
+                 off-screen. Collapsed when there is no overview. -->
+            <TextBlock x:Name="MovieSynopsisText"
+                       Foreground="#999999"
+                       FontSize="14"
+                       TextWrapping="Wrap"
+                       TextTrimming="CharacterEllipsis"
+                       MaxHeight="76"
+                       Margin="19,8,0,0"
+                       Visibility="Collapsed" />
+
             <!--
                 Slice 14: richer episode context, shown instead of
                 MediaInfoText when the selected content is a TV episode

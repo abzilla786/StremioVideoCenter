@@ -2500,8 +2500,23 @@ namespace StremioVideoCenter
                 completionSource.TrySetResult(null);
             };
 
+            // My List here is series-level: always toggles `show`, never
+            // an episode-shaped MediaItem.
+            EventHandler onMyListToggleRequested = (sender, args) =>
+            {
+                bool? nowInList = ToggleMyListAndRefresh(show);
+
+                if (nowInList.HasValue)
+                {
+                    browser.SetMyListState(nowInList.Value);
+                }
+            };
+
             browser.EpisodeSelected += onSelected;
             browser.BrowsingCancelled += onCancelled;
+            browser.MyListToggleRequested += onMyListToggleRequested;
+
+            browser.SetMyListState(IsMediaItemInMyList(show));
 
             _activeEpisodeBrowser = browser;
 
@@ -2534,6 +2549,7 @@ namespace StremioVideoCenter
 
             browser.EpisodeSelected -= onSelected;
             browser.BrowsingCancelled -= onCancelled;
+            browser.MyListToggleRequested -= onMyListToggleRequested;
 
             if (result == null)
             {
@@ -3849,27 +3865,41 @@ namespace StremioVideoCenter
             SourceSelectorView selector,
             MediaItem mediaItem)
         {
+            bool? nowInList = ToggleMyListAndRefresh(mediaItem);
+
+            if (nowInList.HasValue)
+            {
+                selector.SetMyListState(nowInList.Value);
+            }
+        }
+
+        // Shared by the Source Selector (movies) and the Episode Browser
+        // (TV/Anime, series-level `show`). Returns null when nothing was
+        // toggled (no service/item/active profile).
+        private bool? ToggleMyListAndRefresh(MediaItem mediaItem)
+        {
             if (_myListService == null || mediaItem == null)
             {
-                return;
+                return null;
             }
 
             Guid? activeProfileId = _profileService?.GetActiveProfileId();
 
             if (!activeProfileId.HasValue)
             {
-                return;
+                return null;
             }
 
             bool nowInList = _myListService.Toggle(activeProfileId.Value, mediaItem);
-            selector.SetMyListState(nowInList);
 
-            // Slice 17B: a Source Selector toggle changes the same
-            // underlying MyListService state the Home row and Hero button
-            // display - both must reflect it immediately, not only once
-            // the user happens to revisit Home or move the Hero carousel.
+            // Slice 17B: a toggle changes the same underlying MyListService
+            // state the Home row and Hero button display - both must
+            // reflect it immediately, not only once the user happens to
+            // revisit Home or move the Hero carousel.
             RefreshMyList();
             RefreshHeroMyListButtonState();
+
+            return nowInList;
         }
 
         // =========================================================
@@ -3978,6 +4008,7 @@ namespace StremioVideoCenter
             {
                 StremioId = heroItem.StremioId,
                 Title = heroItem.Title,
+                Overview = heroItem.Synopsis,
                 PosterPath = heroItem.PosterUrl,
                 Year = heroItem.Year,
                 Type = heroItem.Type,

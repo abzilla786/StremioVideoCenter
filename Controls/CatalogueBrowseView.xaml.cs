@@ -808,10 +808,45 @@ namespace StremioVideoCenterControls
             return GenreCombo.IsDropDownOpen || YearCombo.IsDropDownOpen;
         }
 
+        // Escape/B: cancels the open dropdown. Up/Down only previews a
+        // value (see MoveFilterDropDownSelection), so the combo is put
+        // back to the last APPLIED value rather than left showing an
+        // option that was never confirmed. Focus is returned to the
+        // combo that was open, since closing leaves it on the hidden item.
         private void CloseAnyFilterDropDown()
         {
+            ComboBox openCombo = GenreCombo.IsDropDownOpen ? GenreCombo
+                : (YearCombo.IsDropDownOpen ? YearCombo : null);
+
             GenreCombo.IsDropDownOpen = false;
             YearCombo.IsDropDownOpen = false;
+
+            RestoreAppliedFilterSelection();
+
+            if (openCombo != null)
+            {
+                Dispatcher.BeginInvoke(new Action(() => openCombo.Focus()), DispatcherPriority.Input);
+            }
+        }
+
+        // Puts both combos back to the values ApplyFiltersAsync last
+        // applied, without re-triggering it.
+        private void RestoreAppliedFilterSelection()
+        {
+            _suppressFilterEvents = true;
+
+            try
+            {
+                int genreIndex = _activeFilterGenre == null ? 0 : GenreCombo.Items.IndexOf(_activeFilterGenre);
+                GenreCombo.SelectedIndex = genreIndex >= 0 ? genreIndex : 0;
+
+                int yearIndex = _activeFilterYear.HasValue ? YearCombo.Items.IndexOf(_activeFilterYear.Value.ToString()) : 0;
+                YearCombo.SelectedIndex = yearIndex >= 0 ? yearIndex : 0;
+            }
+            finally
+            {
+                _suppressFilterEvents = false;
+            }
         }
 
         private void MoveFilterBarHorizontal(int direction)
@@ -856,9 +891,20 @@ namespace StremioVideoCenterControls
                 return false;
             }
 
+            bool confirming = combo.IsDropDownOpen;
+
             combo.IsDropDownOpen = !combo.IsDropDownOpen;
 
             Dispatcher.BeginInvoke(new Action(() => combo.Focus()), DispatcherPriority.Input);
+
+            // Confirming applies whatever Up/Down previewed - only if it
+            // differs from what is already applied (a mouse click has
+            // already applied its own selection immediately).
+            if (confirming &&
+                (GetSelectedGenre() != _activeFilterGenre || GetSelectedYear() != _activeFilterYear))
+            {
+                ApplyFiltersAsync();
+            }
 
             return true;
         }
@@ -887,7 +933,19 @@ namespace StremioVideoCenterControls
             int target = combo.SelectedIndex + direction;
             target = Math.Max(0, Math.Min(target, combo.Items.Count - 1));
 
-            combo.SelectedIndex = target;
+            // Preview only: Filter_SelectionChanged must not apply the
+            // filter (which reloads the view and moves focus to the first
+            // result, closing the dropdown) until A/Enter confirms.
+            _suppressFilterEvents = true;
+
+            try
+            {
+                combo.SelectedIndex = target;
+            }
+            finally
+            {
+                _suppressFilterEvents = false;
+            }
 
             FrameworkElement container =
                 combo.ItemContainerGenerator.ContainerFromIndex(target) as FrameworkElement;

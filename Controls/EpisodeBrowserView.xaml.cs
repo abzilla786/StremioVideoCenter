@@ -123,6 +123,12 @@ namespace StremioVideoCenterControls
         public event EventHandler<EpisodeSelectedEventArgs> EpisodeSelected;
         public event EventHandler BrowsingCancelled;
 
+        // The browser never reads MyListService itself - it only reports
+        // that its (series-level) My List button was pressed. The caller
+        // owns the service/profile and reports the result back through
+        // SetMyListState.
+        public event EventHandler MyListToggleRequested;
+
         public EpisodeBrowserView()
         {
             InitializeComponent();
@@ -1167,6 +1173,21 @@ namespace StremioVideoCenterControls
             HandleBack();
         }
 
+        public void SetMyListState(bool isInMyList)
+        {
+            MyListButton.Content = isInMyList ? "\u2713 IN MY LIST" : "+ MY LIST";
+            MyListButton.ToolTip = isInMyList ? "Remove from My List" : "Add to My List";
+        }
+
+        private void MyListButton_Click(object sender, RoutedEventArgs e)
+        {
+            EventHandler handler = MyListToggleRequested;
+            if (handler != null)
+            {
+                handler(this, EventArgs.Empty);
+            }
+        }
+
         // Adapted from the old two-page back behaviour to the new
         // always-both-visible layout: backing out of the episode panel
         // returns focus to the season panel (landing on the currently
@@ -1302,7 +1323,7 @@ namespace StremioVideoCenterControls
             // wrap-around, which let Up from the top skip straight to
             // the bottom of the list (and vice versa) instead of
             // reaching Close.
-            if (CloseButton.IsKeyboardFocused)
+            if (CloseButton.IsKeyboardFocused || MyListButton.IsKeyboardFocused)
             {
                 if (direction > 0)
                 {
@@ -1381,6 +1402,21 @@ namespace StremioVideoCenterControls
         // panel's first item, if it has any.
         private void MoveHorizontal(int direction)
         {
+            // Header: Left/Right moves between My List and Close only.
+            if (MyListButton.IsKeyboardFocused || CloseButton.IsKeyboardFocused)
+            {
+                if (MyListButton.IsKeyboardFocused && direction > 0)
+                {
+                    FocusElement(CloseButton);
+                }
+                else if (CloseButton.IsKeyboardFocused && direction < 0)
+                {
+                    FocusElement(MyListButton);
+                }
+
+                return;
+            }
+
             if (direction < 0)
             {
                 if (IsFocusInEpisodePanel() && _seasonButtons.Count > 0)
