@@ -398,6 +398,101 @@ namespace StremioVideoCenterControls
             SyncControlsPopupSize();
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeMonitorInfo
+        {
+            public int Size;
+            public NativeRect Monitor;
+            public NativeRect Work;
+            public uint Flags;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetMonitorInfo(IntPtr monitor, ref NativeMonitorInfo info);
+
+        private const uint MonitorDefaultToNearest = 2;
+
+        private static PixelRect ToPixelRect(NativeRect rect)
+        {
+            return new PixelRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        }
+
+        // The part of the player surface that is really on screen, in device
+        // pixels (see VisibleBounds). Null when it cannot be determined yet
+        // (not attached to a presentation source / monitor lookup failed), in
+        // which case the nominal container size is used.
+        private PixelRect? GetVisiblePlayerBounds(out PixelRect nominal)
+        {
+            nominal = default(PixelRect);
+
+            try
+            {
+                Point topLeft = RootGrid.PointToScreen(new Point(0, 0));
+                Point bottomRight = RootGrid.PointToScreen(new Point(RootGrid.ActualWidth, RootGrid.ActualHeight));
+                nominal = new PixelRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+
+                // The host window's client area (not its outer bounds, which
+                // include title bar/borders that are not part of the surface).
+                // The Video Center window is laid over Playnite's window (its
+                // owner), so the owner's client area is the viewport the user is
+                // meant to see: clip to both.
+                Window window = Window.GetWindow(this);
+                PixelRect? host = ClientAreaOf(window);
+                PixelRect? owner = ClientAreaOf(window != null ? window.Owner : null);
+
+                if (host.HasValue && owner.HasValue)
+                    host = PixelRect.Intersect(host.Value, owner.Value);
+                else if (owner.HasValue)
+                    host = owner;
+
+                NativePoint centre = new NativePoint
+                {
+                    X = (int)((nominal.Left + nominal.Right) / 2),
+                    Y = (int)((nominal.Top + nominal.Bottom) / 2)
+                };
+
+                IntPtr monitor = MonitorFromPoint(centre, MonitorDefaultToNearest);
+                NativeMonitorInfo info = new NativeMonitorInfo { Size = Marshal.SizeOf(typeof(NativeMonitorInfo)) };
+
+                if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
+                    return null;
+
+                return VisibleBounds.Compute(nominal, host, ToPixelRect(info.Monitor), ToPixelRect(info.Work));
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static PixelRect? ClientAreaOf(Window window)
+        {
+            FrameworkElement content = window != null ? window.Content as FrameworkElement : null;
+
+            if (content == null || !content.IsVisible || content.ActualWidth <= 0 || content.ActualHeight <= 0)
+                return null;
+
+            Point topLeft = content.PointToScreen(new Point(0, 0));
+            Point bottomRight = content.PointToScreen(new Point(content.ActualWidth, content.ActualHeight));
+            return new PixelRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        }
+
+        // Sizes (and positions) the controls overlay to the VISIBLE part of the
+        // player surface, so the bottom control bar - anchored to the overlay's
+        // bottom edge - is always inside what the user can see, whatever the
+        // container's nominal size, and adapts on resize/fullscreen.
         private void SyncControlsPopupSize()
         {
             if (ControlsPopup == null || RootGrid == null)
@@ -405,13 +500,35 @@ namespace StremioVideoCenterControls
 
             double width = Math.Max(1.0, RootGrid.ActualWidth);
             double height = Math.Max(1.0, RootGrid.ActualHeight);
+            double offsetX = 0;
+            double offsetY = 0;
+
+            PixelRect nominal;
+            PixelRect? visible = GetVisiblePlayerBounds(out nominal);
+            PresentationSource source = PresentationSource.FromVisual(RootGrid);
+
+            if (visible.HasValue && source != null && source.CompositionTarget != null && !nominal.IsEmpty)
+            {
+                // Device pixels -> device-independent units.
+                Matrix fromDevice = source.CompositionTarget.TransformFromDevice;
+                PixelRect v = visible.Value;
+
+                width = Math.Max(1.0, v.Width * fromDevice.M11);
+                height = Math.Max(1.0, v.Height * fromDevice.M22);
+                offsetX = (v.Left - nominal.Left) * fromDevice.M11;
+                offsetY = (v.Top - nominal.Top) * fromDevice.M22;
+            }
 
             if (Math.Abs(ControlsPopup.Width - width) < 0.5 &&
-                Math.Abs(ControlsPopup.Height - height) < 0.5)
+                Math.Abs(ControlsPopup.Height - height) < 0.5 &&
+                Math.Abs(ControlsPopup.HorizontalOffset - offsetX) < 0.5 &&
+                Math.Abs(ControlsPopup.VerticalOffset - offsetY) < 0.5)
             {
                 return;
             }
 
+            ControlsPopup.HorizontalOffset = offsetX;
+            ControlsPopup.VerticalOffset = offsetY;
             ControlsPopup.Width = width;
             ControlsPopup.Height = height;
             ControlsOverlay.Width = width;
@@ -424,7 +541,10 @@ namespace StremioVideoCenterControls
         // allowing WPF to reposition it like a normal dropdown/context popup.
         private CustomPopupPlacement[] ControlsPopupPlacement(Size popupSize, Size targetSize, Point offset)
         {
-            return new[] { new CustomPopupPlacement(new Point(0, 0), PopupPrimaryAxis.None) };
+            // 'offset' is the popup's Horizontal/VerticalOffset, which
+            // SyncControlsPopupSize sets to the visible part's position inside
+            // the (possibly larger) nominal player container.
+            return new[] { new CustomPopupPlacement(offset, PopupPrimaryAxis.None) };
         }
 
         // =====================================================================

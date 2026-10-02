@@ -125,6 +125,7 @@
     <Compile Include="Controls\Player\OverlayVisibilityPolicy.cs" />
     <Compile Include="Controls\Player\SubtitleDelay.cs" />
     <Compile Include="Controls\Player\PlayerStateRules.cs" />
+    <Compile Include="Controls\Player\VisibleBounds.cs" />
     <Compile Include="Services\MpvProcessService.cs" />
     <Compile Include="Services\StremioVideoCenterLogger.cs" />
     <Compile Include="Controls\MediaSection.xaml.cs">
@@ -165,6 +166,7 @@
     <Compile Include="Services\WatchStateService.cs" />
     <Compile Include="Services\PlaybackProgressRecorder.cs" />
     <Compile Include="Services\PlaybackProgress.cs" />
+    <Compile Include="Services\ContinueWatchingProjection.cs" />
     <Compile Include="Services\AutoNextPolicy.cs" />
     <Compile Include="Services\NavigationRules.cs" />
     <Compile Include="Services\EpisodeListService.cs" />

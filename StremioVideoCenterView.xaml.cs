@@ -3898,13 +3898,8 @@ namespace StremioVideoCenter
                     // transition that genuinely needs it closes the player first
                     // (flushing the old episode's progress) - the same as source
                     // failure recovery.
-                    if (transition != null && _stremioPlayer != null)
-                    {
-                        ClosePlayer();
-                    }
-
                     selected =
-                        await ShowSourceSelectorAsync(
+                        await ShowSourceSelectorReplacingPlayerAsync(
                             normalizedSources,
                             mediaItem);
                 }
@@ -3972,11 +3967,10 @@ namespace StremioVideoCenter
                             "Saved source failed to start; falling back to Source Selector. " +
                             UserFacingErrors.ForLog(startEx));
 
-                        ClosePlayer();
                         context.Candidates.Remove(selected);
 
                         NormalizedPlaybackSource alternative =
-                            await ShowSourceSelectorAsync(context.Candidates, mediaItem);
+                            await ShowSourceSelectorReplacingPlayerAsync(context.Candidates, mediaItem);
 
                         if (alternative == null)
                         {
@@ -4191,18 +4185,11 @@ namespace StremioVideoCenter
                 // attempt (a no-op if it never established) and clears the
                 // active context; failedContext keeps the identity for the
                 // next source.
-                ClosePlayer();
-
-                // Let ClosePlayer's deferred Home refocus (Input priority)
-                // run first so it cannot steal focus from the selector.
-                await Dispatcher.InvokeAsync(
-                    () => { },
-                    System.Windows.Threading.DispatcherPriority.ContextIdle);
-
                 // An empty list shows the selector's existing "No playable
-                // sources found." state.
+                // sources found." state. The player is closed under the
+                // selector (no Home frame), flushing any recorded progress.
                 NormalizedPlaybackSource next =
-                    await ShowSourceSelectorAsync(remaining, mediaItem);
+                    await ShowSourceSelectorReplacingPlayerAsync(remaining, mediaItem);
 
                 if (next == null)
                 {
@@ -5003,9 +4990,18 @@ namespace StremioVideoCenter
 
             try
             {
-                ClosePlayer();
-
-                await ReturnToSourceSelectorAsync(context);
+                if (context == null || context.MediaItem == null || context.Candidates == null)
+                {
+                    // Nothing to go back to: just close.
+                    ClosePlayer();
+                }
+                else
+                {
+                    // The selector is mounted BEFORE the player is closed (see
+                    // ShowSourceSelectorReplacingPlayerAsync), so there is no
+                    // intermediate Home screen.
+                    await ReturnToSourceSelectorAsync(context);
+                }
             }
             catch (Exception ex)
             {
@@ -5037,14 +5033,10 @@ namespace StremioVideoCenter
                 return;
             }
 
-            // Let ClosePlayer's deferred Home refocus (Input priority) run
-            // first so it cannot steal focus from the selector.
-            await Dispatcher.InvokeAsync(
-                () => { },
-                System.Windows.Threading.DispatcherPriority.ContextIdle);
-
+            // Closes the player (flushing progress) as part of showing the
+            // selector, in the right order.
             NormalizedPlaybackSource next =
-                await ShowSourceSelectorAsync(context.Candidates, context.MediaItem);
+                await ShowSourceSelectorReplacingPlayerAsync(context.Candidates, context.MediaItem);
 
             // The new player must be closable while it loads.
             _isReturningToSelector = false;
@@ -5119,7 +5111,11 @@ namespace StremioVideoCenter
             }
         }
 
-        private void ClosePlayer()
+        // restoreHomeFocus: false when a Source Selector is being shown in the
+        // player's place - the queued Home refocus would otherwise steal focus
+        // from it (and, being the "nothing on top" destination, is exactly what
+        // must not be navigated to).
+        private void ClosePlayer(bool restoreHomeFocus = true)
         {
             if (_stremioPlayer != null)
             {
@@ -5216,9 +5212,33 @@ namespace StremioVideoCenter
             // native teardown's focus transition fully settle first -
             // same FocusFirstAvailableSection() target and destination
             // as before, only the timing changes.
-            Dispatcher.BeginInvoke(
-                new Action(() => { FocusFirstAvailableSection(); }),
-                System.Windows.Threading.DispatcherPriority.Input);
+            if (restoreHomeFocus)
+            {
+                Dispatcher.BeginInvoke(
+                    new Action(() => { FocusFirstAvailableSection(); }),
+                    System.Windows.Threading.DispatcherPriority.Input);
+            }
+        }
+
+        // Shows the Source Selector IN PLACE OF the player with no frame in
+        // between: the selector is mounted first (ShowSourceSelectorAsync runs
+        // synchronously up to awaiting the user), and only then is the player
+        // closed - all within one dispatcher turn, so Home (which sits beneath
+        // both) is never rendered. The old player is stopped/disposed and its
+        // progress flushed exactly as before; only the order changed.
+        private async Task<NormalizedPlaybackSource> ShowSourceSelectorReplacingPlayerAsync(
+            List<NormalizedPlaybackSource> sources,
+            MediaItem mediaItem)
+        {
+            Task<NormalizedPlaybackSource> selection =
+                ShowSourceSelectorAsync(sources, mediaItem);
+
+            if (_stremioPlayer != null)
+            {
+                ClosePlayer(restoreHomeFocus: false);
+            }
+
+            return await selection;
         }
 
         // =========================================================
