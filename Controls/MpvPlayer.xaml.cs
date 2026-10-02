@@ -346,6 +346,9 @@ namespace StremioVideoCenterControls
             try { _hideControlsTimer?.Stop(); } catch { }
             try { _noticeTimer?.Stop(); } catch { }
 
+            // A menu left open over a closing player resumes nothing.
+            _menuGuard.Discard();
+
             // Closing the player must not leave the host window borderless/
             // maximised because fullscreen was toggled on.
             try { if (_uiState.IsFullscreen) ToggleFullscreen(); } catch { }
@@ -600,6 +603,7 @@ namespace StremioVideoCenterControls
             // Keep an open Audio/Subtitles menu in step with mpv: rebuild it if
             // the track list/selection changed, otherwise just the delay value.
             RefreshOpenTrackMenuIfStale();
+            EnforceMenuPlaybackHold(state);
 
             if (_uiState.OpenMenu == PlayerMenu.Subtitles)
                 _trackMenu.UpdateSubtitleDelay(state.SubtitleDelaySeconds);
@@ -960,6 +964,10 @@ namespace StremioVideoCenterControls
 
             _trackMenuVersion = state.TracksVersion;
 
+            // Fit the (scrolling) track list inside the player: leave room for
+            // the title, padding, and - for Subtitles - the delay controls.
+            _trackMenu.SetMaxListHeight(ControlsOverlay.ActualHeight - (isAudio ? 150 : 330));
+
             return _trackMenu.Populate(
                 isAudio ? "Audio" : "Subtitles",
                 TrackMenuLayout.Build(
@@ -975,15 +983,30 @@ namespace StremioVideoCenterControls
             if (_session == null || _focus == null) return;
 
             // Menus never stack: opening one while another is open replaces it
-            // and still returns focus to the right button on close.
+            // and still returns focus to the right button on close. Playback is
+            // NOT resumed in between - the state captured when the FIRST menu
+            // opened still applies.
             if (!_focus.IsAtRootScope)
-                CloseActiveMenuAndRestoreFocus();
+                CloseActiveMenuAndRestoreFocus(restorePlayback: false);
 
             UIElement originButton = isAudio ? (UIElement)AudioButton : SubtitleButton;
+
+            // Capture mpv's state BEFORE the menu exists, then pause first.
+            // Already paused (or still loading) -> nothing is paused and, on
+            // close, nothing is resumed.
+            PlaybackState state = _session.State;
+            if (_menuGuard.Open(
+                    state.IsPlaybackEstablished && state.IsPlaying,
+                    _session.Context,
+                    _session.PlayGeneration))
+            {
+                var pauseTask = HoldPlaybackForMenuAsync();
+            }
 
             _pendingTrackMenuIsAudio = isAudio;
 
             FocusGroup group = BuildTrackMenuGroup(isAudio);
+            _menuSerial++;
 
             MenuHost.Content = _trackMenu;
             MenuHost.Visibility = Visibility.Visible;
@@ -992,6 +1015,74 @@ namespace StremioVideoCenterControls
             _focus.PushMenuScope(group, originButton);
             ShowControls();
             RestartHideTimer();
+        }
+
+        // =====================================================================
+        // PLAYBACK WHILE A TRACK MENU IS OPEN
+        //
+        // Opening Audio/Subtitles pauses playback (if it was playing) so tracks
+        // can be chosen without the video running on; closing the menu - by any
+        // route - restores the state captured when it opened. mpv stays the
+        // source of truth: the guard only remembers the user's pre-menu state.
+        // =====================================================================
+
+        private readonly MenuPlaybackGuard _menuGuard = new MenuPlaybackGuard();
+        private bool _menuPausePending;
+
+        // Bumped whenever a menu opens or closes, so an in-flight track
+        // selection can tell the menu it started from is gone.
+        private int _menuSerial;
+
+        private async Task HoldPlaybackForMenuAsync()
+        {
+            PlayerSession session = _session;
+            if (session == null || _disposed || _menuPausePending) return;
+
+            _menuPausePending = true;
+
+            try { await session.SetPausedAsync(true); }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Pausing for track menu failed: " + UserFacingErrors.ForLog(ex));
+            }
+            finally { _menuPausePending = false; }
+        }
+
+        // Resume after the menu closed - but only the playback it was opened
+        // over: a late continuation must never resume another episode/source.
+        private async Task ResumeAfterMenuAsync(PlaybackContext context, int generation)
+        {
+            PlayerSession session = _session;
+            if (session == null || _disposed) return;
+            if (!ReferenceEquals(session.Context, context) || session.PlayGeneration != generation) return;
+
+            try { await session.SetPausedAsync(false); }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Resuming after track menu failed: " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
+        // Called with every state refresh while a track menu is open.
+        private void EnforceMenuPlaybackHold(PlaybackState state)
+        {
+            if (!_menuGuard.IsHeld || _session == null) return;
+
+            if (!_menuGuard.IsSamePlayback(_session.Context, _session.PlayGeneration))
+            {
+                // A different episode/source loaded under the open menu: drop the
+                // menu without resuming anything (the new playback starts by
+                // itself, as it always does).
+                CloseActiveMenuAndRestoreFocus(restorePlayback: true);
+                return;
+            }
+
+            // Still the same playback: it must stay paused while the menu is
+            // open (this also covers a file that finishes loading under it).
+            if (state.IsPlaybackEstablished && state.IsPlaying && !_menuPausePending)
+            {
+                var pauseTask = HoldPlaybackForMenuAsync();
+            }
         }
 
         // The loaded file's tracks changed while a track menu is open (a new
@@ -1015,6 +1106,7 @@ namespace StremioVideoCenterControls
         {
             bool isAudio = _pendingTrackMenuIsAudio;
             bool applied = true;
+            int menuSerial = _menuSerial;
 
             try
             {
@@ -1032,7 +1124,10 @@ namespace StremioVideoCenterControls
                 StremioVideoCenterLogger.Info("Track selection failed: " + UserFacingErrors.ForLog(ex));
             }
 
-            CloseActiveMenuAndRestoreFocus();
+            // If the menu was already closed (or replaced) while the command was
+            // in flight, there is nothing left to close or resume.
+            if (menuSerial == _menuSerial && _uiState.OpenMenu != PlayerMenu.None)
+                CloseActiveMenuAndRestoreFocus();
 
             if (!applied)
                 ShowNotice(isAudio ? "Couldn\u2019t change the audio track" : "Couldn\u2019t change the subtitles");
@@ -1081,14 +1176,33 @@ namespace StremioVideoCenterControls
 
         // Pops the focus scope (which also restores focus to the button that
         // opened the menu) and hides the menu surface.
-        private void CloseActiveMenuAndRestoreFocus()
+        // Pops the focus scope (which also restores focus to the button that
+        // opened the menu), hides the menu surface, and THEN restores the
+        // playback state captured when a track menu opened (restorePlayback:
+        // false only when another menu immediately replaces this one).
+        private void CloseActiveMenuAndRestoreFocus(bool restorePlayback = true)
         {
+            bool wasTrackMenu =
+                _uiState.OpenMenu == PlayerMenu.Audio || _uiState.OpenMenu == PlayerMenu.Subtitles;
+
             if (_focus != null)
                 _focus.PopScope();
 
             MenuHost.Visibility = Visibility.Collapsed;
             MenuHost.Content = null;
             _uiState.OpenMenu = PlayerMenu.None;
+            _menuSerial++;
+
+            if (wasTrackMenu && restorePlayback && _session != null)
+            {
+                PlaybackContext context = _session.Context;
+                int generation = _session.PlayGeneration;
+
+                if (_menuGuard.Close(context, generation, _session.State.IsPlaying))
+                {
+                    var resumeTask = ResumeAfterMenuAsync(context, generation);
+                }
+            }
 
             ShowControls();
             RestartHideTimer();
@@ -1297,28 +1411,32 @@ namespace StremioVideoCenterControls
         private void HandleClose()
         {
             UIElement focused = Keyboard.FocusedElement as UIElement;
-
             PlayerSlider slider = focused as PlayerSlider;
-            if (slider != null && slider.IsEngaged)
-            {
-                slider.Disengage();
-                UpdateSliderEngagedVisual(slider);
-                return;
-            }
 
-            if (!_focus.IsAtRootScope)
+            switch (PlayerStateRules.BackAction(
+                slider != null && slider.IsEngaged,
+                !_focus.IsAtRootScope,
+                slider != null))
             {
-                CloseActiveMenuAndRestoreFocus();
-                return;
-            }
+                case PlayerBackAction.ReleaseSlider:
+                    slider.Disengage();
+                    UpdateSliderEngagedVisual(slider);
+                    return;
 
-            if (slider != null)
-            {
-                _focus.FocusRootDefault();
-                return;
-            }
+                case PlayerBackAction.CloseMenu:
+                    // First Back only closes the menu (restoring the playback
+                    // state captured when it opened); it never leaves the player.
+                    CloseActiveMenuAndRestoreFocus();
+                    return;
 
-            RaiseCloseRequested();
+                case PlayerBackAction.FocusDefaultControl:
+                    _focus.FocusRootDefault();
+                    return;
+
+                default:
+                    RaiseCloseRequested();
+                    return;
+            }
         }
 
         private void HandleActivate()

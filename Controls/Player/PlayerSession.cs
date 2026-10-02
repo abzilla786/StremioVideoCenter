@@ -63,6 +63,10 @@ namespace StremioVideoCenterControls.Player
         // The attempt currently loaded/loading. Set by PlayAsync.
         public PlaybackContext Context { get; private set; }
 
+        // Changes with every load (episode, replacement source), so a caller
+        // can tell whether it is still talking about the same playback.
+        public int PlayGeneration { get { return Volatile.Read(ref _playGeneration); } }
+
         public event EventHandler StateChanged;
         public event EventHandler TracksChanged;
         public event EventHandler EndOfFileReached;
@@ -280,6 +284,15 @@ namespace StremioVideoCenterControls.Player
                 return;
 
             await _host.WaitForAndAttachMpvWindowAsync(process.ProcessId, 3000).ConfigureAwait(true);
+        }
+
+        // Explicit pause/resume (not a toggle): used where the caller means a
+        // specific state, e.g. holding playback while a track menu is open.
+        public async Task SetPausedAsync(bool paused)
+        {
+            MpvIpcClient ipc = LiveIpc();
+            if (ipc == null || !IsRunning) return;
+            await ipc.SetPropertyAsync("pause", paused).ConfigureAwait(true);
         }
 
         public async Task TogglePauseAsync()

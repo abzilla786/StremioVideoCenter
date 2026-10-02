@@ -54,7 +54,18 @@
                        FontWeight="Bold"
                        Margin="10,8,10,10" />
 
-            <ContentControl x:Name="ItemsHost" Focusable="False" />
+            <!-- The track list scrolls (a file can carry dozens of subtitle
+                 tracks) so every track is reachable; the delay controls below
+                 stay in view. MpvPlayer sets MaxHeight to fit the player. -->
+            <ScrollViewer x:Name="ItemsScroll"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Focusable="False"
+                          IsTabStop="False">
+                <ContentControl x:Name="ItemsHost" Focusable="False" />
+            </ScrollViewer>
+
+            <ContentControl x:Name="DelayHost" Focusable="False" />
 
             <TextBlock x:Name="EmptyStateText"
                        Foreground="#AAFFFFFF"

@@ -58,6 +58,7 @@ namespace StremioVideoCenterControls.Player.Menus
             _delayValueText = null;
 
             StackPanel list = new StackPanel();
+            StackPanel delayPanel = new StackPanel();
             FocusGroup group = new FocusGroup();
 
             // Items in layout order; the delay value (not an item, never
@@ -108,14 +109,22 @@ namespace StremioVideoCenterControls.Player.Menus
 
             if (layout.HasDelayRow && minus != null && plus != null && reset != null)
             {
-                AppendSubtitleDelayRow(list, group, layout.DelaySeconds, minus, plus, reset);
+                AppendSubtitleDelayRow(delayPanel, group, layout.DelaySeconds, minus, plus, reset);
             }
 
             EmptyStateText.Text = layout.StatusMessage ?? string.Empty;
             EmptyStateText.Visibility = layout.StatusMessage != null ? Visibility.Visible : Visibility.Collapsed;
             ItemsHost.Content = list.Children.Count > 0 ? list : null;
+            DelayHost.Content = delayPanel.Children.Count > 0 ? delayPanel : null;
 
             return group;
+        }
+
+        // Caps the scrolling track list so the whole menu fits inside the player
+        // (the delay controls below it always stay visible).
+        public void SetMaxListHeight(double height)
+        {
+            ItemsScroll.MaxHeight = System.Math.Max(120, height);
         }
 
         // Live-updates the displayed delay while the menu is open (called when
@@ -212,9 +221,16 @@ namespace StremioVideoCenterControls.Player.Menus
         {
             string full = (isSelected ? "\u25CF " : "\u25CB ") + text;
 
+            // Keyboard/controller navigation scrolls the focused item into view.
+            KeyboardFocusChangedEventHandler bringIntoView = (s, e) =>
+            {
+                FrameworkElement element = s as FrameworkElement;
+                if (element != null) element.BringIntoView();
+            };
+
             // A long label is trimmed with an ellipsis (full text in the
             // tooltip) instead of being silently clipped by the menu border.
-            return new Button
+            Button itemButton = new Button
             {
                 Style = (Style)Resources["MenuItemButtonStyle"],
                 Content = new TextBlock
@@ -229,6 +245,9 @@ namespace StremioVideoCenterControls.Player.Menus
                     : new SolidColorBrush(Color.FromArgb(0x66, 0x00, 0x00, 0x00)),
                 BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF))
             };
+
+            itemButton.GotKeyboardFocus += bringIntoView;
+            return itemButton;
         }
     }
 }

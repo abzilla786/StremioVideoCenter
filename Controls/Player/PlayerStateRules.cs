@@ -2,10 +2,31 @@ using System;
 
 namespace StremioVideoCenterControls.Player
 {
+    // What a Back (B / Esc / Backspace) press does inside the player.
+    public enum PlayerBackAction
+    {
+        ReleaseSlider,
+        CloseMenu,
+        FocusDefaultControl,
+        ExitPlayer
+    }
+
     // Small pure rules shared by PlayerSession and MpvPlayer so the same
     // decision is never re-derived in two places (and can be unit-checked).
     public static class PlayerStateRules
     {
+        // Back is menu-first: an engaged volume slider is released, then an open
+        // menu is closed (restoring the pre-menu playback state), then focus on
+        // a slider returns to the default control - and ONLY then does Back
+        // leave the player (to the Source Selector).
+        public static PlayerBackAction BackAction(bool sliderEngaged, bool menuOpen, bool sliderFocused)
+        {
+            if (sliderEngaged) return PlayerBackAction.ReleaseSlider;
+            if (menuOpen) return PlayerBackAction.CloseMenu;
+            if (sliderFocused) return PlayerBackAction.FocusDefaultControl;
+            return PlayerBackAction.ExitPlayer;
+        }
+
         // Where playback will be right after a user seek, so the position that
         // is persisted when the player closes straight afterwards is the seek
         // target rather than the stale pre-seek position. mpv's next position

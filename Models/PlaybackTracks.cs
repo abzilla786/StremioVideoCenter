@@ -30,9 +30,22 @@ namespace StremioVideoCenter.Models
         // type with nothing selected (e.g. subtitles Off) has no selection.
         public static void ApplyTrackList(PlaybackState state, IEnumerable<MpvTrackInfo> tracks)
         {
-            List<MpvTrackInfo> all = (tracks ?? Enumerable.Empty<MpvTrackInfo>())
-                .Where(t => t != null)
-                .ToList();
+            // Every track mpv reports is kept, once. The only thing dropped is
+            // an entry mpv gave no id for (it cannot be selected), and a repeat
+            // of an id already seen for the same track type (a duplicated
+            // report must not become a duplicate menu entry). Language, title,
+            // codec and flags never decide whether a track is shown.
+            List<MpvTrackInfo> all = new List<MpvTrackInfo>();
+            HashSet<string> seen = new HashSet<string>();
+
+            foreach (MpvTrackInfo track in tracks ?? Enumerable.Empty<MpvTrackInfo>())
+            {
+                if (track == null || track.Id <= 0)
+                    continue;
+
+                if (seen.Add((track.Type ?? string.Empty).ToLowerInvariant() + ":" + track.Id))
+                    all.Add(track);
+            }
 
             List<MpvTrackInfo> audio = all
                 .Where(t => string.Equals(t.Type, "audio", StringComparison.OrdinalIgnoreCase))
