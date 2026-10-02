@@ -63,6 +63,11 @@ namespace StremioVideoCenterControls
         // for eof/stop/quit.
         public event EventHandler PlaybackFailed;
 
+        // Raised on the UI thread once mpv confirms the selected file
+        // loaded (PlayerSession.PlaybackEstablished). Always delivered
+        // before the PlaybackStateChanged ticks that follow it.
+        public event EventHandler PlaybackEstablished;
+
         // Null before a session exists / after DisposePlayer. Exposes the
         // exact same PlaybackState instance RefreshFromState already
         // reads from - not a copy, not a second source of truth.
@@ -121,8 +126,12 @@ namespace StremioVideoCenterControls
             }
             catch (Exception ex)
             {
+                // Details go to the log (URL-stripped); the dialog stays generic
+                // so no command text or URL can reach the user's screen.
+                StremioVideoCenterLogger.Info(
+                    "MpvPlayer_Loaded: startup failed - " + UserFacingErrors.ForLog(ex));
                 MessageBox.Show(
-                    "Unable to start MPV playback engine.\n\n" + ex.Message,
+                    UserFacingErrors.ForPlayerStartup(ex),
                     "MPV Playback Error");
                 // Controls (and Close) remain visible/open regardless.
             }
@@ -187,6 +196,7 @@ namespace StremioVideoCenterControls
                     _session.TracksChanged += Session_StateChanged;
                     _session.EndOfFileReached += Session_EndOfFileReached;
                     _session.PlaybackFailed += Session_PlaybackFailed;
+                    _session.PlaybackEstablished += Session_PlaybackEstablished;
                     _session.Disconnected += Session_Disconnected;
                 }
 
@@ -215,7 +225,7 @@ namespace StremioVideoCenterControls
                 }
                 catch (Exception ex)
                 {
-                    StartupTrace.Log("EnsureStartedAsync: attempt " + attemptId + " StartAsync threw: " + ex.GetType().Name + " - " + ex.Message);
+                    StartupTrace.Log("EnsureStartedAsync: attempt " + attemptId + " StartAsync threw: " + UserFacingErrors.ForLog(ex));
                     throw;
                 }
             }
@@ -226,9 +236,12 @@ namespace StremioVideoCenterControls
             }
         }
 
-        public async Task PlayVideoAsync(string url)
+        public async Task PlayVideoAsync(PlaybackContext context)
         {
             if (_disposed) return;
+
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
 
             // Keep the controls chrome (Close button included) visible
             // regardless of whether this start/play attempt succeeds - a
@@ -242,7 +255,7 @@ namespace StremioVideoCenterControls
             // PlayerSession.StartAsync call if one was needed) - only past
             // this point does loadfile ever get issued.
             StartupTrace.Log("PlayVideoAsync: startup complete, issuing loadfile");
-            await _session.PlayAsync(url);
+            await _session.PlayAsync(context);
 
             RestartHideTimer();
         }
@@ -270,6 +283,7 @@ namespace StremioVideoCenterControls
                     _session.TracksChanged -= Session_StateChanged;
                     _session.EndOfFileReached -= Session_EndOfFileReached;
                     _session.PlaybackFailed -= Session_PlaybackFailed;
+                    _session.PlaybackEstablished -= Session_PlaybackEstablished;
                     _session.Disconnected -= Session_Disconnected;
                     _session.Dispose();
                 }
@@ -359,6 +373,19 @@ namespace StremioVideoCenterControls
             MuteButton.Content = state.IsMuted ? "\U0001F507" : "\U0001F50A";
 
             TimeText.Text = FormatTime(state.PositionSeconds) + " / " + FormatTime(state.DurationSeconds);
+        }
+
+        private void Session_PlaybackEstablished(object sender, EventArgs e)
+        {
+            // Raised from the IPC read thread - marshal to the UI thread.
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_disposed) return;
+
+                EventHandler handler = PlaybackEstablished;
+                if (handler != null)
+                    handler(this, EventArgs.Empty);
+            }));
         }
 
         private void Session_PlaybackFailed(object sender, EventArgs e)

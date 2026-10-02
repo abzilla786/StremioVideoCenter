@@ -20,6 +20,13 @@ namespace StremioVideoCenter.Services
         }
     }
 
+    // Failure of an mpv IPC command. The message is always safe to show or log:
+    // it never contains command arguments (which can include playback URLs).
+    public sealed class MpvCommandException : Exception
+    {
+        public MpvCommandException(string message) : base(message) { }
+    }
+
     // Owns mpv's JSON IPC protocol over an already-connected pipe stream:
     // - One background read loop runs for the lifetime of the connection,
     //   independent of any individual command.
@@ -43,6 +50,7 @@ namespace StremioVideoCenter.Services
         private Task _readLoopTask;
         private int _requestId;
         private bool _disposed;
+        private readonly SemaphoreSlim _writeLock = new SemaphoreSlim(1, 1);
 
         public event EventHandler<MpvEventArgs> EventReceived;
         public event EventHandler Disconnected;
@@ -139,6 +147,13 @@ namespace StremioVideoCenter.Services
             return SendCommandAsync(new JArray(args));
         }
 
+        // Same as RunCommandAsync but with a caller-chosen timeout, for
+        // shutdown paths that must not wait the full default 5 seconds.
+        public Task RunCommandWithTimeoutAsync(int timeoutMs, params object[] args)
+        {
+            return SendCommandAsync(new JArray(args), timeoutMs);
+        }
+
         public async Task<JToken> GetPropertyAsync(string property)
         {
             JObject reply = await SendCommandAsync(new JArray("get_property", property)).ConfigureAwait(false);
@@ -156,11 +171,21 @@ namespace StremioVideoCenter.Services
             return SendCommandAsync(new JArray("observe_property", observeId, property));
         }
 
+        // Commands are written one at a time. The write itself is async and the
+        // lock is a SemaphoreSlim (not a monitor) so no thread is blocked, and
+        // both acquiring it and the write itself are bounded by the command
+        // timeout so a wedged pipe cannot stall every later command forever.
+        //
+        // Exceptions raised here deliberately carry only the mpv command NAME,
+        // never the argument list: a "loadfile" command contains the playback
+        // URL (which may embed credentials), and these messages can end up in
+        // logs or UI.
         private async Task<JObject> SendCommandAsync(JArray command, int timeoutMs = 5000)
         {
             if (_disposed || _stream == null || _writer == null)
-                throw new InvalidOperationException("mpv IPC is not connected.");
+                throw new MpvCommandException("mpv IPC is not connected.");
 
+            string commandName = DescribeCommand(command);
             int id = Interlocked.Increment(ref _requestId);
             TaskCompletionSource<JObject> tcs =
                 new TaskCompletionSource<JObject>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -174,14 +199,50 @@ namespace StremioVideoCenter.Services
 
             string json = payload.ToString(Newtonsoft.Json.Formatting.None);
 
+            bool lockTaken = false;
             try
             {
-                await _writer.WriteLineAsync(json).ConfigureAwait(false);
+                lockTaken = await _writeLock.WaitAsync(timeoutMs).ConfigureAwait(false);
+                if (!lockTaken)
+                {
+                    _pending.TryRemove(id, out tcs);
+                    throw new MpvCommandException("mpv command timed out (" + commandName + ").");
+                }
+
+                StreamWriter writer = _writer;
+                if (_disposed || writer == null)
+                {
+                    _pending.TryRemove(id, out tcs);
+                    throw new MpvCommandException("mpv IPC is not connected.");
+                }
+
+                Task writeTask = writer.WriteLineAsync(json);
+                Task done = await Task.WhenAny(writeTask, Task.Delay(timeoutMs)).ConfigureAwait(false);
+                if (!ReferenceEquals(done, writeTask))
+                {
+                    _pending.TryRemove(id, out tcs);
+                    // Do not release the lock while the write is still pending:
+                    // a second writer would interleave bytes with it.
+                    SwallowAndRelease(writeTask);
+                    lockTaken = false;
+                    throw new MpvCommandException("mpv command timed out (" + commandName + ").");
+                }
+
+                await writeTask.ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (MpvCommandException)
+            {
+                throw;
+            }
+            catch (Exception)
             {
                 _pending.TryRemove(id, out tcs);
-                throw new InvalidOperationException("Failed to send mpv command.", ex);
+                throw new MpvCommandException("Failed to send mpv command (" + commandName + ").");
+            }
+            finally
+            {
+                if (lockTaken)
+                    _writeLock.Release();
             }
 
             Task finished = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs)).ConfigureAwait(false);
@@ -189,10 +250,18 @@ namespace StremioVideoCenter.Services
             if (!ReferenceEquals(finished, tcs.Task))
             {
                 _pending.TryRemove(id, out tcs);
-                throw new TimeoutException("mpv command timed out: " + json);
+                throw new MpvCommandException("mpv command timed out (" + commandName + ").");
             }
 
-            JObject reply = await tcs.Task.ConfigureAwait(false);
+            JObject reply;
+            try
+            {
+                reply = await tcs.Task.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                throw new MpvCommandException("mpv IPC connection closed.");
+            }
 
             JToken errorToken;
             if (reply.TryGetValue("error", out errorToken))
@@ -201,11 +270,29 @@ namespace StremioVideoCenter.Services
                 if (!string.IsNullOrWhiteSpace(error) &&
                     !string.Equals(error, "success", StringComparison.OrdinalIgnoreCase))
                 {
-                    throw new InvalidOperationException("mpv command failed: " + error);
+                    throw new MpvCommandException("mpv command failed (" + commandName + "): " + error);
                 }
             }
 
             return reply;
+        }
+
+        // Releases the write lock once a write that outlived its timeout finally
+        // completes (or faults), so the pipe is never written concurrently.
+        private void SwallowAndRelease(Task writeTask)
+        {
+            writeTask.ContinueWith(
+                t => { var ignored = t.Exception; try { _writeLock.Release(); } catch { } },
+                TaskContinuationOptions.ExecuteSynchronously);
+        }
+
+        private static string DescribeCommand(JArray command)
+        {
+            if (command == null || command.Count == 0)
+                return "unknown";
+
+            string name = command[0] == null ? null : command[0].ToString();
+            return string.IsNullOrEmpty(name) ? "unknown" : name;
         }
 
         private void FailAllPending()

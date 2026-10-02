@@ -109,7 +109,8 @@ namespace StremioVideoCenter.Services
             string title,
             string posterPath,
             string year,
-            string displayType)
+            string displayType,
+            SavedSourceReference savedSource = null)
         {
             if (string.IsNullOrWhiteSpace(canonicalKey))
             {
@@ -169,6 +170,14 @@ namespace StremioVideoCenter.Services
             entry.Type = displayType;
             entry.LastPlayedUtc = now;
 
+            // Remember the source that actually played. A null reference
+            // (no usable identifier) keeps whatever was saved before
+            // rather than erasing a good one.
+            if (savedSource != null && savedSource.IsUsable)
+            {
+                entry.SavedSource = savedSource;
+            }
+
             EnforceRetentionCap(profileId);
 
             TryPersist();
@@ -198,7 +207,8 @@ namespace StremioVideoCenter.Services
             string canonicalKey,
             double positionSeconds,
             double durationSeconds,
-            bool reachedEndOfFile)
+            bool reachedEndOfFile,
+            bool persist = true)
         {
             if (string.IsNullOrWhiteSpace(canonicalKey))
             {
@@ -235,9 +245,22 @@ namespace StremioVideoCenter.Services
                 entry.IsCompleted = true;
             }
 
-            TryPersist();
+            // persist=false updates memory only; PlaybackProgressRecorder
+            // throttles disk writes and calls Flush() at important moments
+            // (pause/seek/close/failure/completion). Whole-config
+            // SavePluginSettings on every 500 ms poll is far too heavy.
+            if (persist)
+            {
+                TryPersist();
+            }
 
             return entry;
+        }
+
+        // Writes the current in-memory state to disk.
+        public void Flush()
+        {
+            TryPersist();
         }
 
         // =========================================================

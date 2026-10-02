@@ -79,5 +79,12 @@ namespace StremioVideoCenter.Models
         // same way MediaItem itself carries both a Type string and a
         // structured ContentType is derived from it via GetContentType.
         public string Type { get; set; }
+
+        // The last source that actually played (mpv confirmed the file
+        // loaded) for this profile + content. Non-secret identifiers only
+        // - never a stream URL or addon manifest URL. Null for entries
+        // created before this existed or when no usable identifier was
+        // available. See SavedSourceReference.
+        public SavedSourceReference SavedSource { get; set; }
     }
 }

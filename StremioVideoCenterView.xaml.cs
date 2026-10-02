@@ -173,18 +173,20 @@ namespace StremioVideoCenter
         // the other dedicated pages.
         private MyListView _activeMyListView;
 
-        // Identifies the piece of content the CURRENTLY OPEN player
-        // session (_stremioPlayer) is playing, for Watch State purposes
-        // only - set right before playback actually starts in
-        // PlaySelectedMediaAsync, read by StremioPlayer_PlaybackStateChanged
-        // and ClosePlayer, and cleared by ClosePlayer. Null whenever no
-        // player is open, or when the in-progress item has no resolvable
-        // canonical identity (see ContentRequest.BuildStremioId remarks) -
-        // every consumer below treats a null canonical key as "Watch
-        // State unavailable for this item" rather than guessing one.
-        private string _activePlaybackCanonicalKey;
-        private ContentType _activePlaybackContentType;
-        private MediaItem _activePlaybackMediaItem;
+        // Slice 18A: everything about the CURRENT playback attempt
+        // (profile captured at start, canonical key, content type, media
+        // item, selected source, optional resume position, and the other
+        // candidate sources for failure recovery). Set when playback is
+        // started, handed down to MpvPlayer/PlayerSession, and cleared by
+        // ClosePlayer. Null when no player is open. Replaces the former
+        // _activePlayback* and _recovery* fields.
+        private PlaybackContext _playbackContext;
+
+        // Created only once mpv confirms the file loaded
+        // (StremioPlayer_PlaybackEstablished). Null before that and when
+        // Watch State is unavailable, so a failed/aborted attempt records
+        // nothing.
+        private PlaybackProgressRecorder _progressRecorder;
 
         // =========================================================
         // MOVIES / TV / ANIME / SEARCH PAGES (Slice 15)
@@ -3386,9 +3388,8 @@ namespace StremioVideoCenter
                 // be resolved" case) simply means Watch State is
                 // unavailable for this item, same as everywhere else this
                 // codebase treats that null.
-                _activePlaybackCanonicalKey = request.BuildStremioId();
-                _activePlaybackContentType = request.Type;
-                _activePlaybackMediaItem = mediaItem;
+                string canonicalKey = request.BuildStremioId();
+                ContentType contentType = request.Type;
 
                 StremioVideoCenterLogger.Info(
                     string.Format(
@@ -3468,14 +3469,24 @@ namespace StremioVideoCenter
                     return;
                 }
 
-                // Failure-recovery context (session-scoped, in memory only):
-                // the candidate list and the chosen source, so a genuine mpv
-                // load error can return to this Source Selector minus ONLY
-                // the failed candidate. See StremioPlayer_PlaybackFailed.
-                _recoverySources = new List<NormalizedPlaybackSource>(normalizedSources);
-                _recoveryMediaItem = mediaItem;
+                // One context for the whole attempt. The profile is captured
+                // HERE so progress can never leak into a profile selected
+                // later. The candidate list rides along (session-scoped, in
+                // memory only) so a genuine mpv load error can return to
+                // this Source Selector minus ONLY the failed candidate. See
+                // StremioPlayer_PlaybackFailed.
+                Guid? captureProfileId = _profileService?.GetActiveProfileId();
 
-                await StartPlaybackAsync(selected, diagSeq);
+                PlaybackContext context = new PlaybackContext(
+                    captureProfileId ?? Guid.Empty,
+                    canonicalKey,
+                    contentType,
+                    mediaItem,
+                    selected,
+                    null,
+                    normalizedSources);
+
+                await StartPlaybackAsync(context, diagSeq);
             }
             catch (Exception ex)
             {
@@ -3484,19 +3495,21 @@ namespace StremioVideoCenter
                         "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (exception: {2})",
                         diagSeq,
                         DateTime.UtcNow,
-                        ex.Message));
+                        UserFacingErrors.ForLog(ex)));
 
                 TeardownEpisodeBrowserOverlay(
                     pendingEpisodeBrowser);
 
                 ClosePlayer();
 
+                // Never ex.Message: player/IPC/HTTP exception text can embed
+                // command JSON or a playback/addon URL.
                 MessageBox.Show(
                     "Unable to start playback.\n\n" +
                     "Title: " +
                     mediaItem.Title +
                     "\n\n" +
-                    ex.Message);
+                    UserFacingErrors.ForPlayback(ex));
             }
         }
 
@@ -3504,10 +3517,11 @@ namespace StremioVideoCenter
         // (already user-selected) source. Shared by the normal selection
         // path and the post-failure re-selection path.
         private async Task StartPlaybackAsync(
-            NormalizedPlaybackSource selected,
+            PlaybackContext context,
             int diagSeq)
         {
-            _recoverySelected = selected;
+            _playbackContext = context;
+            _progressRecorder = null;
 
             if (_stremioPlayer == null)
             {
@@ -3528,6 +3542,11 @@ namespace StremioVideoCenter
                 _stremioPlayer.PlaybackFailed +=
                     StremioPlayer_PlaybackFailed;
 
+                // Slice 18A: mpv confirmed the file loaded - the only
+                // point at which Watch State/History are created.
+                _stremioPlayer.PlaybackEstablished +=
+                    StremioPlayer_PlaybackEstablished;
+
                 PlaybackTestHost.Children.Add(
                     _stremioPlayer);
 
@@ -3541,8 +3560,7 @@ namespace StremioVideoCenter
                     diagSeq,
                     DateTime.UtcNow));
 
-            await _stremioPlayer.PlayVideoAsync(
-                selected.Source.Url);
+            await _stremioPlayer.PlayVideoAsync(context);
 
             StremioVideoCenterLogger.Info(
                 string.Format(
@@ -3550,18 +3568,31 @@ namespace StremioVideoCenter
                     diagSeq,
                     DateTime.UtcNow));
 
-            // Slice 16B: playback has actually started - establish/
-            // update the Watch State entry now (Slice 16B spec,
-            // Section 9's "Playback starts" requirement). No-op if
-            // this item had no resolvable canonical identity, or if
-            // WatchStateService/the active profile aren't available.
-            EstablishWatchStateOnPlaybackStart();
+            // Slice 18A: Watch State/History are deliberately NOT created
+            // here. loadfile succeeding only means mpv accepted the
+            // command; the stream may still fail to open. They are
+            // established by StremioPlayer_PlaybackEstablished once mpv
+            // reports file-loaded.
+        }
 
-            // Slice 16C: update/create the series/movie-level History
-            // entry at the same "playback actually started" moment
-            // (Slice 16C spec, Section 16). No-op under the same
-            // conditions as EstablishWatchStateOnPlaybackStart above.
-            EstablishHistoryOnPlaybackStart();
+        private void StremioPlayer_PlaybackEstablished(
+            object sender,
+            EventArgs e)
+        {
+            PlaybackContext context = _playbackContext;
+
+            if (sender != _stremioPlayer || context == null || _progressRecorder != null)
+            {
+                return;
+            }
+
+            EstablishWatchStateOnPlaybackStart(context);
+            EstablishHistoryOnPlaybackStart(context);
+
+            if (_watchStateService != null && context.HasIdentity)
+            {
+                _progressRecorder = new PlaybackProgressRecorder(_watchStateService, context);
+            }
         }
 
         // =========================================================
@@ -3577,20 +3608,17 @@ namespace StremioVideoCenter
         // Logs use only the addon display name and the candidate's index;
         // never a URL.
 
-        private List<NormalizedPlaybackSource> _recoverySources;
-        private MediaItem _recoveryMediaItem;
-        private NormalizedPlaybackSource _recoverySelected;
         private bool _isRecoveringFromFailure;
 
         private async void StremioPlayer_PlaybackFailed(
             object sender,
             EventArgs e)
         {
+            PlaybackContext failedContext = _playbackContext;
+
             if (_isRecoveringFromFailure ||
                 sender != _stremioPlayer ||
-                _recoverySelected == null ||
-                _recoverySources == null ||
-                _recoveryMediaItem == null)
+                failedContext == null)
             {
                 return;
             }
@@ -3599,9 +3627,9 @@ namespace StremioVideoCenter
 
             try
             {
-                NormalizedPlaybackSource failed = _recoverySelected;
-                MediaItem mediaItem = _recoveryMediaItem;
-                List<NormalizedPlaybackSource> remaining = _recoverySources;
+                NormalizedPlaybackSource failed = failedContext.Source;
+                MediaItem mediaItem = failedContext.MediaItem;
+                List<NormalizedPlaybackSource> remaining = failedContext.Candidates;
 
                 int failedIndex = remaining.IndexOf(failed);
                 remaining.Remove(failed);
@@ -3615,20 +3643,11 @@ namespace StremioVideoCenter
                         failedIndex,
                         remaining.Count));
 
-                // ClosePlayer clears the active playback identity (and
-                // would defer a Home refocus); keep a copy so the next
-                // source still records Watch State against the same item.
-                string canonicalKey = _activePlaybackCanonicalKey;
-                ContentType contentType = _activePlaybackContentType;
-                MediaItem activeItem = _activePlaybackMediaItem;
-
-                _recoverySelected = null;
-
+                // ClosePlayer flushes any progress already recorded for this
+                // attempt (a no-op if it never established) and clears the
+                // active context; failedContext keeps the identity for the
+                // next source.
                 ClosePlayer();
-
-                _activePlaybackCanonicalKey = canonicalKey;
-                _activePlaybackContentType = contentType;
-                _activePlaybackMediaItem = activeItem;
 
                 // Let ClosePlayer's deferred Home refocus (Input priority)
                 // run first so it cannot steal focus from the selector.
@@ -3643,10 +3662,6 @@ namespace StremioVideoCenter
 
                 if (next == null)
                 {
-                    _recoverySources = null;
-                    _recoveryMediaItem = null;
-                    _activePlaybackCanonicalKey = null;
-                    _activePlaybackMediaItem = null;
                     return;
                 }
 
@@ -3654,17 +3669,17 @@ namespace StremioVideoCenter
                 // arrive while PlayVideoAsync is still awaiting.
                 _isRecoveringFromFailure = false;
 
-                await StartPlaybackAsync(next, 0);
+                await StartPlaybackAsync(failedContext.WithSource(next), 0);
             }
             catch (Exception ex)
             {
                 // Message deliberately omitted from the UI: exception text
                 // from the player layer can embed the playback URL.
                 StremioVideoCenterLogger.Info(
-                    "Source recovery failed: " + ex.GetType().Name);
+                    "Source recovery failed: " + UserFacingErrors.ForLog(ex));
 
                 ClosePlayer();
-                MessageBox.Show("Unable to start playback.");
+                MessageBox.Show("Unable to start playback.\n\n" + UserFacingErrors.ForPlayback(ex));
             }
             finally
             {
@@ -4305,22 +4320,14 @@ namespace StremioVideoCenter
         // this item's canonical identity aren't available - Watch State
         // is additive to playback, never a precondition for it.
 
-        private void EstablishWatchStateOnPlaybackStart()
+        private void EstablishWatchStateOnPlaybackStart(PlaybackContext context)
         {
-            if (_watchStateService == null ||
-                string.IsNullOrWhiteSpace(_activePlaybackCanonicalKey))
+            if (_watchStateService == null || context == null || !context.HasIdentity)
             {
                 return;
             }
 
-            Guid? activeProfileId = _profileService?.GetActiveProfileId();
-
-            if (!activeProfileId.HasValue)
-            {
-                return;
-            }
-
-            MediaItem mediaItem = _activePlaybackMediaItem;
+            MediaItem mediaItem = context.MediaItem;
 
             // Slice 15/16B: a Kitsu-sourced episode's "show" identity is
             // its own StremioId ("kitsu:<id>"); an ordinary TV/anime
@@ -4344,16 +4351,17 @@ namespace StremioVideoCenter
                 mediaItem.StremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
 
             _watchStateService.UpsertOnPlaybackStart(
-                activeProfileId.Value,
-                _activePlaybackContentType,
-                _activePlaybackCanonicalKey,
+                context.ProfileId,
+                context.ContentType,
+                context.CanonicalKey,
                 showStremioId,
                 isKitsuSourced ? (int?)null : mediaItem?.Season,
                 mediaItem?.Episode,
                 mediaItem?.Title,
                 mediaItem?.PosterPath,
                 mediaItem?.Year,
-                mediaItem?.Type);
+                mediaItem?.Type,
+                context.BuildSavedSource());
         }
 
         // Slice 16C: same "playback actually started" moment as
@@ -4366,22 +4374,14 @@ namespace StremioVideoCenter
         // isKitsuSourced-style branching to resolve the series identity
         // itself - only the display season/episode numbers still need
         // that guard, mirroring EstablishWatchStateOnPlaybackStart exactly.
-        private void EstablishHistoryOnPlaybackStart()
+        private void EstablishHistoryOnPlaybackStart(PlaybackContext context)
         {
-            if (_watchHistoryService == null ||
-                string.IsNullOrWhiteSpace(_activePlaybackCanonicalKey))
+            if (_watchHistoryService == null || context == null || !context.HasIdentity)
             {
                 return;
             }
 
-            Guid? activeProfileId = _profileService?.GetActiveProfileId();
-
-            if (!activeProfileId.HasValue)
-            {
-                return;
-            }
-
-            MediaItem mediaItem = _activePlaybackMediaItem;
+            MediaItem mediaItem = context.MediaItem;
 
             if (mediaItem == null || string.IsNullOrWhiteSpace(mediaItem.StremioId))
             {
@@ -4392,10 +4392,10 @@ namespace StremioVideoCenter
                 mediaItem.StremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
 
             _watchHistoryService.RecordVisit(
-                activeProfileId.Value,
-                _activePlaybackContentType,
+                context.ProfileId,
+                context.ContentType,
                 mediaItem.StremioId,
-                _activePlaybackCanonicalKey,
+                context.CanonicalKey,
                 isKitsuSourced ? (int?)null : mediaItem.Season,
                 mediaItem.Episode,
                 mediaItem.Title,
@@ -4409,43 +4409,24 @@ namespace StremioVideoCenter
             object sender,
             EventArgs e)
         {
-            RecordActivePlaybackProgress();
+            // In-memory update on every tick; the recorder throttles disk
+            // writes and persists immediately on pause/seek/completion.
+            if (sender == _stremioPlayer && _progressRecorder != null && _stremioPlayer != null)
+            {
+                _progressRecorder.Update(_stremioPlayer.CurrentPlaybackState);
+            }
         }
 
-        // Reads whatever position/duration/EOF state the existing
-        // PlayerSession polling loop currently knows (via MpvPlayer.
-        // CurrentPlaybackState) and forwards it to WatchStateService.
-        // Called on every PlaybackStateChanged tick during playback, and
-        // once more from ClosePlayer before the player is torn down.
-        private void RecordActivePlaybackProgress()
+        // Immediate persist of the last VALID position. Called from
+        // ClosePlayer (covers user close and failure recovery). A no-op
+        // when the attempt never established, so an aborted start can never
+        // overwrite a saved position.
+        private void FlushPlaybackProgress()
         {
-            if (_watchStateService == null ||
-                _stremioPlayer == null ||
-                string.IsNullOrWhiteSpace(_activePlaybackCanonicalKey))
+            if (_progressRecorder != null && _stremioPlayer != null)
             {
-                return;
+                _progressRecorder.Flush(_stremioPlayer.CurrentPlaybackState);
             }
-
-            Guid? activeProfileId = _profileService?.GetActiveProfileId();
-
-            if (!activeProfileId.HasValue)
-            {
-                return;
-            }
-
-            PlaybackState state = _stremioPlayer.CurrentPlaybackState;
-
-            if (state == null)
-            {
-                return;
-            }
-
-            _watchStateService.RecordProgress(
-                activeProfileId.Value,
-                _activePlaybackCanonicalKey,
-                state.PositionSeconds,
-                state.DurationSeconds,
-                state.ReachedEndOfFile);
         }
 
         // =========================================================
@@ -4456,10 +4437,8 @@ namespace StremioVideoCenter
             object sender,
             EventArgs e)
         {
-            // User closed the player: drop the recovery context.
-            _recoverySources = null;
-            _recoveryMediaItem = null;
-
+            // ClosePlayer also drops the playback context (and with it the
+            // recovery candidates).
             ClosePlayer();
         }
 
@@ -4474,7 +4453,7 @@ namespace StremioVideoCenter
                 // spec, Section 9's "Player closes" requirement). Must
                 // run before DisposePlayer() below, which nulls out the
                 // session CurrentPlaybackState reads from.
-                RecordActivePlaybackProgress();
+                FlushPlaybackProgress();
 
                 // Slice 16C fix: Continue Watching must reflect the
                 // just-finished playback session without waiting for the
@@ -4501,6 +4480,8 @@ namespace StremioVideoCenter
                         StremioPlayer_PlaybackStateChanged;
                     _stremioPlayer.PlaybackFailed -=
                         StremioPlayer_PlaybackFailed;
+                    _stremioPlayer.PlaybackEstablished -=
+                        StremioPlayer_PlaybackEstablished;
                     _stremioPlayer.DisposePlayer();
                 }
                 catch
@@ -4521,14 +4502,10 @@ namespace StremioVideoCenter
                 _stremioPlayer = null;
             }
 
-            // Slice 16B: clear the in-progress playback identity now that
-            // no player is open - the next PlaySelectedMediaAsync call
-            // sets these fresh before playback starts again.
-            _activePlaybackCanonicalKey = null;
-            _activePlaybackMediaItem = null;
-
-            // No player open: nothing left to recover from.
-            _recoverySelected = null;
+            // Slice 18A: no player open - drop the attempt's context and
+            // recorder (the next playback sets them fresh).
+            _playbackContext = null;
+            _progressRecorder = null;
 
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;

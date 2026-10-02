@@ -38,11 +38,34 @@ namespace StremioVideoCenterControls.Player
         // progress.
         private int _startInProgress;
 
+        // Guards PollPositionAsync against overlapping calls (a slow mpv
+        // reply must not let ticks pile up). 0 = free, 1 = poll running.
+        private int _pollInProgress;
+
+        // Bumped for every new loadfile. Poll results that started under an
+        // older generation are discarded so they cannot write stale state.
+        private int _playGeneration;
+
+        // True from file-loaded until the resume seek (if any) completes,
+        // so a position read before the seek lands (0) is never treated as
+        // a valid position.
+        private volatile bool _resumePending;
+
+        private int _seekRequests;
+
         public PlaybackState State { get; private set; }
+
+        // The attempt currently loaded/loading. Set by PlayAsync.
+        public PlaybackContext Context { get; private set; }
 
         public event EventHandler StateChanged;
         public event EventHandler TracksChanged;
         public event EventHandler EndOfFileReached;
+
+        // Raised (on the IPC thread) once mpv confirms the selected file
+        // loaded (file-loaded) - the only point at which Watch State/
+        // History may be created for the attempt.
+        public event EventHandler PlaybackEstablished;
 
         // Raised (on the IPC thread) only for end-file reason=error with a
         // non-empty file_error. State.EndFileError carries the message.
@@ -146,35 +169,54 @@ namespace StremioVideoCenterControls.Player
             }
         }
 
-        public async Task PlayAsync(string url)
+        public async Task PlayAsync(PlaybackContext context)
         {
             if (_disposed) return;
 
+            if (context == null)
+                throw new ArgumentNullException(nameof(context));
+
+            string url = context.PlaybackUrl;
             if (string.IsNullOrWhiteSpace(url))
-                throw new ArgumentException("Playback URL cannot be empty.", nameof(url));
+                throw new ArgumentException("Playback URL cannot be empty.", nameof(context));
 
             if (!IsRunning)
                 throw new InvalidOperationException("PlayerSession must be started before playing.");
+
+            Context = context;
+            ResetPlaybackState();
 
             try
             {
                 await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
             }
-            catch (TimeoutException)
-            {
-                await RecoverAndRetryPlayAsync(url).ConfigureAwait(true);
-                return;
-            }
-            catch (InvalidOperationException)
+            catch (MpvCommandException)
             {
                 await RecoverAndRetryPlayAsync(url).ConfigureAwait(true);
                 return;
             }
 
             await _host.WaitForAndAttachMpvWindowAsync(_process.ProcessId, 3000).ConfigureAwait(true);
+        }
+
+        // Clears everything that describes the previous file BEFORE loadfile
+        // is sent, so a late event from the new file (file-loaded can arrive
+        // while we are still waiting for the mpv window) is never wiped by
+        // a reset that runs afterwards, and nothing from the old file leaks
+        // into the new attempt.
+        private void ResetPlaybackState()
+        {
+            Interlocked.Increment(ref _playGeneration);
+            _resumePending = false;
+
             State.ReachedEndOfFile = false;
             State.EndFileReason = null;
             State.EndFileError = null;
+            State.IsPlaybackEstablished = false;
+            State.HasValidPosition = false;
+            State.PositionSeconds = 0;
+            State.DurationSeconds = 0;
+
             RaiseStateChanged();
         }
 
@@ -186,12 +228,9 @@ namespace StremioVideoCenterControls.Player
             IntPtr hostHandle = _host.WindowHandle;
             TeardownMpvOnly();
             await StartAsync(hostHandle).ConfigureAwait(true);
+            ResetPlaybackState();
             await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
             await _host.WaitForAndAttachMpvWindowAsync(_process.ProcessId, 3000).ConfigureAwait(true);
-            State.ReachedEndOfFile = false;
-            State.EndFileReason = null;
-            State.EndFileError = null;
-            RaiseStateChanged();
         }
 
         public async Task TogglePauseAsync()
@@ -204,12 +243,14 @@ namespace StremioVideoCenterControls.Player
         {
             if (!IsRunning) return;
             await _ipc.RunCommandAsync("seek", seconds, "relative").ConfigureAwait(true);
+            Interlocked.Increment(ref _seekRequests);
         }
 
         public async Task SeekAbsoluteAsync(double seconds)
         {
             if (!IsRunning) return;
             await _ipc.RunCommandAsync("seek", Math.Max(0, seconds), "absolute").ConfigureAwait(true);
+            Interlocked.Increment(ref _seekRequests);
         }
 
         public async Task SetVolumeAsync(double volume)
@@ -246,10 +287,27 @@ namespace StremioVideoCenterControls.Player
         {
             if (!IsRunning) return;
 
+            // Re-entrancy guard: if the previous poll is still waiting on
+            // mpv, skip this tick instead of stacking another pair of
+            // commands behind it.
+            if (Interlocked.CompareExchange(ref _pollInProgress, 1, 0) != 0)
+                return;
+
             try
             {
+                int generation = _playGeneration;
+
+                // Nothing is meaningful before mpv confirmed the file loaded.
+                if (!State.IsPlaybackEstablished || _resumePending)
+                    return;
+
                 JToken position = await _ipc.GetPropertyAsync("time-pos").ConfigureAwait(true);
                 JToken duration = await _ipc.GetPropertyAsync("duration").ConfigureAwait(true);
+
+                // A new loadfile, or a pending resume seek, started while we
+                // were waiting: these values describe the wrong moment.
+                if (generation != _playGeneration || _resumePending || !State.IsPlaybackEstablished)
+                    return;
 
                 double? durationValue = ToNullableDouble(duration);
                 if (durationValue.HasValue && durationValue.Value > 0)
@@ -257,13 +315,21 @@ namespace StremioVideoCenterControls.Player
 
                 double? positionValue = ToNullableDouble(position);
                 if (positionValue.HasValue)
+                {
                     State.PositionSeconds = Math.Max(0, positionValue.Value);
+                    State.HasValidPosition = true;
+                    State.SeekCounter = Volatile.Read(ref _seekRequests);
+                }
 
                 RaiseStateChanged();
             }
             catch
             {
                 // mpv may be between EOF, restart, or shutdown; skip this tick.
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _pollInProgress, 0);
             }
         }
 
@@ -278,6 +344,59 @@ namespace StremioVideoCenterControls.Player
                 case "end-file":
                     HandleEndFile(e.Raw);
                     break;
+
+                case "file-loaded":
+                    HandleFileLoaded();
+                    break;
+            }
+        }
+
+        // mpv has loaded the selected file and entered a valid playback
+        // state. This is the authoritative "playback established" signal:
+        // loadfile's own reply only means the command was accepted, not that
+        // the stream opened (a dead or removed source replies success and
+        // then fails with end-file reason=error).
+        private void HandleFileLoaded()
+        {
+            PlaybackContext context = Context;
+            if (context == null || State.IsPlaybackEstablished)
+                return;
+
+            State.IsPlaybackEstablished = true;
+            _resumePending = context.HasResumePosition;
+
+            StremioVideoCenterLogger.Info("MPV file-loaded: playback established" +
+                (_resumePending ? " (resume pending)" : string.Empty));
+
+            RaiseStateChanged();
+
+            EventHandler established = PlaybackEstablished;
+            if (established != null)
+                established(this, EventArgs.Empty);
+
+            if (_resumePending)
+            {
+                // Fire-and-forget: this runs on the IPC read loop, which must
+                // stay free to deliver the seek's own reply.
+                var ignored = ApplyResumeSeekAsync(context.StartPositionSeconds.Value);
+            }
+        }
+
+        private async Task ApplyResumeSeekAsync(double seconds)
+        {
+            try
+            {
+                await _ipc.RunCommandAsync("seek", Math.Max(0, seconds), "absolute").ConfigureAwait(false);
+            }
+            catch
+            {
+                // Resume is best-effort: on failure playback simply starts
+                // from the beginning, and the saved position is not
+                // overwritten until a real position is read.
+            }
+            finally
+            {
+                _resumePending = false;
             }
         }
 
@@ -493,10 +612,18 @@ namespace StremioVideoCenterControls.Player
 
             if (_ipc != null && _process != null && _process.IsRunning)
             {
-                try { await _ipc.RunCommandAsync("quit").ConfigureAwait(false); }
+                // Bounded: a wedged pipe must not block close for the full
+                // default command timeout. TeardownMpvOnly below kills the
+                // process regardless.
+                try { await _ipc.RunCommandWithTimeoutAsync(1000, "quit").ConfigureAwait(false); }
                 catch { }
 
-                try { await Task.Delay(300).ConfigureAwait(false); }
+                try
+                {
+                    MpvProcessService process = _process;
+                    if (process != null)
+                        process.WaitForExit(500);
+                }
                 catch { }
             }
 
