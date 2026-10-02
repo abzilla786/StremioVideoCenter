@@ -3,7 +3,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
@@ -30,15 +29,10 @@ namespace StremioVideoCenter.Services
     // =============================================================
     //
     // The three ANIME methods below (GetFeaturedAnimeAsync/
-    // GetPopularAnimeAsync/GetNewAnimeAsync) were previously TMDB-only
-    // (honestly empty whenever no TmdbService was configured - see this
-    // file's prior-slice remarks, preserved in git history). Per this
-    // slice's explicit instruction ("remove the old TMDB-only Anime
-    // catalogue path rather than leaving TMDB as a hidden fallback"),
-    // they are now backed entirely by KitsuService - the same provider
-    // AnimeBrowseView's own filtered browse uses - and no longer read
-    // _tmdbService at all. TMDB remains this class's Movie/TV fallback
-    // only (unchanged, out of this slice's scope).
+    // GetPopularAnimeAsync/GetNewAnimeAsync) are backed entirely by
+    // KitsuService - the same provider AnimeBrowseView's own filtered
+    // browse uses. Movie/TV rows are backed entirely by Cinemeta; there
+    // is no other metadata fallback.
     //
     // Kitsu has no "Featured"/"Popular"/"New" catalogs of its own (see
     // KitsuService remarks - no dedicated "trending" endpoint exists),
@@ -82,7 +76,7 @@ namespace StremioVideoCenter.Services
     // =============================================================
     //
     // Fetched directly from Cinemeta's own manifest.json ("extra.options"
-    // on each catalog) this slice - not invented, not TMDB's genre list.
+    // on each catalog) this slice - not invented.
     // Movie and series genre option sets differ slightly (series adds
     // Reality-TV/Talk-Show/Game-Show); year options are catalog-specific
     // too (series only goes back to 1960, movies to 1920). Exposed here
@@ -151,12 +145,6 @@ namespace StremioVideoCenter.Services
         // larger pages via the "take" parameter on every method below.
         private const int DefaultTake = 25;
 
-        // Bounded, same defensive reasoning as
-        // PlaybackSourceAggregationService's Real-Debrid attempt cap -
-        // scales with the requested page size but never fans out
-        // unboundedly against TMDB.
-        private const int MaxConcurrentDetailLookups = 5;
-
         private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
 
         private static readonly ConcurrentDictionary<string, CacheEntry> _cache =
@@ -172,7 +160,6 @@ namespace StremioVideoCenter.Services
         // FIELDS
         // =========================================================
 
-        private readonly TmdbService _tmdbService;
         private readonly CinemetaService _cinemetaService;
         private readonly KitsuService _kitsuService;
 
@@ -180,11 +167,9 @@ namespace StremioVideoCenter.Services
         // CONSTRUCTOR
         // =========================================================
 
-        // kitsuService is required (same as cinemetaService) - Slice 17
-        // makes it the anime rows' sole backbone, exactly as
-        // cinemetaService already is for Movie/TV. tmdbService remains
-        // optional (Movie/TV fallback only).
-        public CatalogueService(TmdbService tmdbService, CinemetaService cinemetaService, KitsuService kitsuService)
+        // Both providers are required: Cinemeta backs the Movie/TV rows and
+        // Kitsu backs the Anime rows.
+        public CatalogueService(CinemetaService cinemetaService, KitsuService kitsuService)
         {
             if (cinemetaService == null)
             {
@@ -196,7 +181,6 @@ namespace StremioVideoCenter.Services
                 throw new ArgumentNullException(nameof(kitsuService));
             }
 
-            _tmdbService = tmdbService;
             _cinemetaService = cinemetaService;
             _kitsuService = kitsuService;
         }
@@ -210,8 +194,7 @@ namespace StremioVideoCenter.Services
             return GetCatalogueRowAsync(
                 BuildCacheKey("movies-featured", genre, skip, take),
                 "movie", "imdbRating", BuildExtraSegment(genre, skip),
-                "Movie", isTv: false, take: take,
-                tmdbFallbackFetch: skip == 0 ? (Func<Task<List<TmdbDiscoveryItem>>>)(() => _tmdbService.GetTopRatedMoviesAsync()) : null);
+                "Movie", take);
         }
 
         public Task<List<MediaItem>> GetPopularMoviesAsync(int take = DefaultTake, int skip = 0, string genre = null)
@@ -219,8 +202,7 @@ namespace StremioVideoCenter.Services
             return GetCatalogueRowAsync(
                 BuildCacheKey("movies-popular", genre, skip, take),
                 "movie", "top", BuildExtraSegment(genre, skip),
-                "Movie", isTv: false, take: take,
-                tmdbFallbackFetch: skip == 0 ? (Func<Task<List<TmdbDiscoveryItem>>>)(() => _tmdbService.GetTrendingMoviesAsync()) : null);
+                "Movie", take);
         }
 
         // year is REQUIRED (Cinemeta's own manifest - see class remarks).
@@ -229,8 +211,7 @@ namespace StremioVideoCenter.Services
             return GetCatalogueRowAsync(
                 BuildCacheKey("movies-new-" + year, null, skip, take),
                 "movie", "year", BuildExtraSegment(year.ToString(), skip),
-                "Movie", isTv: false, take: take,
-                tmdbFallbackFetch: skip == 0 ? (Func<Task<List<TmdbDiscoveryItem>>>)(() => _tmdbService.GetNowPlayingMoviesAsync()) : null);
+                "Movie", take);
         }
 
         // =========================================================
@@ -242,8 +223,7 @@ namespace StremioVideoCenter.Services
             return GetCatalogueRowAsync(
                 BuildCacheKey("tv-featured", genre, skip, take),
                 "series", "imdbRating", BuildExtraSegment(genre, skip),
-                "TV", isTv: true, take: take,
-                tmdbFallbackFetch: skip == 0 ? (Func<Task<List<TmdbDiscoveryItem>>>)(() => _tmdbService.GetTopRatedTvAsync()) : null);
+                "TV", take);
         }
 
         public Task<List<MediaItem>> GetPopularTvShowsAsync(int take = DefaultTake, int skip = 0, string genre = null)
@@ -251,8 +231,7 @@ namespace StremioVideoCenter.Services
             return GetCatalogueRowAsync(
                 BuildCacheKey("tv-popular", genre, skip, take),
                 "series", "top", BuildExtraSegment(genre, skip),
-                "TV", isTv: true, take: take,
-                tmdbFallbackFetch: skip == 0 ? (Func<Task<List<TmdbDiscoveryItem>>>)(() => _tmdbService.GetTrendingTvAsync()) : null);
+                "TV", take);
         }
 
         public Task<List<MediaItem>> GetNewTvShowsAsync(int year, int take = DefaultTake, int skip = 0)
@@ -260,8 +239,7 @@ namespace StremioVideoCenter.Services
             return GetCatalogueRowAsync(
                 BuildCacheKey("tv-new-" + year, null, skip, take),
                 "series", "year", BuildExtraSegment(year.ToString(), skip),
-                "TV", isTv: true, take: take,
-                tmdbFallbackFetch: skip == 0 ? (Func<Task<List<TmdbDiscoveryItem>>>)(() => _tmdbService.GetOnTheAirTvAsync()) : null);
+                "TV", take);
         }
 
         // =========================================================
@@ -388,7 +366,6 @@ namespace StremioVideoCenter.Services
             var mediaItem = new MediaItem
             {
                 StremioId = "kitsu:" + item.Id,
-                TmdbId = null,
                 Title = title,
                 Overview = item.Attributes.Synopsis,
                 ReleaseDate = item.Attributes.StartDate,
@@ -449,8 +426,8 @@ namespace StremioVideoCenter.Services
         //
         // One genre-filtered catalogue page per call, reusing the same
         // Cinemeta catalog request, mapping and 30-minute cache as the
-        // rows above. Deliberately passes NO TMDB fallback - personalisation
-        // is Cinemeta-only for Movie/TV and Kitsu-only for Anime. Returned
+        // rows above. Personalisation is Cinemeta-only for Movie/TV and
+        // Kitsu-only for Anime. Returned
         // lists are shared cache instances: callers must copy, never mutate.
 
         public const int RecommendationCandidateTake = 40;
@@ -460,8 +437,7 @@ namespace StremioVideoCenter.Services
             return GetCatalogueRowAsync(
                 BuildCacheKey(isTv ? "recs-tv" : "recs-movies", genre, 0, RecommendationCandidateTake),
                 isTv ? "series" : "movie", "top", BuildExtraSegment(genre, 0),
-                isTv ? "TV" : "Movie", isTv: isTv, take: RecommendationCandidateTake,
-                tmdbFallbackFetch: null);
+                isTv ? "TV" : "Movie", RecommendationCandidateTake);
         }
 
         // Real Kitsu slug for a category title (as stored in My List/History
@@ -507,27 +483,18 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
-        // CATALOGUE ROW FETCH (Cinemeta-first, TMDB fallback)
+        // CATALOGUE ROW FETCH (Cinemeta)
         // =========================================================
         //
-        // TMDB fallback is only attempted for the first page (skip==0,
-        // tmdbFallbackFetch passed as null otherwise by every caller
-        // above) - TMDB's own top_rated/trending/now_playing delegates
-        // have no skip/page parameter threaded through them from this
-        // class today (unchanged from Slice 13), so a paginated request
-        // that found Cinemeta empty would otherwise silently re-fetch
-        // TMDB's fixed first page on every "Load More" click. Honest
-        // empty result instead - a real, documented provider-fallback
-        // limitation rather than a duplicate-content bug.
+        // One Cinemeta catalog request mapped to MediaItems and cached for
+        // CacheTtl. An empty Cinemeta result is an honest empty row.
         private async Task<List<MediaItem>> GetCatalogueRowAsync(
             string cacheKey,
             string cinemetaType,
             string catalogId,
             string extraSegment,
             string mediaItemType,
-            bool isTv,
-            int take,
-            Func<Task<List<TmdbDiscoveryItem>>> tmdbFallbackFetch)
+            int take)
         {
             List<MediaItem> cached = TryGetCached(cacheKey);
 
@@ -540,13 +507,6 @@ namespace StremioVideoCenter.Services
                 await _cinemetaService.GetCatalogAsync(cinemetaType, catalogId, extraSegment);
 
             List<MediaItem> items = BuildMediaItemsFromCinemeta(catalogItems, mediaItemType, take);
-
-            if (items.Count == 0 && _tmdbService != null && tmdbFallbackFetch != null)
-            {
-                List<TmdbDiscoveryItem> candidates = await tmdbFallbackFetch();
-
-                items = await BuildMediaItemsAsync(candidates, isTv, mediaItemType, take);
-            }
 
             SetCached(cacheKey, items);
 
@@ -623,7 +583,6 @@ namespace StremioVideoCenter.Services
                 result.Add(new MediaItem
                 {
                     StremioId = imdbId,
-                    TmdbId = null,
                     Title = item.Name,
                     Overview = item.Description,
                     Year = !string.IsNullOrWhiteSpace(item.Year)
@@ -639,170 +598,6 @@ namespace StremioVideoCenter.Services
             }
 
             return result;
-        }
-
-        // =========================================================
-        // BUILD MEDIA ITEMS (candidates -> real-id MediaItems)
-        // =========================================================
-
-        private async Task<List<MediaItem>> BuildMediaItemsAsync(
-            List<TmdbDiscoveryItem> candidates,
-            bool isTv,
-            string type,
-            int take)
-        {
-            var result = new List<MediaItem>();
-
-            if (candidates == null || candidates.Count == 0)
-            {
-                return result;
-            }
-
-            // Wider candidate pool than "take" so skipping items with no
-            // IMDb mapping rarely leaves a row short - scales with the
-            // requested page size, capped to avoid an unbounded TMDB
-            // detail-lookup fan-out for a very large "take".
-            int poolSize = Math.Min(Math.Max(take * 2, 20), 60);
-
-            List<TmdbDiscoveryItem> pool =
-                candidates
-                    .Where(item =>
-                        item != null &&
-                        item.Id > 0 &&
-                        !item.Adult &&
-                        item.HasPoster &&
-                        !string.IsNullOrWhiteSpace(item.DisplayTitle))
-                    .Take(poolSize)
-                    .ToList();
-
-            using (var throttle = new SemaphoreSlim(MaxConcurrentDetailLookups))
-            {
-                var lookupTasks = pool
-                    .Select(candidate => ResolveMediaItemAsync(candidate, isTv, type, throttle))
-                    .ToList();
-
-                MediaItem[] resolved = await Task.WhenAll(lookupTasks);
-
-                foreach (MediaItem item in resolved)
-                {
-                    if (item == null)
-                    {
-                        continue;
-                    }
-
-                    if (result.Count >= take)
-                    {
-                        break;
-                    }
-
-                    result.Add(item);
-                }
-            }
-
-            return result;
-        }
-
-        // =========================================================
-        // RESOLVE ONE MEDIA ITEM (details lookup for real IMDb id)
-        // =========================================================
-
-        private async Task<MediaItem> ResolveMediaItemAsync(
-            TmdbDiscoveryItem candidate,
-            bool isTv,
-            string type,
-            SemaphoreSlim throttle)
-        {
-            await throttle.WaitAsync();
-
-            try
-            {
-                TmdbDetailsItem details = isTv
-                    ? await _tmdbService.GetTvDetailsAsync(candidate.Id)
-                    : await _tmdbService.GetMovieDetailsAsync(candidate.Id);
-
-                string imdbId = details?.ImdbId;
-
-                if (string.IsNullOrWhiteSpace(imdbId))
-                {
-                    return null;
-                }
-
-                return new MediaItem
-                {
-                    StremioId = imdbId,
-                    TmdbId = candidate.Id,
-                    Title = candidate.DisplayTitle,
-                    Overview = candidate.Overview,
-                    Year = candidate.DisplayYear,
-                    ReleaseDate = isTv ? candidate.FirstAirDate : candidate.ReleaseDate,
-                    Rating = candidate.VoteAverage.ToString("0.0"),
-                    Type = type,
-                    Genres = MapGenreIds(candidate.GenreIds),
-                    PosterPath = BuildImageUrl(candidate.PosterPath, "w342"),
-                    BackdropUrl = BuildImageUrl(candidate.BackdropPath, "w1280")
-                };
-            }
-            catch
-            {
-                return null;
-            }
-            finally
-            {
-                throttle.Release();
-            }
-        }
-
-        // =========================================================
-        // GENRE ID -> NAME MAPPING (TMDB fallback path only)
-        // =========================================================
-
-        private static readonly Dictionary<int, string> GenreNamesById =
-            new Dictionary<int, string>
-            {
-                { 28, "Action" }, { 12, "Adventure" }, { 16, "Animation" }, { 35, "Comedy" },
-                { 80, "Crime" }, { 99, "Documentary" }, { 18, "Drama" }, { 10751, "Family" },
-                { 14, "Fantasy" }, { 36, "History" }, { 27, "Horror" }, { 10402, "Music" },
-                { 9648, "Mystery" }, { 10749, "Romance" }, { 878, "Science Fiction" },
-                { 10770, "TV Movie" }, { 53, "Thriller" }, { 10752, "War" }, { 37, "Western" },
-                { 10759, "Action & Adventure" }, { 10762, "Kids" }, { 10763, "News" },
-                { 10764, "Reality" }, { 10765, "Sci-Fi & Fantasy" }, { 10766, "Soap" },
-                { 10767, "Talk" }, { 10768, "War & Politics" }
-            };
-
-        private static List<string> MapGenreIds(List<int> genreIds)
-        {
-            if (genreIds == null || genreIds.Count == 0)
-            {
-                return new List<string>();
-            }
-
-            var names = new List<string>();
-
-            foreach (int id in genreIds)
-            {
-                string name;
-
-                if (GenreNamesById.TryGetValue(id, out name) && !string.IsNullOrWhiteSpace(name))
-                {
-                    names.Add(name);
-                }
-            }
-
-            return names;
-        }
-
-        // =========================================================
-        // BUILD TMDB IMAGE URL
-        // =========================================================
-
-        private static string BuildImageUrl(string imagePath, string size)
-        {
-            if (string.IsNullOrWhiteSpace(imagePath))
-            {
-                return string.Empty;
-            }
-
-            return "https://image.tmdb.org/t/p/" + size + imagePath;
         }
     }
 }

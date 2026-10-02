@@ -14,10 +14,10 @@ namespace StremioVideoCenter.Models
         private bool _backdropLoading;
 
         // =========================================================
-        // CANONICAL IDENTITY (Slice 17 - TMDB removed from Hero)
+        // CANONICAL IDENTITY (Slice 17)
         // =========================================================
         //
-        // Replaces the old TmdbId/ImdbId pair. A Hero card is now
+        // A Hero card is
         // sourced from either Cinemeta (Movie/TV - id is the "tt..."
         // imdb id, same shape ContentRequest.BuildStremioId() itself
         // produces) or Kitsu (Anime - id is "kitsu:<id>", matching
@@ -55,13 +55,9 @@ namespace StremioVideoCenter.Models
 
         // Genre names. For a Cinemeta-sourced (Movie/TV) card these are
         // Cinemeta's own real genre names (CinemetaCatalogItem.Genres),
-        // copied straight through - no id-to-name mapping table needed,
-        // unlike the old TMDB-based version. For a Kitsu-sourced (Anime)
-        // card this is currently always empty - Kitsu's categories are a
-        // relationship, not a plain attribute (see KitsuService's own
-        // remarks), and resolving them for Hero specifically is out of
-        // this slice's scope (Hero's own genre display is not part of the
-        // Anime Browse filter work this slice covers).
+        // copied straight through - no id-to-name mapping table needed.
+        // For a Kitsu-sourced (Anime) card these are Kitsu's category
+        // titles (resolved by KitsuService from include=categories).
         public List<string> Genres { get; set; }
 
         public BitmapImage BackdropImage

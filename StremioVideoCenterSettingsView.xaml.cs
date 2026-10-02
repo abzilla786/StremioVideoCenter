@@ -52,9 +52,6 @@ namespace StremioVideoCenter
 
             isLoadingValues = true;
 
-            TmdbApiKeyBox.Password =
-                viewModel.Settings.TmdbApiKey ?? string.Empty;
-
             // OMDb's PasswordBox was removed from this panel (Cinemeta-
             // First Addon Settings Architecture slice - see the XAML
             // remarks above the Real-Debrid section). Settings.OmdbApiKey
@@ -73,34 +70,6 @@ namespace StremioVideoCenter
             isLoadingValues = false;
 
             RefreshAddonInstancesList();
-        }
-
-        // =========================================================
-        // TMDB PASSWORD CHANGED
-        // =========================================================
-
-        private void TmdbApiKeyBox_PasswordChanged(
-            object sender,
-            RoutedEventArgs e)
-        {
-            if (isLoadingValues)
-            {
-                return;
-            }
-
-            var viewModel =
-                DataContext as StremioVideoCenterSettingsViewModel;
-
-            if (viewModel?.Settings == null)
-            {
-                return;
-            }
-
-            viewModel.Settings.TmdbApiKey =
-                TmdbApiKeyBox.Password;
-
-            TmdbConnectionStatus.Text =
-                string.Empty;
         }
 
         // =========================================================
@@ -131,67 +100,6 @@ namespace StremioVideoCenter
                 string.Empty;
         }
 
-        // =========================================================
-        // TEST TMDB CONNECTION
-        // =========================================================
-
-        private async void TestTmdbConnection_Click(
-            object sender,
-            RoutedEventArgs e)
-        {
-            var viewModel =
-                DataContext as StremioVideoCenterSettingsViewModel;
-
-            if (viewModel?.Settings == null)
-            {
-                return;
-            }
-
-            string accessToken =
-                viewModel.Settings.TmdbApiKey;
-
-            if (string.IsNullOrWhiteSpace(accessToken))
-            {
-                TmdbConnectionStatus.Text =
-                    "Please enter your TMDB API Read Access Token first.";
-
-                return;
-            }
-
-            TmdbConnectionStatus.Text =
-                "Testing TMDB connection...";
-
-            TestTmdbConnectionButton.IsEnabled = false;
-
-            try
-            {
-                var tmdbService =
-                    new TmdbService(accessToken);
-
-                bool connected =
-                    await tmdbService.TestConnectionAsync();
-
-                if (connected)
-                {
-                    TmdbConnectionStatus.Text =
-                        "TMDB connection successful.";
-                }
-                else
-                {
-                    TmdbConnectionStatus.Text =
-                        "TMDB connection failed. Please check your credential and internet connection.";
-                }
-            }
-            catch
-            {
-                TmdbConnectionStatus.Text =
-                    "TMDB connection failed.";
-            }
-            finally
-            {
-                TestTmdbConnectionButton.IsEnabled = true;
-            }
-        }
         // =========================================================
         // TEST REAL-DEBRID CONNECTION
         // =========================================================

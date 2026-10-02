@@ -20,7 +20,7 @@ namespace StremioVideoCenter.Services
     //
     // WHAT THIS DOES NOT DO (explicitly deferred)
     // --------------------------------------------
-    // This never calls Cinemeta/TMDB/OMDb - it has no network dependency
+    // This never calls Cinemeta/OMDb - it has no network dependency
     // at all. Turning a parsed "Title"/"Year" into a real Cinemeta/IMDb
     // match (the "Metadata matching" stage of the pipeline this slice's
     // spec describes) is a distinct, future concern: it needs fuzzy

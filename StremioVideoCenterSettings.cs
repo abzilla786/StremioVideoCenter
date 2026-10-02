@@ -15,7 +15,7 @@ namespace StremioVideoCenter
     //
     public class StremioVideoCenterSettings : ObservableObject
     {
-        private string tmdbApiKey = string.Empty;
+        private int settingsSchemaVersion;
         private string omdbApiKey = string.Empty;
         private string realDebridApiKey = string.Empty;
         private string stremioAddonUrls = "http://127.0.0.1:7000";
@@ -29,13 +29,24 @@ namespace StremioVideoCenter
         private List<MyListEntry> myListEntries = new List<MyListEntry>();
 
         // =========================================================
-        // TMDB API CREDENTIAL
+        // SETTINGS SCHEMA VERSION
         // =========================================================
+        //
+        // Persisted marker for one-time settings clean-ups. Version 1 =
+        // the Slice 17D TMDB removal: the TMDB credential property no
+        // longer exists, so a config.json saved by an older build still
+        // carries an orphaned "TmdbApiKey" value until the settings are
+        // saved again. StremioVideoCenterSettingsViewModel's constructor
+        // saves once when this is below CurrentSettingsSchemaVersion,
+        // which rewrites config.json (via the normal SavePluginSettings
+        // path) without the obsolete field.
 
-        public string TmdbApiKey
+        public const int CurrentSettingsSchemaVersion = 1;
+
+        public int SettingsSchemaVersion
         {
-            get => tmdbApiKey;
-            set => SetValue(ref tmdbApiKey, value);
+            get => settingsSchemaVersion;
+            set => SetValue(ref settingsSchemaVersion, value);
         }
 
         // =========================================================
@@ -372,6 +383,27 @@ namespace StremioVideoCenter
             // instance the first time this Settings view is opened.
             Settings.SyncLegacyAddonUrls();
 
+            // One-time clean-up of settings saved by builds that still had
+            // the TMDB credential (removed in Slice 17D): the old
+            // "TmdbApiKey" value is ignored on load, and this single save
+            // through the normal persistence path rewrites config.json
+            // without it. The version marker stops it repeating.
+            if (Settings.SettingsSchemaVersion < StremioVideoCenterSettings.CurrentSettingsSchemaVersion)
+            {
+                Settings.SettingsSchemaVersion = StremioVideoCenterSettings.CurrentSettingsSchemaVersion;
+
+                try
+                {
+                    plugin.SavePluginSettings(Settings);
+                }
+                catch (Exception ex)
+                {
+                    Playnite.SDK.LogManager.GetLogger().Warn(
+                        ex,
+                        "Settings clean-up save failed; will retry on next launch.");
+                }
+            }
+
             // Fresh-install / core-addon seeding. Runs here (the plugin
             // constructor's ISettings load, not just when the Settings
             // UI happens to be opened) so a fresh install actually has
@@ -455,7 +487,7 @@ namespace StremioVideoCenter
             // API credentials are optional at this stage.
             //
             // This allows the plugin to open even before the
-            // user has configured TMDB or OMDb.
+            // user has configured OMDb.
             return true;
         }
     }

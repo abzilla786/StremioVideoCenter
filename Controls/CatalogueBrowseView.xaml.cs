@@ -22,9 +22,8 @@ namespace StremioVideoCenterControls
     // One shared, parameterized overlay for both the dedicated Movies
     // page and the dedicated TV page (Initialize(isTv, ...) picks the
     // side) - see StremioVideoCenterView.ShowCatalogueBrowsePageAsync,
-    // which already constructs a CatalogueService (Cinemeta-first,
-    // TMDB-fallback, unchanged from Slice 13/CatalogueService.cs) and
-    // passes it in. This view never talks to CinemetaService/TmdbService
+    // which already constructs a CatalogueService (Cinemeta-backed)
+    // and passes it in. This view never talks to CinemetaService
     // directly and never fabricates data - every item shown here came
     // back from CatalogueService's own real-provider calls.
     //
@@ -225,7 +224,7 @@ namespace StremioVideoCenterControls
         }
 
         // CatalogueService's own catalogue-row methods are already fail-
-        // soft in practice (Cinemeta-first with a TMDB fallback, both
+        // soft in practice (Cinemeta-backed, both
         // wrapped defensively - see CatalogueService.GetCatalogueRowAsync)
         // but this is a defensive backstop so one failing row can never
         // take the other two down with it via Task.WhenAll.

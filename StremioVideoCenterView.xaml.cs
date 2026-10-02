@@ -235,13 +235,6 @@ namespace StremioVideoCenter
 
 
         // =========================================================
-        // TMDB CREDENTIAL
-        // =========================================================
-
-        private readonly string _tmdbAccessToken;
-
-
-        // =========================================================
         // OMDB CREDENTIAL
         // =========================================================
 
@@ -298,9 +291,6 @@ namespace StremioVideoCenter
             InitializeComponent();
 
             configuration = configuration ?? new StremioVideoCenterConfiguration();
-
-            _tmdbAccessToken =
-                configuration.TmdbApiKey;
 
             _omdbApiKey =
                 configuration.OmdbApiKey;
@@ -473,31 +463,14 @@ namespace StremioVideoCenter
 
             if (DataContext is HomeViewModel vm)
             {
-                // TMDB Removal migration (approved Migration Plan, Phase
-                // 1 - Hero, revised by Slice 17's Kitsu lock-in): Hero
-                // no longer depends on tmdbService at all - it is now
-                // Cinemeta/Kitsu-sourced (see LoadHeroSafeAsync) and
-                // always attempts to load, unconditionally, the same
-                // pattern the catalogue already used before this phase.
-                // tmdbService is still threaded through to
-                // LoadCatalogueSafeAsync only - the Movie/TV catalogue's
-                // TMDB fallback remains (CatalogueService falls back to
-                // Cinemeta when tmdbService is null). The Anime rows are
-                // no longer TMDB-related at all as of Slice 17 -
-                // CatalogueService.GetFeaturedAnimeAsync/
-                // GetPopularAnimeAsync/GetNewAnimeAsync are now
-                // Kitsu-backed and ignore tmdbService entirely (see that
-                // class's own remarks).
-                TmdbService tmdbService =
-                    !string.IsNullOrWhiteSpace(_tmdbAccessToken)
-                        ? new TmdbService(_tmdbAccessToken)
-                        : null;
-
+                // Hero (Cinemeta Movie/TV + Kitsu Anime) and the Home
+                // catalogue rows (Cinemeta Movie/TV, Kitsu Anime) always
+                // attempt to load; neither needs any credential.
                 Task heroTask =
                     LoadHeroSafeAsync(vm);
 
                 Task catalogueTask =
-                    LoadCatalogueSafeAsync(vm, tmdbService);
+                    LoadCatalogueSafeAsync(vm);
 
                 await Task.WhenAll(
                     heroTask,
@@ -554,8 +527,7 @@ namespace StremioVideoCenter
         {
             try
             {
-                // TMDB Removal migration (Phase 1 - Hero): Cinemeta
-                // (Movie/TV) + Kitsu (Anime) candidate sourcing - see
+                // Cinemeta (Movie/TV) + Kitsu (Anime) candidate sourcing - see
                 // HeroRecommendationService's own class remarks. Fresh,
                 // local instances, matching this project's existing
                 // convention of constructing these per call site rather
@@ -589,14 +561,10 @@ namespace StremioVideoCenter
         //
         // Real Catalogue & Content Foundation: replaces the hardcoded
         // Top 10 rows and populates the new Trending/Recently Released
-        // rows with real content. Cinemeta-First Addon Settings
-        // Architecture: tmdbService may be null (no TMDB key
-        // configured) - CatalogueService itself falls back to Cinemeta
-        // per row in that case, so this always runs, unlike Hero.
+        // rows with real content (Cinemeta for Movie/TV, Kitsu for Anime).
 
         private async Task LoadCatalogueSafeAsync(
-            HomeViewModel vm,
-            TmdbService tmdbService)
+            HomeViewModel vm)
         {
             try
             {
@@ -607,7 +575,7 @@ namespace StremioVideoCenter
                     new KitsuService();
 
                 CatalogueService catalogueService =
-                    new CatalogueService(tmdbService, cinemetaService, kitsuService);
+                    new CatalogueService(cinemetaService, kitsuService);
 
                 await vm.LoadCatalogueAsync(
                     catalogueService);
@@ -2399,12 +2367,12 @@ namespace StremioVideoCenter
                 // architectural goal ("Anime Series -> Season -> Episode
                 // -> Source Selector -> MPV", the same hierarchy as TV) -
                 // previously an Anime-typed MediaItem (from either the
-                // TMDB-backed rows or the AnimeFLV/Kitsu browse/search
+                // earlier catalogue rows or the AnimeFLV/Kitsu browse/search
                 // paths) skipped episode browsing entirely and went
                 // straight to playback as if it were a single show-level
                 // lookup. EpisodeBrowserView.LoadAsync itself already
                 // handles all three id shapes this can now reach it with
-                // (tt-based via Cinemeta/TMDB, kitsu-based via Kitsu -
+                // (tt-based via Cinemeta, kitsu-based via Kitsu -
                 // see its own remarks). Movies are unaffected either
                 // way, since GetContentType never returns TvShow or
                 // Anime for them. An item that already carries Season/
@@ -2540,18 +2508,9 @@ namespace StremioVideoCenter
             EpisodeBrowserHost.Children.Add(browser);
             EpisodeBrowserHost.Visibility = Visibility.Visible;
 
-            // Slice 13 (Cinemeta-First Provider & Addon Architecture):
-            // Cinemeta needs no credential and is always constructed;
-            // TmdbService is only constructed when a TMDB key is actually
-            // configured - TMDB is optional, matching the same pattern
-            // already used for Home's Hero/catalogue loading above.
+            // Cinemeta needs no credential and is always constructed.
             var cinemetaService =
                 new CinemetaService();
-
-            TmdbService tmdbService =
-                !string.IsNullOrWhiteSpace(_tmdbAccessToken)
-                    ? new TmdbService(_tmdbAccessToken)
-                    : null;
 
             // Slice 15 Kitsu Migration: needed for a Kitsu-sourced show
             // (StremioId starting "kitsu:") - see EpisodeBrowserView.
@@ -2559,7 +2518,7 @@ namespace StremioVideoCenter
             // exactly like cinemetaService above.
             var kitsuService = new KitsuService();
 
-            await browser.LoadAsync(show, cinemetaService, tmdbService, kitsuService);
+            await browser.LoadAsync(show, cinemetaService, kitsuService);
 
             MediaItem result =
                 await completionSource.Task;
@@ -2619,7 +2578,7 @@ namespace StremioVideoCenter
         //
         // Local Files is now a core/default addon (CoreAddonSeedingService),
         // so this entry point exists on every fresh install regardless of
-        // TMDB/Torrentio/Comet configuration - it depends on none of them.
+        // Torrentio/Comet configuration - it depends on none of them.
         //
         // This is deliberately a FOUNDATION, not a full local-media
         // browsing feature: no Local Files catalogue/scan-listing
@@ -2794,12 +2753,11 @@ namespace StremioVideoCenter
                         _watchStateService);
                 }
 
-                // No TMDB: Cinemeta (Movie/TV) and Kitsu (Anime) only. The
+                // Cinemeta (Movie/TV) and Kitsu (Anime) only. The
                 // catalogue cache is static, so this shares Home's cache.
                 if (_recommendationCatalogue == null)
                 {
                     _recommendationCatalogue = new CatalogueService(
-                        null,
                         new CinemetaService(),
                         new KitsuService());
                 }
@@ -3823,14 +3781,9 @@ namespace StremioVideoCenter
             host.Children.Add(page);
             host.Visibility = Visibility.Visible;
 
-            TmdbService tmdbService =
-                !string.IsNullOrWhiteSpace(_tmdbAccessToken)
-                    ? new TmdbService(_tmdbAccessToken)
-                    : null;
-
             var cinemetaService = new CinemetaService();
             var kitsuService = new KitsuService();
-            var catalogueService = new CatalogueService(tmdbService, cinemetaService, kitsuService);
+            var catalogueService = new CatalogueService(cinemetaService, kitsuService);
 
             page.Initialize(isTv, catalogueService);
 
@@ -3923,8 +3876,7 @@ namespace StremioVideoCenter
             AnimePageHost.Children.Add(page);
             AnimePageHost.Visibility = Visibility.Visible;
 
-            // TMDB Removal migration (Phase 3 - Anime catalogue): this
-            // page no longer needs a CatalogueService/TmdbService at
+            // This page does not need a CatalogueService at
             // all - Kitsu (via KitsuService.BrowseAnimeAsync) is now
             // the sole source for the Anime Browse filter/discovery
             // section. Slice 17 UI/navigation fix: the page's own

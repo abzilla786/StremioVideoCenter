@@ -387,7 +387,6 @@ namespace StremioVideoCenterControls
                 result.Add(new MediaItem
                 {
                     StremioId = imdbId,
-                    TmdbId = null,
                     Title = item.Name,
                     Overview = item.Description,
                     Year = !string.IsNullOrWhiteSpace(item.Year) ? item.Year : item.ReleaseInfo,

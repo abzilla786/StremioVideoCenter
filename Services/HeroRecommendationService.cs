@@ -11,20 +11,16 @@ namespace StremioVideoCenter.Services
     // HERO RECOMMENDATION SERVICE
     // =============================================================
     //
-    // TMDB Removal migration (approved Migration Plan, Phase 1 - Hero).
-    //
     // Sources Hero candidates from Cinemeta (Movie/TV - the same
-    // "top" catalogues CatalogueService's own Cinemeta fallback uses)
+    // "top" catalogues CatalogueService's own Cinemeta rows use)
     // and Kitsu (Anime - GetPopularAnimeAsync, the same source
-    // AnimeBrowseView/SearchView already use for Kitsu results). TMDB
-    // is no longer used anywhere in this class. Kitsu was locked in
+    // AnimeBrowseView/SearchView already use for Kitsu results). Kitsu was locked in
     // as Zino's permanent anime provider for the current v1
     // architecture (AniList investigated and explicitly rejected) -
     // see this project's own architecture docs for that decision.
     //
     // The selection algorithm itself (prefer one of each content type,
-    // then fill randomly, five total) is unchanged from the TMDB-based
-    // version - only the candidate data source changed.
+    // then fill randomly, five total).
     public class HeroRecommendationService
     {
         // =========================================================

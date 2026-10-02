@@ -52,7 +52,7 @@ namespace StremioVideoCenter.Services
     //     the same primary "AnimeFLV" source. The "genre" extra's real,
     //     live "options" list (39 verified values - accion, artes-
     //     marciales, aventura, ... yaoi, yuri) is reproduced in
-    //     GenreOptions below - not invented, not TMDB's genre list.
+    //     GenreOptions below - not invented.
     //   - The catalog "type" value is the source's own display name
     //     (e.g. "AnimeFLV"), NOT "anime"/"series"/"movie" - unusual
     //     versus Cinemeta, but exactly what this addon's own manifest

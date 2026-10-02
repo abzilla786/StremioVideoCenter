@@ -292,7 +292,7 @@
         <!-- ========================================================= -->
         <!--
             Full-overlay state, reserved for the case where the browser
-            can't show anything useful at all (no TMDB id, no seasons
+            can't show anything useful at all (no Cinemeta/Kitsu data, no seasons
             found, initial load failure). A single season's episodes
             failing to load no longer uses this - that's now an inline
             message inside the episode panel (see ShowEpisodePanelMessage)

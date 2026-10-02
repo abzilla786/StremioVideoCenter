@@ -86,7 +86,7 @@ namespace StremioVideoCenterControls
         // mediaItem is optional (Slice 10) and used only to populate the
         // header's media-context line (title/year/type/rating) when the
         // caller has one available - existing callers passing only
-        // `sources` are unaffected. This never calls TMDB or any other
+        // `sources` are unaffected. This never calls any
         // metadata source; it only reads properties already present on
         // the MediaItem it's given.
 

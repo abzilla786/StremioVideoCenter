@@ -25,9 +25,9 @@ namespace StremioVideoCenterControls
     // server-side filtered discovery experience against Kitsu's own API
     // (KitsuService.BrowseAnimeAsync) - Type/Category/Season/Year/
     // Status/Sort, all combinable, applied on demand via the Apply
-    // Filters button. Replaces the old TMDB-backed Featured/Popular/New
-    // rows and the old single-row "Popular on Kitsu" row entirely (TMDB
-    // Removal migration, Phase 3 - Anime catalogue). Category filter
+    // Filters button. Replaces the old Featured/Popular/New
+    // rows and the old single-row "Popular on Kitsu" row entirely.
+    // Category filter
     // options are derived from fetched results, never a hard-coded list
     // (see RegisterDiscoveredCategories) - Kitsu has no dedicated
     // categories-listing endpoint in its documented API.
@@ -127,8 +127,7 @@ namespace StremioVideoCenterControls
         // INITIALIZE
         // =========================================================
         //
-        // TMDB Removal migration (Phase 3 - Anime catalogue): no longer
-        // takes a CatalogueService - Kitsu (via BrowseAnimeAsync) is now
+        // Takes no CatalogueService - Kitsu (via BrowseAnimeAsync) is now
         // the sole source for this page. Slice 17 UI/navigation fixes:
         // no longer takes an AnimeFlvCatalogueService either - the
         // "Browse AnimeFLV" section has been removed from this page (see
@@ -272,7 +271,7 @@ namespace StremioVideoCenterControls
         }
 
         // =========================================================
-        // KITSU BROWSE (Slice 17 - replaces the old TMDB rows and the
+        // KITSU BROWSE (Slice 17 - replaces the old rows and the
         // old single-row "Popular on Kitsu" row)
         // =========================================================
 
@@ -1168,9 +1167,8 @@ namespace StremioVideoCenterControls
 
         // Dedicated-page Back navigation task: Down from the Back button
         // needs to reach whichever content actually comes first - the
-        // Kitsu filter row is always present (unlike the old TMDB
-        // sections, which could be entirely absent when TMDB wasn't
-        // configured), so it is always the landing target.
+        // Kitsu filter row is always present, so it is always the
+        // landing target.
         private void FocusFirstAvailable()
         {
             KitsuTypeCombo.Focus();

@@ -393,7 +393,7 @@
                                 addendum). Local Files is now a core/default
                                 addon (see CoreAddonSeedingService), so this
                                 entry point exists on every fresh install
-                                regardless of TMDB/Torrentio/Comet
+                                regardless of Torrentio/Comet
                                 configuration. Click-wired in
                                 StremioVideoCenterView.xaml.cs like every
                                 other overlay host below (PlaybackTestHost/

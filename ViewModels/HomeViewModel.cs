@@ -318,7 +318,7 @@ namespace StremioVideoCenter.ViewModels
         // =========================================================
         //
         // Each of the six rows is fetched and swapped in independently -
-        // one row failing (a transient Cinemeta/TMDB error) never blanks
+        // one row failing (a transient Cinemeta/Kitsu error) never blanks
         // a row that succeeded, and a row that fails simply keeps
         // whatever it already had (empty on first load, or last
         // session's data on a refresh) - same defensive shape as before
@@ -510,13 +510,13 @@ namespace StremioVideoCenter.ViewModels
         // HERO FALLBACK DATA
         // =========================================================
         //
-        // TMDB Removal migration: HeroRecommendationService is now
-        // Cinemeta (Movie/TV) + Kitsu (Anime) sourced, not TMDB-based -
-        // this fixed fallback (unchanged, static demo content) is shown
-        // until that loads, or if it fails entirely. No catalogue/
-        // Continue-Watching/My-List dummy data is seeded here any more
-        // (see class remarks) - only the three pre-existing Hero
-        // fallback slides.
+        // HeroRecommendationService is Cinemeta (Movie/TV) + Kitsu (Anime)
+        // sourced. This fixed, static fallback is shown until that loads,
+        // or if it fails entirely. The slides are text-only: the image
+        // URLs are intentionally empty (HeroItem.LoadBackdropAsync and the
+        // Hero bindings already tolerate an empty URL), so no third-party
+        // image host is referenced. No catalogue/Continue-Watching/My-List
+        // dummy data is seeded here (see class remarks).
 
         private void LoadHeroFallbackData()
         {
@@ -529,9 +529,9 @@ namespace StremioVideoCenter.ViewModels
                 Synopsis =
                     "Joel and Ellie continue their journey through a dangerous post-apocalyptic world, where difficult choices and unexpected threats test their relationship and their will to survive.",
                 PosterUrl =
-                    "https://image.tmdb.org/t/p/w342/uKvVjHNqB5VmOrdxqAt2F7J78ED.jpg",
+                    string.Empty,
                 BackdropUrl =
-                    "https://image.tmdb.org/t/p/w1280/9l1eZiJHmhr5jIlthMdJN5WYoff.jpg"
+                    string.Empty
             });
 
             HeroItems.Add(new HeroItem
@@ -543,9 +543,9 @@ namespace StremioVideoCenter.ViewModels
                 Synopsis =
                     "A team of explorers travel through a wormhole in space in an attempt to ensure humanity's survival, facing extraordinary worlds and challenges far beyond Earth.",
                 PosterUrl =
-                    "https://image.tmdb.org/t/p/w342/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg",
+                    string.Empty,
                 BackdropUrl =
-                    "https://image.tmdb.org/t/p/w1280/xJHokMbljvjADYdit5fK4wFro0c.jpg"
+                    string.Empty
             });
 
             HeroItems.Add(new HeroItem
@@ -557,9 +557,9 @@ namespace StremioVideoCenter.ViewModels
                 Synopsis =
                     "Tanjiro and the Demon Slayer Corps face increasingly powerful enemies as they continue their fight to protect humanity and uncover the secrets surrounding the demons.",
                 PosterUrl =
-                    "https://image.tmdb.org/t/p/w342/xUfRZu2mi8jH6SzQEJGP6tjBuYj.jpg",
+                    string.Empty,
                 BackdropUrl =
-                    "https://image.tmdb.org/t/p/w1280/5s7fX4VhT0X9yQn5XQW6J7VY9bC.jpg"
+                    string.Empty
             });
         }
     }

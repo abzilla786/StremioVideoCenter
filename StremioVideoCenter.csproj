@@ -131,6 +131,7 @@
     <Compile Include="Models\NormalizedPlaybackSource.cs" />
     <Compile Include="Models\ContentType.cs" />
     <Compile Include="Models\ContentRequest.cs" />
+    <Compile Include="Models\EpisodeBrowserModels.cs" />
     <Compile Include="Models\StremioVideoCenterConfiguration.cs" />
     <Compile Include="Models\AddonInstance.cs" />
     <Compile Include="Services\HeroRecommendationService.cs" />
@@ -142,7 +143,6 @@
     <Compile Include="Services\StreamResolverService.cs" />
     <Compile Include="Services\PlaybackSourceAggregationService.cs" />
     <Compile Include="Services\PlaybackSourceNormalizationService.cs" />
-    <Compile Include="Services\TmdbService.cs" />
     <Compile Include="Services\CatalogueService.cs" />
     <Compile Include="Services\CinemetaService.cs" />
     <Compile Include="Services\AnimeFlvCatalogueService.cs" />

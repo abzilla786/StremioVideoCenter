@@ -15,7 +15,7 @@ namespace StremioVideoCenterControls
     // ("LOCAL MEDIA NAVIGATION"). Local Files is a CORE/DEFAULT addon
     // (see CoreAddonSeedingService), so a dedicated navigation entry
     // point for it must exist on every fresh install, independent of
-    // TMDB/Torrentio/Comet configuration - this view and its host
+    // Torrentio/Comet configuration - this view and its host
     // (StremioVideoCenterView.LocalMediaHost/ShowLocalMediaAsync) are
     // exactly that entry point.
     //

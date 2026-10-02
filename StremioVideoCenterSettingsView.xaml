@@ -37,65 +37,6 @@
 
 
             <!-- ========================================================= -->
-            <!-- TMDB SETTINGS                                              -->
-            <!-- ========================================================= -->
-
-            <TextBlock
-                Text="TMDB"
-                FontWeight="Bold"
-                FontSize="14"
-                Margin="0,0,0,8"/>
-
-            <TextBlock
-                Text="TMDB API Key / Read Access Token"
-                Margin="0,0,0,5"/>
-
-            <PasswordBox
-                x:Name="TmdbApiKeyBox"
-                Height="28"
-                Margin="0,0,0,5"
-                PasswordChanged="TmdbApiKeyBox_PasswordChanged"/>
-
-            <StackPanel
-                Margin="0,0,0,20">
-
-                <TextBlock
-                    Text="Your TMDB credential is stored with the plugin settings."
-                    Opacity="0.65"
-                    FontSize="11"
-                    Margin="0,0,0,8"/>
-
-                <Button
-                    x:Name="TestTmdbConnectionButton"
-                    Content="Test TMDB Connection"
-                    Width="180"
-                    Height="30"
-                    HorizontalAlignment="Left"
-                    Click="TestTmdbConnection_Click"/>
-
-                <TextBlock
-                    x:Name="TmdbConnectionStatus"
-                    Margin="0,8,0,0"
-                    FontSize="11"
-                    TextWrapping="Wrap"/>
-
-            </StackPanel>
-
-            <!--
-                "Test TMDB Discovery" (a diagnostic button that exercised
-                HeroRecommendationService + GetBestTrailerOrTeaserAsync)
-                was removed here in Slice 13 (Cinemeta-First Provider &
-                Addon Architecture) - discovery is now validated through
-                the real Cinemeta-first catalogue/provider architecture
-                itself (Home loading, EpisodeBrowserView), not a separate
-                diagnostic control. "Test TMDB Connection" above is KEPT -
-                it proves the credential itself works, which is still a
-                legitimate, non-diagnostic setting now that TMDB is an
-                optional enhancement/fallback provider.
-            -->
-
-
-            <!-- ========================================================= -->
             <!-- REAL-DEBRID SETTINGS                                       -->
             <!-- ========================================================= -->
             <!--
@@ -191,14 +132,14 @@
 
             <!--
                 "Test Content Discovery" (a diagnostic button that proved
-                the TMDB -> Stremio content-id pipeline for a movie/TV
+                the catalogue -> Stremio content-id pipeline for a movie/TV
                 episode/anime episode against the local test addon) was
                 removed here in Slice 13 (Cinemeta-First Provider & Addon
                 Architecture) - inspection confirmed it was purely a
                 diagnostic control (never part of the real playback path;
                 PlaySelectedMediaAsync in StremioVideoCenterView.xaml.cs
                 builds its own ContentRequest directly from the selected
-                MediaItem, it never goes through this test's TMDB-lookup
+                MediaItem, it never went through this test's lookup
                 code). Real content discovery is now exercised by the
                 actual Cinemeta-first catalogue/episode-browsing/playback
                 pipeline this slice implements, not a separate button.

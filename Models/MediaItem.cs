@@ -21,11 +21,6 @@ namespace StremioVideoCenter.Models
         // Example: tt1254207
         public string StremioId { get; set; }
 
-        // TMDB numeric ID.
-        // We will use this later when the TMDB integration becomes
-        // the primary source of media metadata.
-        public int? TmdbId { get; set; }
-
         // =========================================================
         // BASIC MEDIA INFORMATION
         // =========================================================

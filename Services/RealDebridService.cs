@@ -15,11 +15,11 @@ namespace StremioVideoCenter.Services
     // MPV, or the player - StreamResolverService is the only thing that
     // calls this, and only when a stream has no direct Url of its own.
     //
-    // Deliberately mirrors TmdbService's HTTP/JSON approach (HttpClient +
-    // DataContractJsonSerializer, Bearer auth, 15s-ish timeouts) rather than
-    // introducing Newtonsoft into this layer - Newtonsoft is already used by
-    // the player's MpvIpcClient, but the metadata/addon layer (TmdbService,
-    // StremioAddonService) has consistently used DataContractJsonSerializer,
+    // Uses HttpClient + DataContractJsonSerializer (Bearer auth, 15s-ish
+    // timeouts) rather than introducing Newtonsoft into this layer -
+    // Newtonsoft is already used by the player's MpvIpcClient, but the
+    // metadata/addon layer (StremioAddonService, KitsuService) has
+    // consistently used DataContractJsonSerializer,
     // and this keeps that layer internally consistent instead of mixing two
     // JSON frameworks in the same architectural tier.
     public class RealDebridService

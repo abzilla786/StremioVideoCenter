@@ -125,7 +125,6 @@ namespace StremioVideoCenter
 
                 var configuration = new StremioVideoCenterConfiguration
                 {
-                    TmdbApiKey = settings?.Settings?.TmdbApiKey,
                     OmdbApiKey = settings?.Settings?.OmdbApiKey,
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
@@ -340,7 +339,6 @@ namespace StremioVideoCenter
 
                 var configuration = new StremioVideoCenterConfiguration
                 {
-                    TmdbApiKey = settings?.Settings?.TmdbApiKey,
                     OmdbApiKey = settings?.Settings?.OmdbApiKey,
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,

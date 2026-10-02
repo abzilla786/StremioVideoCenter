@@ -12,10 +12,8 @@ namespace StremioVideoCenter.Models
         TvShow,
 
         // Episodic (series-shaped) anime specifically - the overwhelmingly
-        // common case, and consistent with how this project already sources
-        // anime candidates (TmdbService.GetAnimeCandidatesAsync queries
-        // TMDB's "tv" endpoint filtered by genre/origin, not a separate
-        // TMDB content type). A standalone anime film has no episodes and
+        // common case (anime is sourced from Kitsu). A standalone anime film
+        // has no episodes and
         // behaves exactly like an ordinary movie, so it belongs under
         // ContentType.Movie, not here.
         Anime
