@@ -31,6 +31,24 @@
                         <Image Source="{Binding PosterImage}"
                                Stretch="UniformToFill"/>
 
+                        <!-- Slice 18B: saved-progress bar for an incomplete
+                             Watch State entry (Continue Watching / History).
+                             Collapsed unless MediaItem.Progress > 0. -->
+                        <Border x:Name="ProgressTrack"
+                                Height="4"
+                                VerticalAlignment="Bottom"
+                                Background="#99000000"
+                                Visibility="Collapsed">
+                            <Border x:Name="ProgressFill"
+                                    Background="#E91E63"
+                                    HorizontalAlignment="Stretch"
+                                    RenderTransformOrigin="0,0.5">
+                                <Border.RenderTransform>
+                                    <ScaleTransform ScaleX="0" ScaleY="1"/>
+                                </Border.RenderTransform>
+                            </Border>
+                        </Border>
+
                     </Grid>
 
                 </Border>

@@ -157,6 +157,8 @@
     <Compile Include="Models\WatchStateEntry.cs" />
     <Compile Include="Services\WatchStateService.cs" />
     <Compile Include="Services\PlaybackProgressRecorder.cs" />
+    <Compile Include="Services\PlaybackProgress.cs" />
+    <Compile Include="Services\ResumePlanner.cs" />
     <Compile Include="Services\UserFacingErrors.cs" />
     <Compile Include="Models\PlaybackContext.cs" />
     <Compile Include="Models\SavedSourceReference.cs" />

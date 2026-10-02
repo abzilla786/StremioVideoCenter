@@ -439,9 +439,14 @@ namespace StremioVideoCenter.ViewModels
                     Type = entry.Type,
                     Season = entry.SeasonNumber,
                     Episode = entry.EpisodeNumber,
-                    Progress = entry.DurationSeconds > 0
-                        ? entry.PositionSeconds / entry.DurationSeconds
-                        : 0
+                    // Slice 18B: shared calculation (safe for missing
+                    // duration, clamped to 100%) - Watch State stays the
+                    // only source of truth.
+                    Progress = PlaybackProgress.ForEntry(entry),
+
+                    // Selecting this card resumes this exact entry via
+                    // the shared resume pipeline.
+                    ResumeCanonicalKey = entry.CanonicalKey
                 };
 
                 ContinueWatching.Add(mediaItem);

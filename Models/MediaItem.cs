@@ -81,7 +81,17 @@ namespace StremioVideoCenter.Models
 
         public int? Episode { get; set; }
 
+        // Fraction (0..1) of the saved Watch State position over its
+        // duration, for an INCOMPLETE entry only; 0 means "show no bar".
+        // Always computed by PlaybackProgress from Watch State - never a
+        // separately maintained value.
         public double Progress { get; set; }
+
+        // Set (by Continue Watching and History) to the Watch State
+        // canonical key of an incomplete entry that can be resumed.
+        // Selecting such a card goes through the resume pipeline instead of
+        // the Episode Browser/Source Selector path. Null for everything else.
+        public string ResumeCanonicalKey { get; set; }
 
         // =========================================================
         // HERO MEDIA

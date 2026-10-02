@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace StremioVideoCenter.Models
 {
@@ -73,22 +74,25 @@ namespace StremioVideoCenter.Models
             return reference.IsUsable ? reference : null;
         }
 
-        // Strongest identifier wins: torrent identity (hash + file index),
-        // then release filename (+ size when both sides know it), then the
-        // addon's stream name. Never compares URLs.
-        public bool Matches(NormalizedPlaybackSource candidate)
+        // Match strength of a candidate against this saved source. 0 = not
+        // the same source; higher is a stronger identity match:
+        //   3 torrent identity (info hash, and file index when both known)
+        //   2 release filename (and size when both known), same addon
+        //   1 addon stream name, same addon
+        // Never compares URLs.
+        public int MatchTier(NormalizedPlaybackSource candidate)
         {
             if (candidate == null || !IsUsable)
-                return false;
+                return 0;
 
             StremioStream stream = candidate.Source != null ? candidate.Source.OriginatingStream : null;
 
             if (!string.IsNullOrEmpty(InfoHash) && stream != null && !string.IsNullOrEmpty(stream.InfoHash))
             {
                 if (!string.Equals(InfoHash, stream.InfoHash.Trim(), StringComparison.OrdinalIgnoreCase))
-                    return false;
+                    return 0;
 
-                return !FileIdx.HasValue || !stream.FileIdx.HasValue || FileIdx.Value == stream.FileIdx.Value;
+                return (!FileIdx.HasValue || !stream.FileIdx.HasValue || FileIdx.Value == stream.FileIdx.Value) ? 3 : 0;
             }
 
             // Below the torrent tier the addon must agree (when both sides
@@ -96,19 +100,47 @@ namespace StremioVideoCenter.Models
             // necessarily the same stream.
             if (!string.IsNullOrEmpty(AddonName) && !string.IsNullOrWhiteSpace(candidate.SourceAddonName) &&
                 !string.Equals(AddonName, candidate.SourceAddonName.Trim(), StringComparison.OrdinalIgnoreCase))
-                return false;
+                return 0;
 
             if (!string.IsNullOrEmpty(Filename) && !string.IsNullOrWhiteSpace(candidate.ReleaseFilename))
             {
                 if (!string.Equals(Filename, candidate.ReleaseFilename.Trim(), StringComparison.OrdinalIgnoreCase))
-                    return false;
+                    return 0;
 
-                return !FileSizeBytes.HasValue || !candidate.FileSizeBytes.HasValue ||
-                       FileSizeBytes.Value == candidate.FileSizeBytes.Value;
+                return (!FileSizeBytes.HasValue || !candidate.FileSizeBytes.HasValue ||
+                        FileSizeBytes.Value == candidate.FileSizeBytes.Value) ? 2 : 0;
             }
 
-            return !string.IsNullOrEmpty(Name) &&
-                   string.Equals(Name, Clean(candidate.Name), StringComparison.OrdinalIgnoreCase);
+            return (!string.IsNullOrEmpty(Name) &&
+                    string.Equals(Name, Clean(candidate.Name), StringComparison.OrdinalIgnoreCase)) ? 1 : 0;
+        }
+
+        public bool Matches(NormalizedPlaybackSource candidate)
+        {
+            return MatchTier(candidate) > 0;
+        }
+
+        // The best-matching currently available source, or null. The first
+        // candidate wins among equal tiers (the caller's order is kept).
+        public NormalizedPlaybackSource FindMatch(IEnumerable<NormalizedPlaybackSource> candidates)
+        {
+            if (candidates == null)
+                return null;
+
+            NormalizedPlaybackSource best = null;
+            int bestTier = 0;
+
+            foreach (NormalizedPlaybackSource candidate in candidates)
+            {
+                int tier = MatchTier(candidate);
+                if (tier > bestTier)
+                {
+                    best = candidate;
+                    bestTier = tier;
+                }
+            }
+
+            return best;
         }
 
         private static string Clean(string value)

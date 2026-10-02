@@ -382,11 +382,32 @@ namespace StremioVideoCenterControls.Player
             }
         }
 
+        // The resume seek is asynchronous inside mpv: the command's reply only
+        // means it was queued, and time-pos can still read the pre-seek
+        // position (0 for a fresh file) for a moment afterwards. Persisting
+        // that 0 would overwrite the very position being resumed, so the
+        // pending flag is held until time-pos has actually reached the target
+        // (or a short deadline passes, e.g. the seek failed, in which case
+        // playback genuinely is at the start and recording it is correct).
         private async Task ApplyResumeSeekAsync(double seconds)
         {
+            int generation = _playGeneration;
+            double target = Math.Max(0, seconds);
+
             try
             {
-                await _ipc.RunCommandAsync("seek", Math.Max(0, seconds), "absolute").ConfigureAwait(false);
+                await _ipc.RunCommandAsync("seek", target, "absolute").ConfigureAwait(false);
+
+                DateTime deadline = DateTime.UtcNow.AddSeconds(3);
+                while (DateTime.UtcNow < deadline && generation == _playGeneration)
+                {
+                    JToken position = await _ipc.GetPropertyAsync("time-pos").ConfigureAwait(false);
+                    double? value = ToNullableDouble(position);
+                    if (value.HasValue && Math.Abs(value.Value - target) <= 5.0)
+                        break;
+
+                    await Task.Delay(100).ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -396,7 +417,8 @@ namespace StremioVideoCenterControls.Player
             }
             finally
             {
-                _resumePending = false;
+                if (generation == _playGeneration)
+                    _resumePending = false;
             }
         }
 

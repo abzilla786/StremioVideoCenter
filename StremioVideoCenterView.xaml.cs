@@ -2380,6 +2380,29 @@ namespace StremioVideoCenter
                 // Anime for them. An item that already carries Season/
                 // Episode is treated as already-resolved and skips
                 // browsing, going straight to playback.
+                // Slice 18B: Continue Watching and History cards for an
+                // incomplete Watch State entry resume through one shared
+                // pipeline (saved source -> MPV -> saved position). If the
+                // entry is no longer resumable (missing/completed), this
+                // falls through to the normal path below.
+                ResumePlan resumePlan = TryCreateResumePlan(selectedItem);
+
+                if (resumePlan != null)
+                {
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} resuming key={2}",
+                            diagSeq,
+                            DateTime.UtcNow,
+                            resumePlan.CanonicalKey));
+
+                    await PlaySelectedMediaAsync(
+                        BuildResumeMediaItem(resumePlan),
+                        resumePlan);
+
+                    return;
+                }
+
                 ContentType selectedContentType = GetContentType(selectedItem);
 
                 if ((selectedContentType == ContentType.TvShow || selectedContentType == ContentType.Anime) &&
@@ -3043,6 +3066,18 @@ namespace StremioVideoCenter
                     activeProfileId.Value,
                     entry.LatestWatchedCanonicalKey);
 
+                // Slice 18B: an INCOMPLETE latest Watch State keeps its
+                // progress bar here even after it has fallen out of the
+                // latest-25 Continue Watching window, and selecting the
+                // card resumes it through the same pipeline Continue
+                // Watching uses. A completed (or missing) latest state
+                // shows no bar and keeps the old behaviour (movie plays,
+                // series opens the Episode Browser).
+                bool incomplete =
+                    latestWatchState != null &&
+                    !latestWatchState.IsCompleted &&
+                    !string.IsNullOrWhiteSpace(latestWatchState.CanonicalKey);
+
                 displayItems.Add(new MediaItem
                 {
                     // Series/movie-level identity only - no Season/Episode -
@@ -3052,9 +3087,8 @@ namespace StremioVideoCenter
                     PosterPath = entry.PosterPath,
                     Year = entry.Year,
                     Type = entry.Type,
-                    Progress = latestWatchState != null && latestWatchState.DurationSeconds > 0
-                        ? latestWatchState.PositionSeconds / latestWatchState.DurationSeconds
-                        : 0
+                    Progress = incomplete ? PlaybackProgress.ForEntry(latestWatchState) : 0,
+                    ResumeCanonicalKey = incomplete ? latestWatchState.CanonicalKey : null
                 });
             }
 
@@ -3226,8 +3260,63 @@ namespace StremioVideoCenter
         // observational - no behaviour here is changed.
         private static int _diagPlaySeq;
 
+        // Slice 18B: reads Watch State for the ACTIVE profile and returns a
+        // resume plan, or null when the selected card is not a resumable
+        // (incomplete) item.
+        private ResumePlan TryCreateResumePlan(MediaItem selectedItem)
+        {
+            if (selectedItem == null ||
+                string.IsNullOrWhiteSpace(selectedItem.ResumeCanonicalKey) ||
+                _watchStateService == null)
+            {
+                return null;
+            }
+
+            Guid? profileId = _profileService?.GetActiveProfileId();
+
+            if (!profileId.HasValue)
+            {
+                return null;
+            }
+
+            return ResumePlanner.Create(
+                _watchStateService,
+                profileId.Value,
+                selectedItem.ResumeCanonicalKey);
+        }
+
+        // The playback MediaItem for a resumed entry, rebuilt from Watch
+        // State's denormalised metadata in the same shape the Episode
+        // Browser produces (show-level StremioId + Season/Episode), so
+        // Watch State/History establishment behaves exactly as for a
+        // normal play.
+        private static MediaItem BuildResumeMediaItem(ResumePlan plan)
+        {
+            WatchStateEntry entry = plan.Entry;
+
+            bool isEpisode = !string.IsNullOrWhiteSpace(entry.ShowStremioId);
+            bool isKitsu =
+                isEpisode &&
+                entry.ShowStremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
+
+            return new MediaItem
+            {
+                StremioId = isEpisode ? entry.ShowStremioId : entry.CanonicalKey,
+                Title = entry.Title,
+                PosterPath = entry.PosterPath,
+                Year = entry.Year,
+                Type = entry.Type,
+                // Kitsu entries store no season (absolute episode numbering);
+                // a placeholder keeps the item episode-shaped.
+                // EstablishWatchStateOnPlaybackStart still stores null for it.
+                Season = isEpisode ? (entry.SeasonNumber ?? (isKitsu ? 1 : (int?)null)) : null,
+                Episode = isEpisode ? entry.EpisodeNumber : null
+            };
+        }
+
         private async Task PlaySelectedMediaAsync(
-            MediaItem mediaItem)
+            MediaItem mediaItem,
+            ResumePlan resumePlan = null)
         {
             int diagSeq = Interlocked.Increment(ref _diagPlaySeq);
 
@@ -3326,7 +3415,7 @@ namespace StremioVideoCenter
 
                 var request = new ContentRequest
                 {
-                    Type = GetContentType(mediaItem),
+                    Type = resumePlan != null ? resumePlan.ContentType : GetContentType(mediaItem),
                     Title = mediaItem.Title
                 };
 
@@ -3352,7 +3441,15 @@ namespace StremioVideoCenter
                     !string.IsNullOrWhiteSpace(mediaItem.StremioId) &&
                     mediaItem.StremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
 
-                if (mediaItem.Season.HasValue &&
+                if (resumePlan != null)
+                {
+                    // Slice 18B: the Watch State entry's own canonical key IS
+                    // the identity (movie "tt…", episode "tt…:S:E", Kitsu
+                    // "kitsu:id:episode") - used verbatim, never recomputed,
+                    // so resume can only ever touch this exact episode.
+                    request.ExplicitStremioId = resumePlan.CanonicalKey;
+                }
+                else if (mediaItem.Season.HasValue &&
                     mediaItem.Episode.HasValue &&
                     isKitsuId)
                 {
@@ -3452,14 +3549,38 @@ namespace StremioVideoCenter
                         DateTime.UtcNow,
                         normalizedSources.Count));
 
+                // Slice 18B: resume tries the last successfully played source
+                // first, matched by stable identity against the sources
+                // available NOW (never an old URL). No match -> the normal
+                // Source Selector.
                 NormalizedPlaybackSource selected =
-                    await ShowSourceSelectorAsync(
-                        normalizedSources,
-                        mediaItem);
+                    ResumePlanner.FindSavedSource(resumePlan, normalizedSources);
+
+                bool autoSelectedSavedSource = selected != null;
+
+                if (resumePlan != null)
+                {
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} resume savedSource={2} matched={3} sources={4}",
+                            diagSeq,
+                            DateTime.UtcNow,
+                            resumePlan.SavedSource != null ? "yes" : "none",
+                            autoSelectedSavedSource,
+                            normalizedSources.Count));
+                }
+
+                if (selected == null)
+                {
+                    selected =
+                        await ShowSourceSelectorAsync(
+                            normalizedSources,
+                            mediaItem);
+                }
 
                 StremioVideoCenterLogger.Info(
                     string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} ShowSourceSelectorAsync returned selected={2}",
+                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} source selection returned selected={2}",
                         diagSeq,
                         DateTime.UtcNow,
                         selected != null ? "true" : "(null - cancelled)"));
@@ -3475,18 +3596,56 @@ namespace StremioVideoCenter
                 // memory only) so a genuine mpv load error can return to
                 // this Source Selector minus ONLY the failed candidate. See
                 // StremioPlayer_PlaybackFailed.
+                // A resume plan's profile is authoritative: it is the profile
+                // whose Watch State was read.
                 Guid? captureProfileId = _profileService?.GetActiveProfileId();
+                Guid contextProfileId = resumePlan != null
+                    ? resumePlan.ProfileId
+                    : (captureProfileId ?? Guid.Empty);
 
                 PlaybackContext context = new PlaybackContext(
-                    captureProfileId ?? Guid.Empty,
+                    contextProfileId,
                     canonicalKey,
                     contentType,
                     mediaItem,
                     selected,
-                    null,
+                    resumePlan != null ? resumePlan.StartPositionSeconds : null,
                     normalizedSources);
 
-                await StartPlaybackAsync(context, diagSeq);
+                if (!autoSelectedSavedSource)
+                {
+                    await StartPlaybackAsync(context, diagSeq);
+                }
+                else
+                {
+                    try
+                    {
+                        await StartPlaybackAsync(context, diagSeq);
+                    }
+                    catch (Exception startEx)
+                    {
+                        // The saved source could not even be handed to mpv:
+                        // fall back to the Source Selector once (no retry
+                        // loop). The saved source and position are untouched
+                        // because nothing was established.
+                        StremioVideoCenterLogger.Info(
+                            "Saved source failed to start; falling back to Source Selector. " +
+                            UserFacingErrors.ForLog(startEx));
+
+                        ClosePlayer();
+                        context.Candidates.Remove(selected);
+
+                        NormalizedPlaybackSource alternative =
+                            await ShowSourceSelectorAsync(context.Candidates, mediaItem);
+
+                        if (alternative == null)
+                        {
+                            return;
+                        }
+
+                        await StartPlaybackAsync(context.WithSource(alternative), diagSeq);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -4471,6 +4630,13 @@ namespace StremioVideoCenter
 
                 // Slice 17C: playback may have changed history/completion.
                 RefreshRecommendations(clearImmediately: false);
+
+                // Slice 18B: History's progress bars come from Watch State
+                // too; if History is open underneath the player, refresh it.
+                if (_activeHistoryView != null)
+                {
+                    _activeHistoryView.Refresh(BuildHistoryDisplayItems());
+                }
 
                 try
                 {

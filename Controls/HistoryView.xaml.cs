@@ -82,6 +82,28 @@ namespace StremioVideoCenterControls
             EmptyStateText.Visibility = hasItems ? Visibility.Collapsed : Visibility.Visible;
         }
 
+        // Slice 18B: re-reads the displayed items (e.g. after playback closes
+        // while History is still open) so progress bars reflect the latest
+        // Watch State, and restores focus to the first card.
+        public void Refresh(IEnumerable<MediaItem> historyItems)
+        {
+            Initialize(historyItems);
+
+            Dispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    if (HistorySection.HasItems)
+                    {
+                        HistorySection.FocusFirstCard();
+                    }
+                    else
+                    {
+                        CloseButton.Focus();
+                    }
+                }),
+                System.Windows.Threading.DispatcherPriority.ContextIdle);
+        }
+
         private void HistoryView_Loaded(object sender, RoutedEventArgs e)
         {
             if (HistorySection.HasItems)
