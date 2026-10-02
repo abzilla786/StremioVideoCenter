@@ -423,6 +423,90 @@ namespace StremioVideoCenter.Services
         // ANIME DETAILS (single resource, no episodes)
         // =========================================================
 
+        // =========================================================
+        // BATCHED CATEGORY LOOKUP BY ID (Slice 17C legacy genre enrichment)
+        // =========================================================
+        //
+        // ONE request for up to MaxPageLimit (20) anime:
+        //   GET /anime?filter[id]=a,b,c&include=categories&page[limit]=n
+        // Whether Kitsu honours filter[id] is NOT verified against the live
+        // API from this codebase's build environment - the caller therefore
+        // logs requested/returned/matched counts, and this method only ever
+        // reports items whose Id is one of the REQUESTED ids: if Kitsu ignored
+        // the filter and returned unrelated anime, none would match and
+        // nothing would be applied to anyone. Network/parse failures throw
+        // (unlike the fail-soft browse methods) so the caller can tell a
+        // failure from "no categories".
+        public async Task<KitsuCategoryLookupResult> GetCategoryTitlesByIdsAsync(IList<string> kitsuIds)
+        {
+            var requested = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (kitsuIds != null)
+            {
+                foreach (string id in kitsuIds)
+                {
+                    if (!string.IsNullOrWhiteSpace(id) && requested.Count < MaxPageLimit)
+                    {
+                        requested.Add(id.Trim());
+                    }
+                }
+            }
+
+            var lookup = new KitsuCategoryLookupResult
+            {
+                RequestedCount = requested.Count,
+                TitlesById = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase)
+            };
+
+            if (requested.Count == 0)
+            {
+                return lookup;
+            }
+
+            string url =
+                BaseUrl +
+                "/anime?filter%5Bid%5D=" + Uri.EscapeDataString(string.Join(",", requested)) +
+                "&include=categories" +
+                "&page%5Blimit%5D=" + ClampLimit(requested.Count) +
+                "&page%5Boffset%5D=0";
+
+            string json = await DownloadStringAsync(url);
+
+            KitsuAnimeCollectionResponse response = Deserialize<KitsuAnimeCollectionResponse>(json);
+
+            List<KitsuAnimeResource> items = response?.Data ?? new List<KitsuAnimeResource>();
+
+            // Also records title->slug for every category returned.
+            ResolveCategories(items, response?.Included);
+
+            lookup.ReturnedCount = items.Count;
+
+            foreach (KitsuAnimeResource item in items)
+            {
+                if (item == null || string.IsNullOrWhiteSpace(item.Id) || !requested.Contains(item.Id))
+                {
+                    continue;
+                }
+
+                var titles = new List<string>();
+
+                if (item.Attributes?.Categories != null)
+                {
+                    foreach (KitsuCategoryInfo category in item.Attributes.Categories)
+                    {
+                        if (!string.IsNullOrWhiteSpace(category?.Title))
+                        {
+                            titles.Add(category.Title);
+                        }
+                    }
+                }
+
+                lookup.TitlesById[item.Id] = titles;
+            }
+
+            return lookup;
+        }
+
         public async Task<KitsuAnimeResource> GetAnimeAsync(string kitsuId)
         {
             if (string.IsNullOrWhiteSpace(kitsuId))
@@ -959,6 +1043,16 @@ namespace StremioVideoCenter.Services
         // in this class (SearchAnimeAsync, GetPopularAnimeAsync,
         // GetAnimeAsync) - none of them request include=categories.
         public List<KitsuCategoryInfo> Categories { get; set; }
+    }
+
+    // Result of KitsuService.GetCategoryTitlesByIdsAsync. TitlesById holds
+    // only ids that were both requested AND returned (an empty list = the
+    // anime genuinely has no categories).
+    public class KitsuCategoryLookupResult
+    {
+        public int RequestedCount { get; set; }
+        public int ReturnedCount { get; set; }
+        public Dictionary<string, List<string>> TitlesById { get; set; }
     }
 
     // One resolved category, as attached to KitsuAnimeAttributes.

@@ -195,6 +195,50 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
+        // GENRE ENRICHMENT (Slice 17C)
+        // =========================================================
+        //
+        // Fills in Genres for entries saved before genres were carried (see
+        // AnimeGenreEnrichmentService). Touches ONLY this profile's entries,
+        // ONLY those whose Genres are null/empty (never overwrites), and
+        // persists once. Returns how many entries were updated.
+        public int SetGenresIfEmpty(Guid profileId, IDictionary<string, List<string>> genresByCanonicalKey)
+        {
+            if (genresByCanonicalKey == null || genresByCanonicalKey.Count == 0)
+            {
+                return 0;
+            }
+
+            int updated = 0;
+
+            foreach (WatchHistoryEntry entry in _settings.WatchHistory)
+            {
+                List<string> genres;
+
+                if (entry == null ||
+                    entry.ProfileId != profileId ||
+                    (entry.Genres != null && entry.Genres.Count > 0) ||
+                    string.IsNullOrWhiteSpace(entry.CanonicalKey) ||
+                    !genresByCanonicalKey.TryGetValue(entry.CanonicalKey, out genres) ||
+                    genres == null ||
+                    genres.Count == 0)
+                {
+                    continue;
+                }
+
+                entry.Genres = new List<string>(genres);
+                updated++;
+            }
+
+            if (updated > 0)
+            {
+                TryPersist();
+            }
+
+            return updated;
+        }
+
+        // =========================================================
         // LOOKUP
         // =========================================================
 

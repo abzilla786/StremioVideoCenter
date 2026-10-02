@@ -162,6 +162,7 @@
     <Compile Include="Services\MyListService.cs" />
     <Compile Include="Models\TasteProfile.cs" />
     <Compile Include="Services\PersonalisationService.cs" />
+    <Compile Include="Services\AnimeGenreEnrichmentService.cs" />
     <Compile Include="StremioVideoCenter.cs" />
     <Compile Include="StremioVideoCenterSettings.cs" />
     <Compile Include="StremioVideoCenterSettingsView.xaml.cs">

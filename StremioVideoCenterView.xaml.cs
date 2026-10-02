@@ -2736,6 +2736,7 @@ namespace StremioVideoCenter
         private const int RecommendationDebounceMilliseconds = 400;
 
         private PersonalisationService _personalisationService;
+        private AnimeGenreEnrichmentService _genreEnrichmentService;
         private CatalogueService _recommendationCatalogue;
         private CancellationTokenSource _recommendationCts;
         private int _recommendationVersion;
@@ -2802,6 +2803,24 @@ namespace StremioVideoCenter
                         new CinemetaService(),
                         new KitsuService());
                 }
+
+                // Slice 17C: one-off, batched back-fill of genres for this
+                // profile's pre-existing Anime My List/History entries (only
+                // runs when such entries exist; each id is requested at most
+                // once per app session). Cancelled with the refresh.
+                if (_genreEnrichmentService == null)
+                {
+                    var kitsuForEnrichment = new KitsuService();
+
+                    _genreEnrichmentService = new AnimeGenreEnrichmentService(
+                        _myListService,
+                        _watchHistoryService,
+                        kitsuForEnrichment.GetCategoryTitlesByIdsAsync);
+                }
+
+                await _genreEnrichmentService.EnrichAsync(profileId.Value, cts.Token);
+
+                cts.Token.ThrowIfCancellationRequested();
 
                 TasteProfile taste =
                     _personalisationService.BuildTasteProfile(profileId.Value, DateTime.UtcNow);
