@@ -3428,7 +3428,8 @@ namespace StremioVideoCenter
             PlaybackContext context = _playbackContext;
             PlaybackState state = _stremioPlayer.CurrentPlaybackState;
 
-            if (context == null || state == null)
+            if (context == null || state == null ||
+                !ReferenceEquals(_stremioPlayer.CurrentContext, context))
             {
                 return;
             }
@@ -4035,6 +4036,21 @@ namespace StremioVideoCenter
                 return;
             }
 
+            // Stale-event guard: this notification is delivered asynchronously.
+            // It only counts if the player is STILL playing this very context
+            // and mpv still reports the file as established - otherwise it
+            // belongs to a file that has since been replaced (e.g. a rapid
+            // second episode change), and must not create Watch State/History
+            // or a recorder for the newer, not-yet-loaded attempt.
+            PlaybackState liveState = _stremioPlayer.CurrentPlaybackState;
+
+            if (!ReferenceEquals(_stremioPlayer.CurrentContext, context) ||
+                liveState == null ||
+                !liveState.IsPlaybackEstablished)
+            {
+                return;
+            }
+
             EstablishWatchStateOnPlaybackStart(context);
             EstablishHistoryOnPlaybackStart(context);
 
@@ -4067,8 +4083,11 @@ namespace StremioVideoCenter
 
             if (_isRecoveringFromFailure ||
                 sender != _stremioPlayer ||
-                failedContext == null)
+                failedContext == null ||
+                !ReferenceEquals(_stremioPlayer.CurrentContext, failedContext))
             {
+                // (A failure signal for a file that has already been replaced
+                // by another episode/source is not this attempt's failure.)
                 return;
             }
 

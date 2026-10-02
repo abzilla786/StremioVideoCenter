@@ -132,7 +132,7 @@
                 <!-- Top bar: Exit, and (episodes only) what is playing -->
                 <Grid Grid.Row="0" Margin="28,24,28,0">
                     <StackPanel x:Name="EpisodeInfoPanel"
-                                Margin="120,0,28,0"
+                                Margin="140,0,480,0"
                                 VerticalAlignment="Top"
                                 Visibility="Collapsed"
                                 IsHitTestVisible="False"
@@ -165,6 +165,7 @@
                                    MaxWidth="460" />
                     </Border>
                     <Button x:Name="CloseButton"
+                            AutomationProperties.Name="Exit player"
                             Style="{StaticResource PlayerButtonStyle}"
                             HorizontalAlignment="Left"
                             VerticalAlignment="Top"
@@ -232,6 +233,7 @@
                     </Grid.ColumnDefinitions>
 
                     <Button x:Name="BottomPlayPauseButton"
+                            AutomationProperties.Name="Play or pause"
                             Grid.Column="0"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x25B6;"
@@ -239,6 +241,7 @@
                             Click="PlayPauseButton_Click"
                             Width="48" Height="44" FontSize="18" Focusable="True" />
                     <Button x:Name="Back10Button"
+                            AutomationProperties.Name="Back 10 seconds"
                             Grid.Column="1"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x21B6;"
@@ -246,6 +249,7 @@
                             Click="RewindButton_Click"
                             Width="44" Height="44" FontSize="18" Focusable="True" />
                     <Button x:Name="Forward10Button"
+                            AutomationProperties.Name="Forward 10 seconds"
                             Grid.Column="2"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x21B7;"
@@ -256,6 +260,7 @@
                          (MpvPlayer.SetEpisodeNavigation); a direction with no
                          episode is disabled and skipped by focus movement. -->
                     <Button x:Name="PreviousEpisodeButton"
+                            AutomationProperties.Name="Previous episode"
                             Grid.Column="3"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x23EE;"
@@ -265,6 +270,7 @@
                             Visibility="Collapsed"
                             Width="44" Height="44" FontSize="17" Focusable="True" />
                     <Button x:Name="NextEpisodeButton"
+                            AutomationProperties.Name="Next episode"
                             Grid.Column="4"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x23ED;"
@@ -273,6 +279,7 @@
                             Visibility="Collapsed"
                             Width="44" Height="44" FontSize="17" Focusable="True" />
                     <Button x:Name="MuteButton"
+                            AutomationProperties.Name="Mute or unmute"
                             Grid.Column="5"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x1F50A;"
@@ -281,6 +288,7 @@
                             Margin="10,0,0,0"
                             Width="44" Height="44" FontSize="17" Focusable="True" />
                     <player:PlayerSlider x:Name="VolumeSlider"
+                            AutomationProperties.Name="Volume"
                             Grid.Column="6"
                             Style="{StaticResource PlayerSliderStyle}"
                             Minimum="0" Maximum="100" Value="100"
@@ -301,6 +309,7 @@
                                Margin="14,0,8,0"
                                FontSize="15" />
                     <player:PlayerSlider x:Name="SeekSlider"
+                            AutomationProperties.Name="Seek"
                             Grid.Column="8"
                             Style="{StaticResource PlayerSliderStyle}"
                             Minimum="0"
@@ -312,6 +321,8 @@
                             ValueChanged="SeekSlider_ValueChanged"
                             PreviewMouseDown="SeekSlider_PreviewMouseDown"
                             PreviewMouseUp="SeekSlider_PreviewMouseUp"
+                            LostMouseCapture="SeekSlider_LostMouseCapture"
+                            MinWidth="120"
                             Focusable="True"
                             ToolTip="Seek" />
                     <TextBlock x:Name="DurationText"
@@ -323,6 +334,7 @@
                                Margin="8,0,14,0"
                                FontSize="15" />
                     <Button x:Name="AudioButton"
+                            AutomationProperties.Name="Audio tracks"
                             Grid.Column="10"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="AUD"
@@ -330,6 +342,7 @@
                             Click="AudioButton_Click"
                             Width="48" Height="44" FontSize="14" Focusable="True" />
                     <Button x:Name="SubtitleButton"
+                            AutomationProperties.Name="Subtitles"
                             Grid.Column="11"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="CC"
@@ -342,8 +355,10 @@
                             Content="&#x2699;"
                             ToolTip="Settings"
                             Click="SettingsButton_Click"
+                            Visibility="Collapsed"
                             Width="44" Height="44" FontSize="17" Focusable="True" />
                     <Button x:Name="FullscreenButton"
+                            AutomationProperties.Name="Fullscreen"
                             Grid.Column="13"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x26F6;"

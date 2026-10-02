@@ -122,6 +122,13 @@ namespace StremioVideoCenterControls
             get { return _session?.State; }
         }
 
+        // The PlaybackContext the session is currently loading/playing (the
+        // one most recently handed to PlayVideoAsync).
+        public PlaybackContext CurrentContext
+        {
+            get { return _session?.Context; }
+        }
+
         public MpvPlayer()
         {
             InitializeComponent();
@@ -131,7 +138,6 @@ namespace StremioVideoCenterControls
             SizeChanged += MpvPlayer_SizeChanged;
             PreviewKeyDown += MpvPlayer_PreviewKeyDown;
             MouseMove += Player_MouseMove;
-            MouseLeave += Player_MouseLeave;
 
             _trackMenu.TrackSelected += TrackMenu_TrackSelected;
             _trackMenu.SubtitleDelayStepRequested += TrackMenu_SubtitleDelayStepRequested;
@@ -320,7 +326,13 @@ namespace StremioVideoCenterControls
             // PlayerSession.StartAsync call if one was needed) - only past
             // this point does loadfile ever get issued.
             StartupTrace.Log("PlayVideoAsync: startup complete, issuing loadfile");
-            await _session.PlayAsync(context);
+
+            // The player may have been closed while startup was awaited (user
+            // pressed Exit): do nothing rather than fail on a disposed session.
+            PlayerSession session = _session;
+            if (_disposed || session == null) return;
+
+            await session.PlayAsync(context);
 
             RestartHideTimer();
         }
@@ -426,7 +438,11 @@ namespace StremioVideoCenterControls
             EventHandler handler = PlaybackStateChanged;
             if (handler != null)
             {
-                Dispatcher.BeginInvoke(new Action(() => handler(this, EventArgs.Empty)));
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (!_disposed)
+                        handler(this, EventArgs.Empty);
+                }));
             }
         }
 
@@ -447,9 +463,12 @@ namespace StremioVideoCenterControls
 
             DurationText.Text = FormatTime(state.DurationSeconds);
 
-            ApplyPlayState(state.IsPlaying);
+            ApplyPlayState(state.IsPlaybackEstablished, state.IsPlaying);
 
-            if (!VolumeSlider.IsKeyboardFocusWithin)
+            // mpv's volume always drives the slider, except while the mouse is
+            // actually dragging it (a keyboard-focused slider must still follow
+            // mpv, or keyboard/controller volume steps would not show).
+            if (!VolumeSlider.IsMouseCaptureWithin)
             {
                 _applyingVolumeFromState = true;
                 try { VolumeSlider.Value = Math.Max(0, Math.Min(100, state.Volume)); }
@@ -470,10 +489,10 @@ namespace StremioVideoCenterControls
         // so the real bottom button and the centre indicator can never
         // disagree. The bottom button shows the action it will perform; the
         // centre indicator (display only) shows the current state.
-        private void ApplyPlayState(bool isPlaying)
+        private void ApplyPlayState(bool isEstablished, bool isPlaying)
         {
-            BottomPlayPauseButton.Content = isPlaying ? "\u275A\u275A" : "\u25B6";
-            CenterPlayGlyph.Text = isPlaying ? "\u25B6" : "\u275A\u275A";
+            BottomPlayPauseButton.Content = PlayerStateRules.ActionGlyph(isPlaying);
+            CenterPlayGlyph.Text = PlayerStateRules.CentreGlyph(isEstablished, isPlaying);
         }
 
         private void Session_PlaybackEstablished(object sender, EventArgs e)
@@ -719,19 +738,50 @@ namespace StremioVideoCenterControls
             RestartHideTimer();
         }
 
-        private async void SeekSlider_PreviewMouseUp(object sender, MouseButtonEventArgs e)
+        private void SeekSlider_PreviewMouseUp(object sender, MouseButtonEventArgs e)
         {
-            if (!_uiState.IsSeekBarBeingDragged)
+            var ignored = CommitSeekAsync();
+        }
+
+        // Losing mouse capture without a mouse-up (focus stolen, window
+        // deactivated) must still end the drag: otherwise the overlay would
+        // stay pinned and position polling would stay paused forever.
+        private void SeekSlider_LostMouseCapture(object sender, MouseEventArgs e)
+        {
+            // Capture also moves from the slider to its thumb at the start of a
+            // drag; only treat it as the end of the drag once the button is up.
+            if (_uiState.IsSeekBarBeingDragged && Mouse.LeftButton != MouseButtonState.Pressed)
+            {
+                var ignored = CommitSeekAsync();
+            }
+        }
+
+        private bool _seekCommitInFlight;
+
+        // Sends the dragged-to position once. Stays in "seeking" (controls
+        // visible, polling paused) until the command has been sent, so the
+        // thumb does not snap back to the pre-seek position in between.
+        private async Task CommitSeekAsync()
+        {
+            if (!_uiState.IsSeekBarBeingDragged || _seekCommitInFlight)
                 return;
 
-            // Stay in "seeking" (controls visible, polling paused) until the
-            // seek command has been sent, so the thumb does not snap back to
-            // the pre-seek position in between.
-            try { if (_session != null) await _session.SeekAbsoluteAsync(SeekSlider.Value); }
-            catch { }
-            finally { _uiState.IsSeekBarBeingDragged = false; }
+            _seekCommitInFlight = true;
+            double target = SeekSlider.Value;
 
-            ShowControls();
+            try { if (_session != null) await _session.SeekAbsoluteAsync(target); }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Seek failed: " + UserFacingErrors.ForLog(ex));
+            }
+            finally
+            {
+                _seekCommitInFlight = false;
+                _uiState.IsSeekBarBeingDragged = false;
+            }
+
+            if (!_disposed)
+                ShowControls();
         }
 
         // Live time read-out while dragging the thumb.
@@ -1060,6 +1110,12 @@ namespace StremioVideoCenterControls
                     }
                     break;
             }
+
+            // An open menu owns the keyboard: nothing it does not use may leak
+            // to the player controls behind it (system keys such as Alt are
+            // left alone).
+            if (inMenu && !e.Handled && e.Key != Key.System)
+                e.Handled = true;
         }
 
         // Called by the Video Center's existing gamepad plumbing.
@@ -1214,10 +1270,6 @@ namespace StremioVideoCenterControls
         private void Player_MouseMove(object sender, MouseEventArgs e)
         {
             ShowControls();
-        }
-
-        private void Player_MouseLeave(object sender, MouseEventArgs e)
-        {
         }
 
         // Mouse movement/clicks on the overlay itself (including over the

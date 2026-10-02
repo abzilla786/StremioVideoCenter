@@ -210,10 +210,20 @@ namespace StremioVideoCenterControls.Player.Menus
 
         private Button BuildItemButton(string text, bool isSelected)
         {
+            string full = (isSelected ? "\u25CF " : "\u25CB ") + text;
+
+            // A long label is trimmed with an ellipsis (full text in the
+            // tooltip) instead of being silently clipped by the menu border.
             return new Button
             {
                 Style = (Style)Resources["MenuItemButtonStyle"],
-                Content = (isSelected ? "\u25CF " : "\u25CB ") + text,
+                Content = new TextBlock
+                {
+                    Text = full,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxWidth = 380
+                },
+                ToolTip = full,
                 Background = isSelected
                     ? new SolidColorBrush(Color.FromArgb(0x99, 0x33, 0x88, 0xFF))
                     : new SolidColorBrush(Color.FromArgb(0x66, 0x00, 0x00, 0x00)),

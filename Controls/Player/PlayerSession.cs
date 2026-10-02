@@ -199,19 +199,6 @@ namespace StremioVideoCenterControls.Player
             Context = context;
             ResetPlaybackState();
 
-            if (reusingLoadedPlayer)
-            {
-                try
-                {
-                    await _ipc.SetPropertyAsync("pause", false).ConfigureAwait(true);
-                    await _ipc.SetPropertyAsync("sub-delay", 0.0).ConfigureAwait(true);
-                }
-                catch (MpvCommandException)
-                {
-                    // Best-effort; loadfile below reports real failures.
-                }
-            }
-
             try
             {
                 await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
@@ -222,7 +209,27 @@ namespace StremioVideoCenterControls.Player
                 return;
             }
 
-            await _host.WaitForAndAttachMpvWindowAsync(_process.ProcessId, 3000).ConfigureAwait(true);
+            // Only AFTER the new file is queued: un-pausing first would restart
+            // the old file when it is parked at its end (keep-open).
+            if (reusingLoadedPlayer && !_disposed && _ipc != null)
+            {
+                try
+                {
+                    await _ipc.SetPropertyAsync("pause", false).ConfigureAwait(true);
+                    await _ipc.SetPropertyAsync("sub-delay", 0.0).ConfigureAwait(true);
+                }
+                catch (MpvCommandException)
+                {
+                    // Best-effort; the observed properties report what mpv did.
+                }
+            }
+
+            // The player may have been closed while loadfile was in flight.
+            MpvProcessService process = _process;
+            if (_disposed || process == null)
+                return;
+
+            await _host.WaitForAndAttachMpvWindowAsync(process.ProcessId, 3000).ConfigureAwait(true);
         }
 
         // Clears everything that describes the previous file BEFORE loadfile
@@ -244,6 +251,11 @@ namespace StremioVideoCenterControls.Player
             State.PositionSeconds = 0;
             State.DurationSeconds = 0;
 
+            // Loading: nothing is playing yet. The real pause state is read
+            // from mpv at file-loaded (RefreshPauseStateAsync); until then the
+            // UI shows a loading, not a "playing", state.
+            State.IsPlaying = false;
+
             // Track ids/lists/selection and the subtitle delay belong to the
             // file being replaced: clear them now so nothing stale is shown
             // while the new file loads (see PlaybackTracks).
@@ -262,7 +274,12 @@ namespace StremioVideoCenterControls.Player
             await StartAsync(hostHandle).ConfigureAwait(true);
             ResetPlaybackState();
             await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
-            await _host.WaitForAndAttachMpvWindowAsync(_process.ProcessId, 3000).ConfigureAwait(true);
+
+            MpvProcessService process = _process;
+            if (_disposed || process == null)
+                return;
+
+            await _host.WaitForAndAttachMpvWindowAsync(process.ProcessId, 3000).ConfigureAwait(true);
         }
 
         public async Task TogglePauseAsync()
@@ -276,16 +293,39 @@ namespace StremioVideoCenterControls.Player
         // would race the resume seek.
         public async Task SeekRelativeAsync(double seconds)
         {
-            if (!IsRunning || !State.IsPlaybackEstablished) return;
+            if (!CanSeek) return;
             await _ipc.RunCommandAsync("seek", seconds, "relative").ConfigureAwait(true);
-            Interlocked.Increment(ref _seekRequests);
+            NoteSeek(PlayerStateRules.SeekTarget(State.PositionSeconds, State.DurationSeconds, seconds, false));
         }
 
         public async Task SeekAbsoluteAsync(double seconds)
         {
-            if (!IsRunning || !State.IsPlaybackEstablished) return;
+            if (!CanSeek) return;
             await _ipc.RunCommandAsync("seek", Math.Max(0, seconds), "absolute").ConfigureAwait(true);
-            Interlocked.Increment(ref _seekRequests);
+            NoteSeek(PlayerStateRules.SeekTarget(State.PositionSeconds, State.DurationSeconds, seconds, true));
+        }
+
+        // A user seek is only meaningful for an established file whose own
+        // resume seek (if any) has finished.
+        private bool CanSeek
+        {
+            get { return IsRunning && State.IsPlaybackEstablished && !_resumePending; }
+        }
+
+        // After a successful seek: the position (for persistence on an
+        // immediate close) is the seek target until mpv's next position read,
+        // and the seek counter lets the recorder persist right away. Only done
+        // once a real position exists, so a seek can never fabricate one.
+        private void NoteSeek(double targetSeconds)
+        {
+            int requests = Interlocked.Increment(ref _seekRequests);
+
+            if (State.HasValidPosition)
+            {
+                State.PositionSeconds = targetSeconds;
+                State.SeekCounter = requests;
+                RaiseStateChanged();
+            }
         }
 
         public async Task SetVolumeAsync(double volume)
@@ -346,9 +386,18 @@ namespace StremioVideoCenterControls.Player
 
         private async Task RefreshSubtitleDelayAsync()
         {
+            MpvIpcClient ipc = LiveIpc();
+            if (ipc == null) return;
+
+            int generation = _playGeneration;
+
             try
             {
-                JToken delay = await _ipc.GetPropertyAsync("sub-delay").ConfigureAwait(true);
+                JToken delay = await ipc.GetPropertyAsync("sub-delay").ConfigureAwait(true);
+
+                // Result of a file that has since been replaced: ignore.
+                if (generation != _playGeneration) return;
+
                 PlaybackTracks.ApplySubtitleDelay(State, ToNullableDouble(delay));
                 RaiseStateChanged();
             }
@@ -358,22 +407,50 @@ namespace StremioVideoCenterControls.Player
             }
         }
 
+        // The authoritative pause state of the newly loaded file. Reset leaves
+        // IsPlaying false while loading; mpv only reports a pause CHANGE, so
+        // without this read a file that simply starts playing would stay shown
+        // as paused.
+        private async Task RefreshPauseStateAsync()
+        {
+            MpvIpcClient ipc = LiveIpc();
+            if (ipc == null) return;
+
+            int generation = _playGeneration;
+
+            try
+            {
+                JToken pause = await ipc.GetPropertyAsync("pause").ConfigureAwait(false);
+
+                if (generation != _playGeneration || pause == null || pause.Type != JTokenType.Boolean)
+                    return;
+
+                State.IsPlaying = !pause.Value<bool>();
+                RaiseStateChanged();
+            }
+            catch (MpvCommandException)
+            {
+                // The observed "pause" property still reports changes.
+            }
+        }
+
         // Pulls the loaded file's track list, the selected audio/subtitle
         // tracks and the subtitle delay straight from mpv. Called when a file
         // is established and after any selection. Results from a file that
         // has since been replaced are discarded (generation check).
         public async Task RefreshTrackStateAsync()
         {
-            if (!IsRunning) return;
+            MpvIpcClient ipc = LiveIpc();
+            if (ipc == null || !IsRunning) return;
 
             int generation = _playGeneration;
 
             try
             {
-                JToken list = await _ipc.GetPropertyAsync("track-list").ConfigureAwait(false);
-                JToken aid = await _ipc.GetPropertyAsync("aid").ConfigureAwait(false);
-                JToken sid = await _ipc.GetPropertyAsync("sid").ConfigureAwait(false);
-                JToken delay = await _ipc.GetPropertyAsync("sub-delay").ConfigureAwait(false);
+                JToken list = await ipc.GetPropertyAsync("track-list").ConfigureAwait(false);
+                JToken aid = await ipc.GetPropertyAsync("aid").ConfigureAwait(false);
+                JToken sid = await ipc.GetPropertyAsync("sid").ConfigureAwait(false);
+                JToken delay = await ipc.GetPropertyAsync("sub-delay").ConfigureAwait(false);
 
                 if (generation != _playGeneration) return;
 
@@ -399,6 +476,14 @@ namespace StremioVideoCenterControls.Player
                 tracksHandler(this, EventArgs.Empty);
         }
 
+        // The IPC client, or null once the session has been disposed/torn
+        // down - so continuations that resume after an await never touch a
+        // client that no longer exists.
+        private MpvIpcClient LiveIpc()
+        {
+            return _disposed ? null : _ipc;
+        }
+
         // Called by the UI's progress timer. Position/duration are polled
         // rather than observed - sub-second push updates aren't needed for a
         // seek bar, and this keeps the observed-property set small.
@@ -415,17 +500,23 @@ namespace StremioVideoCenterControls.Player
             try
             {
                 int generation = _playGeneration;
+                int seeks = Volatile.Read(ref _seekRequests);
 
                 // Nothing is meaningful before mpv confirmed the file loaded.
                 if (!State.IsPlaybackEstablished || _resumePending)
                     return;
 
-                JToken position = await _ipc.GetPropertyAsync("time-pos").ConfigureAwait(true);
-                JToken duration = await _ipc.GetPropertyAsync("duration").ConfigureAwait(true);
+                MpvIpcClient ipc = LiveIpc();
+                if (ipc == null) return;
 
-                // A new loadfile, or a pending resume seek, started while we
-                // were waiting: these values describe the wrong moment.
-                if (generation != _playGeneration || _resumePending || !State.IsPlaybackEstablished)
+                JToken position = await ipc.GetPropertyAsync("time-pos").ConfigureAwait(true);
+                JToken duration = await ipc.GetPropertyAsync("duration").ConfigureAwait(true);
+
+                // A new loadfile, a pending resume seek, or a user seek started
+                // while we were waiting: these values describe the wrong moment
+                // (a pre-seek read must not replace the seek target).
+                if (generation != _playGeneration || _resumePending || !State.IsPlaybackEstablished ||
+                    seeks != Volatile.Read(ref _seekRequests))
                     return;
 
                 double? durationValue = ToNullableDouble(duration);
@@ -493,6 +584,7 @@ namespace StremioVideoCenterControls.Player
             // here, once the track list is known; for now mpv's own default
             // selection stands.
             var ignoredTracks = RefreshTrackStateAsync();
+            var ignoredPause = RefreshPauseStateAsync();
 
             RaiseStateChanged();
 
@@ -522,12 +614,15 @@ namespace StremioVideoCenterControls.Player
 
             try
             {
-                await _ipc.RunCommandAsync("seek", target, "absolute").ConfigureAwait(false);
+                MpvIpcClient ipc = LiveIpc();
+                if (ipc == null) return;
+
+                await ipc.RunCommandAsync("seek", target, "absolute").ConfigureAwait(false);
 
                 DateTime deadline = DateTime.UtcNow.AddSeconds(3);
-                while (DateTime.UtcNow < deadline && generation == _playGeneration)
+                while (DateTime.UtcNow < deadline && generation == _playGeneration && !_disposed)
                 {
-                    JToken position = await _ipc.GetPropertyAsync("time-pos").ConfigureAwait(false);
+                    JToken position = await ipc.GetPropertyAsync("time-pos").ConfigureAwait(false);
                     double? value = ToNullableDouble(position);
                     if (value.HasValue && Math.Abs(value.Value - target) <= 5.0)
                         break;
@@ -574,6 +669,13 @@ namespace StremioVideoCenterControls.Player
 
             if (isEof)
                 State.ReachedEndOfFile = true;
+
+            // A failed file is not playing, whatever the last pause value was
+            // (the UI must never keep showing "playing" after an error). Not
+            // done for stop/quit: those also describe the OLD file when a new
+            // one replaces it, and must not touch the new file's state.
+            if (isFailure)
+                State.IsPlaying = false;
 
             RaiseStateChanged();
 

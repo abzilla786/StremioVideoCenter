@@ -124,6 +124,7 @@
     <Compile Include="Services\MpvIpcClient.cs" />
     <Compile Include="Controls\Player\OverlayVisibilityPolicy.cs" />
     <Compile Include="Controls\Player\SubtitleDelay.cs" />
+    <Compile Include="Controls\Player\PlayerStateRules.cs" />
     <Compile Include="Services\MpvProcessService.cs" />
     <Compile Include="Services\StremioVideoCenterLogger.cs" />
     <Compile Include="Controls\MediaSection.xaml.cs">
