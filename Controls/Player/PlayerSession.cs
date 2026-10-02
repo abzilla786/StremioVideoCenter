@@ -23,6 +23,7 @@ namespace StremioVideoCenterControls.Player
         private const int ObserveIdAudioId = 5;
         private const int ObserveIdSubId = 6;
         private const int ObserveIdEofReached = 7;
+        private const int ObserveIdSubDelay = 8;
 
         private readonly MpvHost _host;
         private MpvProcessService _process;
@@ -160,6 +161,8 @@ namespace StremioVideoCenterControls.Player
                 // a normal EOF (the player just pauses on the last frame), so
                 // eof-reached is how a genuine normal end is observed.
                 await _ipc.ObservePropertyAsync(ObserveIdEofReached, "eof-reached").ConfigureAwait(true);
+
+                await _ipc.ObservePropertyAsync(ObserveIdSubDelay, "sub-delay").ConfigureAwait(true);
             }
             catch
             {
@@ -239,16 +242,19 @@ namespace StremioVideoCenterControls.Player
             await _ipc.RunCommandAsync("cycle", "pause").ConfigureAwait(true);
         }
 
+        // Seeks are ignored until mpv has confirmed the file loaded: before
+        // that there is nothing to seek, and (during a resume) a user seek
+        // would race the resume seek.
         public async Task SeekRelativeAsync(double seconds)
         {
-            if (!IsRunning) return;
+            if (!IsRunning || !State.IsPlaybackEstablished) return;
             await _ipc.RunCommandAsync("seek", seconds, "relative").ConfigureAwait(true);
             Interlocked.Increment(ref _seekRequests);
         }
 
         public async Task SeekAbsoluteAsync(double seconds)
         {
-            if (!IsRunning) return;
+            if (!IsRunning || !State.IsPlaybackEstablished) return;
             await _ipc.RunCommandAsync("seek", Math.Max(0, seconds), "absolute").ConfigureAwait(true);
             Interlocked.Increment(ref _seekRequests);
         }
@@ -270,6 +276,20 @@ namespace StremioVideoCenterControls.Player
         {
             if (!IsRunning) return;
             await _ipc.SetPropertyAsync("aid", trackId).ConfigureAwait(true);
+        }
+
+        // Relative change of mpv's sub-delay (session-only; mpv owns the
+        // value and echoes it back through the observed property).
+        public async Task AdjustSubtitleDelayAsync(double deltaSeconds)
+        {
+            if (!IsRunning) return;
+            await _ipc.RunCommandAsync("add", "sub-delay", deltaSeconds).ConfigureAwait(true);
+        }
+
+        public async Task ResetSubtitleDelayAsync()
+        {
+            if (!IsRunning) return;
+            await _ipc.SetPropertyAsync("sub-delay", 0.0).ConfigureAwait(true);
         }
 
         // subtitleTrackId == null means "subtitles off".
@@ -517,6 +537,11 @@ namespace StremioVideoCenterControls.Player
                         data != null &&
                         data.Type == JTokenType.Boolean &&
                         data.Value<bool>();
+                    break;
+
+                case "sub-delay":
+                    double? subDelay = ToNullableDouble(data);
+                    State.SubtitleDelaySeconds = subDelay ?? 0;
                     break;
 
                 case "volume":

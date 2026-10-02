@@ -53,6 +53,10 @@ namespace StremioVideoCenter.Models
         public IReadOnlyList<MpvTrackInfo> AudioTracks { get; set; }
         public IReadOnlyList<MpvTrackInfo> SubtitleTracks { get; set; }
 
+        // mpv's sub-delay property in seconds (positive = subtitles appear
+        // later). Session-only: never persisted, never part of media identity.
+        public double SubtitleDelaySeconds { get; set; }
+
         public int? SelectedAudioTrackId { get; set; }
 
         // null = subtitles off.

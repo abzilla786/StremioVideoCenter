@@ -89,12 +89,23 @@
                   Background="Transparent"
                   IsHitTestVisible="True"
                   Focusable="False"
-                  PreviewKeyDown="Overlay_PreviewKeyDown">
+                  PreviewKeyDown="Overlay_PreviewKeyDown"
+                  MouseMove="Overlay_MouseMove"
+                  PreviewMouseDown="Overlay_PreviewMouseDown">
+
+                <!--
+                    The whole overlay (gradients, Exit, centre indicator, bottom
+                    bar, menus) fades as one surface: MpvPlayer.xaml.cs animates
+                    ControlsOverlay.Opacity. The popup itself stays open while
+                    faded so keyboard focus is not lost; IsHitTestVisible is
+                    switched off while faded so a hidden control can never be
+                    clicked by accident.
+                -->
 
                 <Grid.RowDefinitions>
                     <RowDefinition Height="120" />
                     <RowDefinition Height="*" />
-                    <RowDefinition Height="125" />
+                    <RowDefinition Height="110" />
                 </Grid.RowDefinitions>
 
                 <Border Grid.Row="0" IsHitTestVisible="False" VerticalAlignment="Stretch">
@@ -115,131 +126,172 @@
                     </Border.Background>
                 </Border>
 
-                <!-- Top bar -->
+                <!-- Top bar: Exit -->
                 <Grid Grid.Row="0" Margin="28,24,28,0">
                     <Button x:Name="CloseButton"
                             Style="{StaticResource PlayerButtonStyle}"
                             HorizontalAlignment="Left"
-                            Content="&#x2715;"
-                            ToolTip="Close"
+                            VerticalAlignment="Top"
+                            Content="&#x2190;  Exit"
+                            ToolTip="Stop and exit"
                             Click="CloseButton_Click"
-                            FontSize="22"
-                            Width="48"
-                            Height="48"
+                            FontSize="18"
+                            Padding="16,0"
+                            MinWidth="96"
+                            Height="44"
                             Focusable="True" />
                 </Grid>
 
-                <!-- Centre transport control: Play/Pause only, nothing else. -->
-                <Grid Grid.Row="1">
-                    <StackPanel x:Name="CenterControls"
-                                Orientation="Horizontal"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center">
-                        <Button x:Name="PlayPauseButton"
-                                Style="{StaticResource PlayerButtonStyle}"
-                                Content="&#x25B6;"
-                                ToolTip="Play / Pause"
-                                Click="PlayPauseButton_Click"
-                                Margin="8"
-                                Width="72"
-                                Height="72"
-                                FontSize="28"
-                                Focusable="True" />
-                    </StackPanel>
+                <!-- Centre play-state INDICATOR. Display only: not a Button, not
+                     focusable, not hit-testable, no command logic and no state
+                     of its own - MpvPlayer.ApplyPlayState sets its glyph from
+                     the same playback state that drives the real Play/Pause
+                     button in the bottom bar. -->
+                <Grid Grid.Row="1"
+                      IsHitTestVisible="False"
+                      Focusable="False">
+                    <Border x:Name="CenterPlayIndicator"
+                            Width="96"
+                            Height="96"
+                            CornerRadius="48"
+                            Background="#99000000"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            IsHitTestVisible="False"
+                            Focusable="False">
+                        <TextBlock x:Name="CenterPlayGlyph"
+                                   Text="&#x25B6;"
+                                   Foreground="White"
+                                   FontSize="38"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False"
+                                   Focusable="False" />
+                    </Border>
                 </Grid>
 
-                <!-- Bottom player bar. Kept in a dedicated fixed-height row so
-                     it cannot collapse or disappear behind the MPV surface. -->
+                <!-- Bottom player bar (single row): Play/Pause, seek -/+10s,
+                     mute, volume, current time, seek bar, duration, Audio,
+                     Subtitles, Settings, Fullscreen. -->
                 <Grid x:Name="BottomControls"
                       Grid.Row="2"
-                      Margin="28,8,28,18">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="32" />
-                        <RowDefinition Height="55" />
-                    </Grid.RowDefinitions>
+                      Margin="28,0,28,22"
+                      VerticalAlignment="Bottom"
+                      Height="48">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
 
-                    <player:PlayerSlider x:Name="SeekSlider"
+                    <Button x:Name="BottomPlayPauseButton"
+                            Grid.Column="0"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x25B6;"
+                            ToolTip="Play / Pause"
+                            Click="PlayPauseButton_Click"
+                            Width="48" Height="44" FontSize="18" Focusable="True" />
+                    <Button x:Name="Back10Button"
+                            Grid.Column="1"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x21B6;"
+                            ToolTip="Back 10 seconds"
+                            Click="RewindButton_Click"
+                            Width="44" Height="44" FontSize="18" Focusable="True" />
+                    <Button x:Name="Forward10Button"
+                            Grid.Column="2"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x21B7;"
+                            ToolTip="Forward 10 seconds"
+                            Click="ForwardButton_Click"
+                            Width="44" Height="44" FontSize="18" Focusable="True" />
+                    <Button x:Name="MuteButton"
+                            Grid.Column="3"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x1F50A;"
+                            ToolTip="Mute / Unmute"
+                            Click="MuteButton_Click"
+                            Margin="10,0,0,0"
+                            Width="44" Height="44" FontSize="17" Focusable="True" />
+                    <player:PlayerSlider x:Name="VolumeSlider"
+                            Grid.Column="4"
                             Style="{StaticResource PlayerSliderStyle}"
-                            Grid.Row="0"
+                            Minimum="0" Maximum="100" Value="100"
+                            Width="100" Height="40"
+                            Margin="4,0,0,0"
+                            VerticalAlignment="Center"
+                            ValueChanged="VolumeSlider_ValueChanged"
+                            IsMoveToPointEnabled="True"
+                            Focusable="True"
+                            ToolTip="Volume" />
+                    <TextBlock x:Name="CurrentTimeText"
+                               Grid.Column="5"
+                               Text="00:00"
+                               Foreground="White"
+                               VerticalAlignment="Center"
+                               TextAlignment="Right"
+                               MinWidth="58"
+                               Margin="14,0,8,0"
+                               FontSize="15" />
+                    <player:PlayerSlider x:Name="SeekSlider"
+                            Grid.Column="6"
+                            Style="{StaticResource PlayerSliderStyle}"
                             Minimum="0"
                             Maximum="1"
                             Value="0"
                             Height="28"
+                            VerticalAlignment="Center"
+                            IsMoveToPointEnabled="True"
+                            ValueChanged="SeekSlider_ValueChanged"
                             PreviewMouseDown="SeekSlider_PreviewMouseDown"
                             PreviewMouseUp="SeekSlider_PreviewMouseUp"
-                            Focusable="True" />
-
-                    <Grid Grid.Row="1">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <Button x:Name="BottomPlayPauseButton"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="&#x25B6;"
-                                    ToolTip="Play / Pause"
-                                    Click="PlayPauseButton_Click"
-                                    Width="44" Height="40" FontSize="18" Focusable="True" />
-                            <Button x:Name="Back10Button"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="&#x21B6;"
-                                    ToolTip="Back 10 seconds"
-                                    Click="RewindButton_Click"
-                                    Width="44" Height="40" FontSize="18" Focusable="True" />
-                            <Button x:Name="Forward10Button"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="&#x21B7;"
-                                    ToolTip="Forward 10 seconds"
-                                    Click="ForwardButton_Click"
-                                    Width="44" Height="40" FontSize="18" Focusable="True" />
-                            <TextBlock x:Name="TimeText"
-                                       Text="00:00 / 00:00"
-                                       Foreground="White"
-                                       VerticalAlignment="Center"
-                                       Margin="12,0,0,0"
-                                       FontSize="15" />
-                        </StackPanel>
-
-                        <StackPanel Orientation="Horizontal"
-                                    HorizontalAlignment="Right"
-                                    VerticalAlignment="Center">
-                            <Button x:Name="MuteButton"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="&#x1F50A;"
-                                    ToolTip="Mute / Unmute"
-                                    Click="MuteButton_Click"
-                                    Width="44" Height="40" FontSize="17" Focusable="True" />
-                            <player:PlayerSlider x:Name="VolumeSlider"
-                                    Style="{StaticResource PlayerSliderStyle}"
-                                    Minimum="0" Maximum="100" Value="100"
-                                    Width="130" Height="40"
-                                    VerticalAlignment="Center"
-                                    ValueChanged="VolumeSlider_ValueChanged"
-                                    Focusable="True"
-                                    ToolTip="Volume" />
-                            <Button x:Name="AudioButton"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="AUD"
-                                    ToolTip="Audio track"
-                                    Click="AudioButton_Click"
-                                    Width="44" Height="40" FontSize="14" Focusable="True" />
-                            <Button x:Name="SubtitleButton"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="CC"
-                                    ToolTip="Subtitles"
-                                    Click="SubtitleButton_Click"
-                                    Width="44" Height="40" FontSize="14" Focusable="True" />
-                            <Button x:Name="SettingsButton"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="&#x2699;"
-                                    ToolTip="Settings"
-                                    Click="SettingsButton_Click"
-                                    Width="44" Height="40" FontSize="17" Focusable="True" />
-                            <Button x:Name="FullscreenButton"
-                                    Style="{StaticResource PlayerButtonStyle}"
-                                    Content="&#x26F6;"
-                                    ToolTip="Fullscreen"
-                                    Click="FullscreenButton_Click"
-                                    Width="44" Height="40" FontSize="20" Focusable="True" />
-                        </StackPanel>
-                    </Grid>
+                            Focusable="True"
+                            ToolTip="Seek" />
+                    <TextBlock x:Name="DurationText"
+                               Grid.Column="7"
+                               Text="00:00"
+                               Foreground="White"
+                               VerticalAlignment="Center"
+                               MinWidth="58"
+                               Margin="8,0,14,0"
+                               FontSize="15" />
+                    <Button x:Name="AudioButton"
+                            Grid.Column="8"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="AUD"
+                            ToolTip="Audio track"
+                            Click="AudioButton_Click"
+                            Width="48" Height="44" FontSize="14" Focusable="True" />
+                    <Button x:Name="SubtitleButton"
+                            Grid.Column="9"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="CC"
+                            ToolTip="Subtitles"
+                            Click="SubtitleButton_Click"
+                            Width="48" Height="44" FontSize="14" Focusable="True" />
+                    <Button x:Name="SettingsButton"
+                            Grid.Column="10"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x2699;"
+                            ToolTip="Settings"
+                            Click="SettingsButton_Click"
+                            Width="44" Height="44" FontSize="17" Focusable="True" />
+                    <Button x:Name="FullscreenButton"
+                            Grid.Column="11"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x26F6;"
+                            ToolTip="Fullscreen"
+                            Click="FullscreenButton_Click"
+                            Width="44" Height="44" FontSize="20" Focusable="True" />
                 </Grid>
 
                 <!-- Audio/Subtitle/Settings menus render here, above everything

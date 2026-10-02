@@ -32,6 +32,10 @@ namespace StremioVideoCenterControls.Player
             get { return _elements; }
         }
 
+        // Where focus lands when this group is pushed as a menu scope
+        // (e.g. the currently selected track). Defaults to the first element.
+        public UIElement InitialElement { get; set; }
+
         public void Add(UIElement element)
         {
             if (element != null && !_elements.Contains(element))
@@ -107,7 +111,9 @@ namespace StremioVideoCenterControls.Player
             _returnFocusStack.Push(elementToReturnFocusTo);
             _scopes.Push(menuGroup);
 
-            if (menuGroup.Elements.Count > 0)
+            if (menuGroup.InitialElement != null)
+                Focus(menuGroup.InitialElement);
+            else if (menuGroup.Elements.Count > 0)
                 Focus(menuGroup.Elements[0]);
         }
 

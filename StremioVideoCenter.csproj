@@ -118,6 +118,8 @@
     <Compile Include="Models\MpvTrackInfo.cs" />
     <Compile Include="Models\PlaybackState.cs" />
     <Compile Include="Services\MpvIpcClient.cs" />
+    <Compile Include="Controls\Player\OverlayVisibilityPolicy.cs" />
+    <Compile Include="Controls\Player\SubtitleDelay.cs" />
     <Compile Include="Services\MpvProcessService.cs" />
     <Compile Include="Services\StremioVideoCenterLogger.cs" />
     <Compile Include="Controls\MediaSection.xaml.cs">

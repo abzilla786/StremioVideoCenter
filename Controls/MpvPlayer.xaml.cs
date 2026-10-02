@@ -4,12 +4,15 @@ using StremioVideoCenter.Services;
 using StremioVideoCenterControls.Player;
 using StremioVideoCenterControls.Player.Menus;
 using System;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 
 namespace StremioVideoCenterControls
@@ -32,7 +35,39 @@ namespace StremioVideoCenterControls
         private readonly SemaphoreSlim _startupGate = new SemaphoreSlim(1, 1);
 
         private DispatcherTimer _progressTimer;
+
+        // Drives the transient overlay (activity polling + fade decisions).
+        // Named _hideControlsTimer historically; it now ticks continuously
+        // while the player is alive instead of being re-armed per interaction.
         private DispatcherTimer _hideControlsTimer;
+
+        private readonly OverlayVisibilityPolicy _overlayPolicy =
+            new OverlayVisibilityPolicy(DateTime.UtcNow);
+        private bool _overlayVisible = true;
+
+        // Last cursor position seen by the activity poll. The mpv video is a
+        // native HwndHost, which swallows WPF mouse events over the video, so
+        // mouse movement is also detected by sampling the OS cursor.
+        private bool _haveCursorSample;
+        private int _lastCursorX;
+        private int _lastCursorY;
+
+        // True while RefreshFromState moves the volume slider to mpv's value,
+        // so that programmatic change is not sent back to mpv as a command.
+        private bool _applyingVolumeFromState;
+
+        private const double SeekStepSeconds = 10;
+        private const double VolumeStep = 5;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public int X;
+            public int Y;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out NativePoint point);
 
         private Window _fullscreenWindow;
         private WindowState _previousWindowState;
@@ -88,11 +123,13 @@ namespace StremioVideoCenterControls
             MouseLeave += Player_MouseLeave;
 
             _trackMenu.TrackSelected += TrackMenu_TrackSelected;
+            _trackMenu.SubtitleDelayStepRequested += TrackMenu_SubtitleDelayStepRequested;
+            _trackMenu.SubtitleDelayResetRequested += TrackMenu_SubtitleDelayResetRequested;
 
             _progressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             _progressTimer.Tick += ProgressTimer_Tick;
 
-            _hideControlsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            _hideControlsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             _hideControlsTimer.Tick += HideControlsTimer_Tick;
         }
 
@@ -116,6 +153,10 @@ namespace StremioVideoCenterControls
             SyncControlsPopupSize();
             ShowControls();
             FocusDefaultInPopup();
+
+            // The overlay timer runs for the whole life of the player (also
+            // when startup fails, so Exit stays reachable).
+            _hideControlsTimer.Start();
 
             try
             {
@@ -144,16 +185,22 @@ namespace StremioVideoCenterControls
 
         private void BuildFocusGrid()
         {
+            // Rows, top to bottom: Exit / seek bar / bottom control bar. The
+            // centre play-state indicator is deliberately NOT part of the
+            // focus model - it is not focusable at all.
             FocusGroup topRow = new FocusGroup(CloseButton);
-            FocusGroup centerRow = new FocusGroup(PlayPauseButton);
+            FocusGroup seekRow = new FocusGroup(SeekSlider);
             FocusGroup bottomRow = new FocusGroup(
                 BottomPlayPauseButton, Back10Button, Forward10Button,
                 MuteButton, VolumeSlider, AudioButton, SubtitleButton,
                 SettingsButton, FullscreenButton);
 
-            FocusGrid grid = new FocusGrid { DefaultElement = PlayPauseButton };
+            // The bottom Play/Pause button is the first actionable control and
+            // the default focus target (initial focus, and after a menu closes
+            // without a recorded origin).
+            FocusGrid grid = new FocusGrid { DefaultElement = BottomPlayPauseButton };
             grid.AddRow(topRow);
-            grid.AddRow(centerRow);
+            grid.AddRow(seekRow);
             grid.AddRow(bottomRow);
 
             _focus = new PlayerFocusController(grid);
@@ -161,11 +208,17 @@ namespace StremioVideoCenterControls
 
         private void WireSliders()
         {
+            // Seek bar: alone in its row, always consumes Left/Right.
             SeekSlider.StepAmount = 5.0;
+            SeekSlider.RequiresEngagement = false;
             SeekSlider.OnStepLeft = amount => { var ignored = SeekRelativeAsync(-amount); };
             SeekSlider.OnStepRight = amount => { var ignored = SeekRelativeAsync(amount); };
 
-            VolumeSlider.StepAmount = 5.0;
+            // Volume slider sits in the middle of the button row: it only
+            // consumes Left/Right once engaged with A/Enter, so it can never
+            // trap focus.
+            VolumeSlider.StepAmount = VolumeStep;
+            VolumeSlider.RequiresEngagement = true;
             VolumeSlider.OnStepLeft = amount => AdjustVolume(-amount);
             VolumeSlider.OnStepRight = amount => AdjustVolume(amount);
         }
@@ -267,12 +320,19 @@ namespace StremioVideoCenterControls
 
             try { _progressTimer?.Stop(); } catch { }
             try { _hideControlsTimer?.Stop(); } catch { }
+
+            // Closing the player must not leave the host window borderless/
+            // maximised because fullscreen was toggled on.
+            try { if (_uiState.IsFullscreen) ToggleFullscreen(); } catch { }
+
             try { ControlsPopup.IsOpen = false; } catch { }
             try { PreviewKeyDown -= MpvPlayer_PreviewKeyDown; } catch { }
             try { SizeChanged -= MpvPlayer_SizeChanged; } catch { }
             try { Unloaded -= MpvPlayer_Unloaded; } catch { }
             try { Loaded -= MpvPlayer_Loaded; } catch { }
             try { _trackMenu.TrackSelected -= TrackMenu_TrackSelected; } catch { }
+            try { _trackMenu.SubtitleDelayStepRequested -= TrackMenu_SubtitleDelayStepRequested; } catch { }
+            try { _trackMenu.SubtitleDelayResetRequested -= TrackMenu_SubtitleDelayResetRequested; } catch { }
             try { _startupGate.Dispose(); } catch { }
 
             if (_session != null)
@@ -321,6 +381,12 @@ namespace StremioVideoCenterControls
             double width = Math.Max(1.0, RootGrid.ActualWidth);
             double height = Math.Max(1.0, RootGrid.ActualHeight);
 
+            if (Math.Abs(ControlsPopup.Width - width) < 0.5 &&
+                Math.Abs(ControlsPopup.Height - height) < 0.5)
+            {
+                return;
+            }
+
             ControlsPopup.Width = width;
             ControlsPopup.Height = height;
             ControlsOverlay.Width = width;
@@ -361,18 +427,36 @@ namespace StremioVideoCenterControls
                 SeekSlider.Maximum = state.DurationSeconds;
 
             if (!_uiState.IsSeekBarBeingDragged)
+            {
                 SeekSlider.Value = Math.Max(0, Math.Min(SeekSlider.Maximum, state.PositionSeconds));
+                CurrentTimeText.Text = FormatTime(state.PositionSeconds);
+            }
 
-            string playGlyph = state.IsPlaying ? "\u275A\u275A" : "\u25B6";
-            PlayPauseButton.Content = playGlyph;
-            BottomPlayPauseButton.Content = playGlyph;
+            DurationText.Text = FormatTime(state.DurationSeconds);
+
+            ApplyPlayState(state.IsPlaying);
 
             if (!VolumeSlider.IsKeyboardFocusWithin)
-                VolumeSlider.Value = Math.Max(0, Math.Min(100, state.Volume));
+            {
+                _applyingVolumeFromState = true;
+                try { VolumeSlider.Value = Math.Max(0, Math.Min(100, state.Volume)); }
+                finally { _applyingVolumeFromState = false; }
+            }
 
             MuteButton.Content = state.IsMuted ? "\U0001F507" : "\U0001F50A";
 
-            TimeText.Text = FormatTime(state.PositionSeconds) + " / " + FormatTime(state.DurationSeconds);
+            if (_uiState.OpenMenu == PlayerMenu.Subtitles)
+                _trackMenu.UpdateSubtitleDelay(state.SubtitleDelaySeconds);
+        }
+
+        // The ONE place play/pause visuals are derived from playback state,
+        // so the real bottom button and the centre indicator can never
+        // disagree. The bottom button shows the action it will perform; the
+        // centre indicator (display only) shows the current state.
+        private void ApplyPlayState(bool isPlaying)
+        {
+            BottomPlayPauseButton.Content = isPlaying ? "\u275A\u275A" : "\u25B6";
+            CenterPlayGlyph.Text = isPlaying ? "\u25B6" : "\u275A\u275A";
         }
 
         private void Session_PlaybackEstablished(object sender, EventArgs e)
@@ -381,6 +465,14 @@ namespace StremioVideoCenterControls
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 if (_disposed) return;
+
+                // Media launched: initial keyboard/controller focus goes to
+                // the bottom Play/Pause button (never the centre indicator).
+                if (_focus != null && _focus.IsAtRootScope)
+                {
+                    ShowControls();
+                    _focus.FocusRootDefault();
+                }
 
                 EventHandler handler = PlaybackEstablished;
                 if (handler != null)
@@ -410,8 +502,8 @@ namespace StremioVideoCenterControls
             // frozen frame.
             Dispatcher.BeginInvoke(new Action(() =>
             {
+                if (_disposed) return;
                 ShowControls();
-                _hideControlsTimer.Stop();
             }));
         }
 
@@ -458,12 +550,18 @@ namespace StremioVideoCenterControls
             await _session.SeekAbsoluteAsync(seconds);
         }
 
-        private async void PlayPauseButton_Click(object sender, RoutedEventArgs e)
+        private void PlayPauseButton_Click(object sender, RoutedEventArgs e)
+        {
+            TogglePlayPause();
+        }
+
+        // The single Play/Pause command path (bottom button, Space, controller
+        // X). mpv owns the state; the UI updates from the observed property.
+        private async void TogglePlayPause()
         {
             try { if (_session != null) await _session.TogglePauseAsync(); }
             catch { }
             ShowControls();
-            RestartHideTimer();
         }
 
         private async void RewindButton_Click(object sender, RoutedEventArgs e)
@@ -478,12 +576,16 @@ namespace StremioVideoCenterControls
             catch { }
         }
 
-        private async void MuteButton_Click(object sender, RoutedEventArgs e)
+        private void MuteButton_Click(object sender, RoutedEventArgs e)
+        {
+            ToggleMute();
+        }
+
+        private async void ToggleMute()
         {
             try { if (_session != null) await _session.ToggleMuteAsync(); }
             catch { }
             ShowControls();
-            RestartHideTimer();
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -505,32 +607,48 @@ namespace StremioVideoCenterControls
 
         private async void SeekSlider_PreviewMouseUp(object sender, MouseButtonEventArgs e)
         {
-            _uiState.IsSeekBarBeingDragged = false;
+            if (!_uiState.IsSeekBarBeingDragged)
+                return;
+
+            // Stay in "seeking" (controls visible, polling paused) until the
+            // seek command has been sent, so the thumb does not snap back to
+            // the pre-seek position in between.
             try { if (_session != null) await _session.SeekAbsoluteAsync(SeekSlider.Value); }
             catch { }
-            RestartHideTimer();
+            finally { _uiState.IsSeekBarBeingDragged = false; }
+
+            ShowControls();
+        }
+
+        // Live time read-out while dragging the thumb.
+        private void SeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_uiState.IsSeekBarBeingDragged)
+                CurrentTimeText.Text = FormatTime(SeekSlider.Value);
         }
 
         private async void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
+            // Ignore the programmatic update that mirrors mpv's own volume.
+            if (_applyingVolumeFromState) return;
             if (_disposed || _session == null || !_session.IsRunning) return;
-
-            // Avoid sending a volume command for programmatic updates driven by
-            // RefreshFromState (i.e. mpv telling us its own current volume).
-            if (!VolumeSlider.IsKeyboardFocusWithin && !IsMouseOver) return;
 
             try { await _session.SetVolumeAsync(VolumeSlider.Value); }
             catch { }
             ShowControls();
-            RestartHideTimer();
         }
 
-        private void AdjustVolume(double delta)
+        // Keyboard/controller volume step. Sends the command to mpv directly
+        // (mpv is the authority); the slider follows via the observed volume
+        // property, so there is no second copy of the volume to keep in sync.
+        private async void AdjustVolume(double delta)
         {
-            VolumeSlider.Focus();
-            VolumeSlider.Value = Math.Max(0, Math.Min(100, VolumeSlider.Value + delta));
+            if (_disposed || _session == null) return;
+
+            double target = Math.Max(0, Math.Min(100, _session.State.Volume + delta));
+            try { await _session.SetVolumeAsync(target); }
+            catch { }
             ShowControls();
-            RestartHideTimer();
         }
 
         // =====================================================================
@@ -558,7 +676,13 @@ namespace StremioVideoCenterControls
 
             _pendingTrackMenuIsAudio = isAudio;
 
-            FocusGroup group = _trackMenu.Populate(title, tracks, selected, includeOffOption: !isAudio);
+            FocusGroup group = _trackMenu.Populate(
+                title,
+                tracks,
+                selected,
+                includeOffOption: !isAudio,
+                includeSubtitleDelay: !isAudio,
+                subtitleDelaySeconds: _session.State.SubtitleDelaySeconds);
 
             MenuHost.Content = _trackMenu;
             MenuHost.Visibility = Visibility.Visible;
@@ -589,6 +713,24 @@ namespace StremioVideoCenterControls
             catch { }
 
             CloseActiveMenuAndRestoreFocus();
+        }
+
+        // Subtitle delay is a session-only mpv adjustment: it is sent to mpv
+        // (sub-delay) and nothing else - not Watch State, not the media
+        // identity, not the subtitle file. The menu stays open so the user
+        // can keep adjusting; the displayed value follows mpv's property.
+        private async void TrackMenu_SubtitleDelayStepRequested(object sender, double deltaSeconds)
+        {
+            try { if (_session != null) await _session.AdjustSubtitleDelayAsync(deltaSeconds); }
+            catch { }
+            ShowControls();
+        }
+
+        private async void TrackMenu_SubtitleDelayResetRequested(object sender, EventArgs e)
+        {
+            try { if (_session != null) await _session.ResetSubtitleDelayAsync(); }
+            catch { }
+            ShowControls();
         }
 
         private void SettingsButton_Click(object sender, RoutedEventArgs e)
@@ -645,9 +787,27 @@ namespace StremioVideoCenterControls
             HandlePlayerKeyDown(e);
         }
 
+        // Keyboard model (controller input keeps D-pad focus navigation via
+        // HandleControllerInput below):
+        //   Space            play / pause (activates the focused item inside a menu)
+        //   Enter            activate the focused control
+        //   Left / Right     seek -/+10s (Volume slider focused: volume -/+5)
+        //   Up / Down        volume +/-5
+        //   M / F            mute / fullscreen
+        //   Tab              move focus across the controls (standard WPF)
+        //   Esc / Backspace / B   close menu, else leave an engaged slider,
+        //                    else exit the player
+        // While an Audio/Subtitles/Settings menu is open, the arrows move
+        // focus within the menu instead.
         private void HandlePlayerKeyDown(KeyEventArgs e)
         {
             if (_disposed || _focus == null) return;
+
+            // Any key is activity: reveal the overlay and restart the idle timer.
+            ShowControls();
+
+            bool inMenu = !_focus.IsAtRootScope;
+            bool volumeFocused = ReferenceEquals(Keyboard.FocusedElement, VolumeSlider);
 
             switch (e.Key)
             {
@@ -659,37 +819,60 @@ namespace StremioVideoCenterControls
                     break;
 
                 case Key.Enter:
-                case Key.Space:
                     HandleActivate();
                     e.Handled = true;
                     break;
 
-                case Key.Left:
-                    _focus.MoveHorizontal(-1);
-                    ShowControls();
-                    RestartHideTimer();
+                case Key.Space:
+                    if (inMenu)
+                        HandleActivate();
+                    else
+                        TogglePlayPause();
                     e.Handled = true;
                     break;
 
+                case Key.Left:
                 case Key.Right:
-                    _focus.MoveHorizontal(1);
-                    ShowControls();
-                    RestartHideTimer();
+                {
+                    int direction = e.Key == Key.Left ? -1 : 1;
+                    if (inMenu)
+                        _focus.MoveHorizontal(direction);
+                    else if (volumeFocused)
+                        AdjustVolume(direction * VolumeStep);
+                    else
+                    {
+                        var ignored = SeekRelativeAsync(direction * SeekStepSeconds);
+                    }
                     e.Handled = true;
                     break;
+                }
 
                 case Key.Up:
-                    _focus.MoveVertical(-1);
-                    ShowControls();
-                    RestartHideTimer();
+                case Key.Down:
+                {
+                    int direction = e.Key == Key.Up ? -1 : 1;
+                    if (inMenu)
+                        _focus.MoveVertical(direction);
+                    else
+                        AdjustVolume(-direction * VolumeStep);
                     e.Handled = true;
                     break;
+                }
 
-                case Key.Down:
-                    _focus.MoveVertical(1);
-                    ShowControls();
-                    RestartHideTimer();
-                    e.Handled = true;
+                case Key.M:
+                    if (!inMenu)
+                    {
+                        ToggleMute();
+                        e.Handled = true;
+                    }
+                    break;
+
+                case Key.F:
+                    if (!inMenu)
+                    {
+                        ToggleFullscreen();
+                        e.Handled = true;
+                    }
                     break;
             }
         }
@@ -699,6 +882,7 @@ namespace StremioVideoCenterControls
         {
             if (_disposed || _focus == null) return false;
 
+            // Any controller button is activity.
             ShowControls();
 
             switch (button)
@@ -711,51 +895,65 @@ namespace StremioVideoCenterControls
                     HandleActivate();
                     return true;
 
+                case ControllerInput.X:
+                    // Quick play/pause from anywhere on the bar. Not while a
+                    // menu is open, where X has no meaning.
+                    if (_focus.IsAtRootScope)
+                    {
+                        TogglePlayPause();
+                        return true;
+                    }
+                    return false;
+
                 case ControllerInput.DPadLeft:
                     _focus.MoveHorizontal(-1);
-                    RestartHideTimer();
                     return true;
 
                 case ControllerInput.DPadRight:
                     _focus.MoveHorizontal(1);
-                    RestartHideTimer();
                     return true;
 
                 case ControllerInput.DPadUp:
                     _focus.MoveVertical(-1);
-                    RestartHideTimer();
                     return true;
 
                 case ControllerInput.DPadDown:
                     _focus.MoveVertical(1);
-                    RestartHideTimer();
                     return true;
             }
 
             return false;
         }
 
-        // B is context-sensitive:
-        //   - Focus on a slider (Seek/Volume) at the root scope: exit the
-        //     slider back to the default control, don't close the player.
-        //   - A menu is open (Audio/Subtitle/Settings): pop it, restore focus
+        // B / Escape is context-sensitive:
+        //   - An engaged slider (volume) is released first.
+        //   - A menu is open (Audio/Subtitle/Settings): pop it, restoring focus
         //     to the button that opened it, don't close the player.
-        //   - Otherwise (root scope, non-slider focus): close the player.
+        //   - Focus on a slider at the root scope: back to the default
+        //     control (bottom Play/Pause), don't close the player.
+        //   - Otherwise: exit the player (a manual stop - never marks the item
+        //     completed; the view flushes the last valid progress).
         private void HandleClose()
         {
             UIElement focused = Keyboard.FocusedElement as UIElement;
 
-            if (focused is PlayerSlider && _focus.IsAtRootScope)
+            PlayerSlider slider = focused as PlayerSlider;
+            if (slider != null && slider.IsEngaged)
             {
-                _focus.FocusRootDefault();
-                ShowControls();
-                RestartHideTimer();
+                slider.Disengage();
+                UpdateSliderEngagedVisual(slider);
                 return;
             }
 
             if (!_focus.IsAtRootScope)
             {
                 CloseActiveMenuAndRestoreFocus();
+                return;
+            }
+
+            if (slider != null)
+            {
+                _focus.FocusRootDefault();
                 return;
             }
 
@@ -774,13 +972,28 @@ namespace StremioVideoCenterControls
 
             Button button = focused as Button;
             if (button != null)
+            {
                 button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                return;
+            }
 
-            // A on a slider intentionally does nothing beyond keeping focus
-            // there - this avoids an accidental play/pause while adjusting
-            // seek or volume.
-            ShowControls();
-            RestartHideTimer();
+            // A on the volume slider engages/releases it for Left/Right
+            // adjustment. On the seek bar it does nothing (Left/Right always
+            // seek), avoiding an accidental play/pause while seeking.
+            PlayerSlider slider = focused as PlayerSlider;
+            if (slider != null && slider.RequiresEngagement)
+            {
+                slider.ToggleEngaged();
+                UpdateSliderEngagedVisual(slider);
+            }
+        }
+
+        // Makes "engaged" obvious: a lit track behind the slider.
+        private static void UpdateSliderEngagedVisual(PlayerSlider slider)
+        {
+            slider.Background = slider.IsEngaged
+                ? new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF))
+                : Brushes.Transparent;
         }
 
         private void FocusDefaultInPopup()
@@ -804,50 +1017,132 @@ namespace StremioVideoCenterControls
         }
 
         // =====================================================================
-        // MOUSE / AUTO-HIDE
+        // TRANSIENT OVERLAY (activity tracking + fade)
+        //
+        // The overlay is a popup (so it renders above the native mpv HWND) that
+        // fades via Opacity instead of closing: closing the popup would drop
+        // keyboard focus, and mouse movement over the video HWND never reaches
+        // WPF, so the popup staying open also keeps activity detection working.
+        // Visibility rules live in OverlayVisibilityPolicy.
         // =====================================================================
 
         private void Player_MouseMove(object sender, MouseEventArgs e)
         {
             ShowControls();
-            RestartHideTimer();
         }
 
         private void Player_MouseLeave(object sender, MouseEventArgs e)
         {
-            RestartHideTimer();
         }
 
+        // Mouse movement/clicks on the overlay itself (including over the
+        // control bar) are activity.
+        private void Overlay_MouseMove(object sender, MouseEventArgs e)
+        {
+            ShowControls();
+        }
+
+        private void Overlay_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            ShowControls();
+        }
+
+        // Any interaction: restart the idle timer and make sure the overlay
+        // is visible.
         private void ShowControls()
         {
+            if (_disposed) return;
+
+            _overlayPolicy.NoteActivity(DateTime.UtcNow);
+
             SyncControlsPopupSize();
-            ControlsOverlay.Visibility = Visibility.Visible;
             ControlsPopup.IsOpen = true;
-            ControlsOverlay.UpdateLayout();
-            _uiState.ControlsVisible = true;
+            SetOverlayVisible(true);
+        }
+
+        // Retained name for the many "interaction happened" call sites; the
+        // idle timer itself is now owned by OverlayVisibilityPolicy.
+        private void RestartHideTimer()
+        {
+            if (_disposed) return;
+            _overlayPolicy.NoteActivity(DateTime.UtcNow);
+        }
+
+        private void SetOverlayVisible(bool visible)
+        {
+            if (_overlayVisible == visible) return;
+
+            _overlayVisible = visible;
+            _uiState.ControlsVisible = visible;
+
+            // A faded-out overlay must not intercept clicks meant for nothing.
+            ControlsOverlay.IsHitTestVisible = visible;
+
+            DoubleAnimation animation = new DoubleAnimation(
+                visible ? 1.0 : 0.0,
+                TimeSpan.FromMilliseconds(visible ? 150 : 450))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+            };
+
+            ControlsOverlay.BeginAnimation(UIElement.OpacityProperty, animation);
         }
 
         private void HideControlsTimer_Tick(object sender, EventArgs e)
         {
-            if (_uiState.OpenMenu != PlayerMenu.None) return;
+            if (_disposed) return;
 
-            if (Keyboard.FocusedElement is Slider || Keyboard.FocusedElement is Button)
-                return;
+            PollCursorActivity();
 
-            if (_session != null && _session.State.IsPlaying)
-            {
-                ControlsOverlay.Visibility = Visibility.Collapsed;
-                ControlsPopup.IsOpen = false;
-                _uiState.ControlsVisible = false;
-            }
+            PlaybackState state = _session != null ? _session.State : null;
+
+            bool playbackRunning =
+                state != null && state.IsPlaybackEstablished && !state.ReachedEndOfFile;
+            bool paused = state == null || !state.IsPlaying;
+
+            bool visible = _overlayPolicy.ShouldBeVisible(
+                DateTime.UtcNow,
+                playbackRunning,
+                paused,
+                _uiState.OpenMenu != PlayerMenu.None,
+                _uiState.IsSeekBarBeingDragged);
+
+            SetOverlayVisible(visible);
         }
 
-        private void RestartHideTimer()
+        // Samples the OS cursor: WPF never sees mouse movement over the native
+        // mpv window, so this is what wakes the overlay when the mouse moves
+        // over the video.
+        private void PollCursorActivity()
         {
-            if (_hideControlsTimer == null) return;
+            NativePoint point;
+            if (!GetCursorPos(out point)) return;
 
-            _hideControlsTimer.Stop();
-            _hideControlsTimer.Start();
+            bool moved = _haveCursorSample && (point.X != _lastCursorX || point.Y != _lastCursorY);
+
+            _haveCursorSample = true;
+            _lastCursorX = point.X;
+            _lastCursorY = point.Y;
+
+            if (moved && IsScreenPointOverPlayer(point))
+                ShowControls();
+        }
+
+        private bool IsScreenPointOverPlayer(NativePoint point)
+        {
+            try
+            {
+                Point topLeft = RootGrid.PointToScreen(new Point(0, 0));
+                Point bottomRight = RootGrid.PointToScreen(new Point(RootGrid.ActualWidth, RootGrid.ActualHeight));
+
+                return point.X >= topLeft.X && point.X <= bottomRight.X &&
+                       point.Y >= topLeft.Y && point.Y <= bottomRight.Y;
+            }
+            catch
+            {
+                // Not attached to a presentation source (yet/anymore).
+                return false;
+            }
         }
 
         // =====================================================================
