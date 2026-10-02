@@ -489,13 +489,14 @@ namespace StremioVideoCenter.Services
                 TrailerUrl =
                     string.Empty,
 
-                // Kitsu categories are a relationship, not resolved by
-                // GetPopularAnimeAsync (only BrowseAnimeAsync requests
-                // include=categories and resolves them) - empty here,
-                // matching this slice's scope (Hero's own genre display
-                // is not part of the Anime Browse filter work).
+                // GetPopularAnimeAsync now requests include=categories and
+                // resolves them (Slice 17C fix), so an anime Hero added to
+                // My List keeps its genres for personalisation.
                 Genres =
-                    new List<string>()
+                    attributes.Categories?
+                        .Where(c => !string.IsNullOrWhiteSpace(c?.Title))
+                        .Select(c => c.Title)
+                        .ToList() ?? new List<string>()
             };
         }
 

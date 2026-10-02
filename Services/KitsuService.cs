@@ -118,6 +118,7 @@ namespace StremioVideoCenter.Services
             string url =
                 BaseUrl +
                 "/anime?filter%5Btext%5D=" + Uri.EscapeDataString(query) +
+                "&include=categories" +
                 "&page%5Blimit%5D=" + ClampLimit(limit) +
                 "&page%5Boffset%5D=" + Math.Max(0, offset);
 
@@ -135,6 +136,7 @@ namespace StremioVideoCenter.Services
             string url =
                 BaseUrl +
                 "/anime?sort=-userCount" +
+                "&include=categories" +
                 "&page%5Blimit%5D=" + ClampLimit(limit) +
                 "&page%5Boffset%5D=" + Math.Max(0, offset);
 
@@ -395,9 +397,18 @@ namespace StremioVideoCenter.Services
             {
                 string json = await DownloadStringAsync(url);
 
-                KitsuCollectionResponse response = Deserialize<KitsuCollectionResponse>(json);
+                // Slice 17C fix: Search/Popular now request include=categories
+                // (same as BrowseAnimeAsync), so every item they return -
+                // Home's Popular row, Hero, Search - carries its categories
+                // (and therefore genres) when it is added to My List/History.
+                KitsuAnimeCollectionResponse response = Deserialize<KitsuAnimeCollectionResponse>(json);
 
-                return response?.Data ?? new List<KitsuAnimeResource>();
+                List<KitsuAnimeResource> items =
+                    response?.Data ?? new List<KitsuAnimeResource>();
+
+                ResolveCategories(items, response?.Included);
+
+                return items;
             }
             catch
             {

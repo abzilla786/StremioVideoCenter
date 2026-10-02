@@ -433,7 +433,7 @@ namespace StremioVideoCenterControls
                 ReleaseDate = item.Attributes.StartDate,
                 Rating = item.Attributes.AverageRating,
                 Type = "Anime",
-                Genres = new List<string>(),
+                Genres = item.Attributes.Categories?.Select(c => c.Title).ToList() ?? new List<string>(),
                 PosterPath = poster ?? string.Empty,
                 BackdropUrl = item.Attributes.CoverImage?.Large ?? string.Empty
             };
