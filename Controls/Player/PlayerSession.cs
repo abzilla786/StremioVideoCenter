@@ -244,6 +244,11 @@ namespace StremioVideoCenterControls.Player
             State.PositionSeconds = 0;
             State.DurationSeconds = 0;
 
+            // Track ids/lists/selection and the subtitle delay belong to the
+            // file being replaced: clear them now so nothing stale is shown
+            // while the new file loads (see PlaybackTracks).
+            PlaybackTracks.Reset(State);
+
             RaiseStateChanged();
         }
 
@@ -296,32 +301,102 @@ namespace StremioVideoCenterControls.Player
             await _ipc.RunCommandAsync("cycle", "mute").ConfigureAwait(true);
         }
 
-        public async Task SelectAudioTrackAsync(int trackId)
+        // Track selection changes mpv's aid/sid only: playback is not
+        // restarted, the source is not reloaded and the position is
+        // untouched. Returns false (nothing sent) if the track no longer
+        // exists in the CURRENT file's list; throws MpvCommandException if
+        // mpv rejects it. Afterwards the real selection is read back from mpv,
+        // so the UI reflects what mpv did rather than what was asked.
+        public async Task<bool> SelectAudioTrackAsync(int trackId)
         {
-            if (!IsRunning) return;
+            if (!IsRunning || !PlaybackTracks.HasAudioTrack(State, trackId)) return false;
+
             await _ipc.SetPropertyAsync("aid", trackId).ConfigureAwait(true);
+            await RefreshTrackStateAsync().ConfigureAwait(true);
+            return true;
         }
 
-        // Relative change of mpv's sub-delay (session-only; mpv owns the
-        // value and echoes it back through the observed property).
+        // subtitleTrackId == null means "subtitles off" (sid=no).
+        public async Task<bool> SelectSubtitleTrackAsync(int? subtitleTrackId)
+        {
+            if (!IsRunning) return false;
+            if (subtitleTrackId.HasValue && !PlaybackTracks.HasSubtitleTrack(State, subtitleTrackId.Value))
+                return false;
+
+            await _ipc.SetPropertyAsync("sid", PlaybackTracks.SubtitleSelectionValue(subtitleTrackId)).ConfigureAwait(true);
+            await RefreshTrackStateAsync().ConfigureAwait(true);
+            return true;
+        }
+
+        // Relative change of mpv's sub-delay (session-only). The resulting
+        // value is read back from mpv.
         public async Task AdjustSubtitleDelayAsync(double deltaSeconds)
         {
             if (!IsRunning) return;
             await _ipc.RunCommandAsync("add", "sub-delay", deltaSeconds).ConfigureAwait(true);
+            await RefreshSubtitleDelayAsync().ConfigureAwait(true);
         }
 
         public async Task ResetSubtitleDelayAsync()
         {
             if (!IsRunning) return;
             await _ipc.SetPropertyAsync("sub-delay", 0.0).ConfigureAwait(true);
+            await RefreshSubtitleDelayAsync().ConfigureAwait(true);
         }
 
-        // subtitleTrackId == null means "subtitles off".
-        public async Task SelectSubtitleTrackAsync(int? subtitleTrackId)
+        private async Task RefreshSubtitleDelayAsync()
+        {
+            try
+            {
+                JToken delay = await _ipc.GetPropertyAsync("sub-delay").ConfigureAwait(true);
+                PlaybackTracks.ApplySubtitleDelay(State, ToNullableDouble(delay));
+                RaiseStateChanged();
+            }
+            catch (MpvCommandException)
+            {
+                // The observed property still updates the state.
+            }
+        }
+
+        // Pulls the loaded file's track list, the selected audio/subtitle
+        // tracks and the subtitle delay straight from mpv. Called when a file
+        // is established and after any selection. Results from a file that
+        // has since been replaced are discarded (generation check).
+        public async Task RefreshTrackStateAsync()
         {
             if (!IsRunning) return;
-            object value = subtitleTrackId.HasValue ? (object)subtitleTrackId.Value : "no";
-            await _ipc.SetPropertyAsync("sid", value).ConfigureAwait(true);
+
+            int generation = _playGeneration;
+
+            try
+            {
+                JToken list = await _ipc.GetPropertyAsync("track-list").ConfigureAwait(false);
+                JToken aid = await _ipc.GetPropertyAsync("aid").ConfigureAwait(false);
+                JToken sid = await _ipc.GetPropertyAsync("sid").ConfigureAwait(false);
+                JToken delay = await _ipc.GetPropertyAsync("sub-delay").ConfigureAwait(false);
+
+                if (generation != _playGeneration) return;
+
+                if (list != null && list.Type == JTokenType.Array)
+                    UpdateTrackLists((JArray)list);
+
+                // aid/sid read back as a number, or false/"no" when none.
+                PlaybackTracks.ApplySelectedAudio(State, ToNullableInt(aid));
+                PlaybackTracks.ApplySelectedSubtitle(State, ToNullableInt(sid));
+                PlaybackTracks.ApplySubtitleDelay(State, ToNullableDouble(delay));
+            }
+            catch (MpvCommandException)
+            {
+                // mpv is shutting down or between files; observed property
+                // changes keep the state current.
+                return;
+            }
+
+            RaiseStateChanged();
+
+            EventHandler tracksHandler = TracksChanged;
+            if (tracksHandler != null)
+                tracksHandler(this, EventArgs.Empty);
         }
 
         // Called by the UI's progress timer. Position/duration are polled
@@ -411,6 +486,13 @@ namespace StremioVideoCenterControls.Player
 
             StremioVideoCenterLogger.Info("MPV file-loaded: playback established" +
                 (_resumePending ? " (resume pending)" : string.Empty));
+
+            // Authoritatively read the new file's tracks, selection and
+            // subtitle delay from mpv (in addition to the observed pushes).
+            // Extension point: a future preferred-language policy would act
+            // here, once the track list is known; for now mpv's own default
+            // selection stands.
+            var ignoredTracks = RefreshTrackStateAsync();
 
             RaiseStateChanged();
 
@@ -571,8 +653,7 @@ namespace StremioVideoCenterControls.Player
                     break;
 
                 case "sub-delay":
-                    double? subDelay = ToNullableDouble(data);
-                    State.SubtitleDelaySeconds = subDelay ?? 0;
+                    PlaybackTracks.ApplySubtitleDelay(State, ToNullableDouble(data));
                     break;
 
                 case "volume":
@@ -582,11 +663,11 @@ namespace StremioVideoCenterControls.Player
                     break;
 
                 case "aid":
-                    State.SelectedAudioTrackId = ToNullableInt(data);
+                    PlaybackTracks.ApplySelectedAudio(State, ToNullableInt(data));
                     break;
 
                 case "sid":
-                    State.SelectedSubtitleTrackId = ToNullableInt(data);
+                    PlaybackTracks.ApplySelectedSubtitle(State, ToNullableInt(data));
                     break;
 
                 case "track-list":
@@ -621,25 +702,16 @@ namespace StremioVideoCenterControls.Player
 
         private void UpdateTrackLists(JArray trackList)
         {
-            List<MpvTrackInfo> audio = new List<MpvTrackInfo>();
-            List<MpvTrackInfo> subtitles = new List<MpvTrackInfo>();
+            List<MpvTrackInfo> tracks = new List<MpvTrackInfo>();
 
             foreach (JToken token in trackList)
             {
-                JObject obj = token as JObject;
-                if (obj == null) continue;
-
-                MpvTrackInfo track = MpvTrackInfo.FromJson(obj);
-                if (track == null) continue;
-
-                if (string.Equals(track.Type, "audio", StringComparison.OrdinalIgnoreCase))
-                    audio.Add(track);
-                else if (string.Equals(track.Type, "sub", StringComparison.OrdinalIgnoreCase))
-                    subtitles.Add(track);
+                MpvTrackInfo track = MpvTrackParser.Parse(token as JObject);
+                if (track != null)
+                    tracks.Add(track);
             }
 
-            State.AudioTracks = audio;
-            State.SubtitleTracks = subtitles;
+            PlaybackTracks.ApplyTrackList(State, tracks);
         }
 
         private static double? ToNullableDouble(JToken token)

@@ -458,6 +458,10 @@ namespace StremioVideoCenterControls
 
             MuteButton.Content = state.IsMuted ? "\U0001F507" : "\U0001F50A";
 
+            // Keep an open Audio/Subtitles menu in step with mpv: rebuild it if
+            // the track list/selection changed, otherwise just the delay value.
+            RefreshOpenTrackMenuIfStale();
+
             if (_uiState.OpenMenu == PlayerMenu.Subtitles)
                 _trackMenu.UpdateSubtitleDelay(state.SubtitleDelaySeconds);
         }
@@ -775,24 +779,41 @@ namespace StremioVideoCenterControls
             OpenTrackMenu(isAudio: false);
         }
 
+        private int _trackMenuVersion;
+
+        // Builds the menu group from mpv's CURRENT state (what PlaybackState
+        // mirrors): the loaded file's tracks, the selected one and the
+        // subtitle delay. Used both to open the menu and to refresh it live.
+        private FocusGroup BuildTrackMenuGroup(bool isAudio)
+        {
+            PlaybackState state = _session.State;
+
+            _trackMenuVersion = state.TracksVersion;
+
+            return _trackMenu.Populate(
+                isAudio ? "Audio" : "Subtitles",
+                TrackMenuLayout.Build(
+                    isSubtitles: !isAudio,
+                    tracks: isAudio ? state.AudioTracks : state.SubtitleTracks,
+                    selectedTrackId: isAudio ? state.SelectedAudioTrackId : state.SelectedSubtitleTrackId,
+                    tracksLoaded: state.TracksLoaded,
+                    delaySeconds: state.SubtitleDelaySeconds));
+        }
+
         private void OpenTrackMenu(bool isAudio)
         {
             if (_session == null || _focus == null) return;
 
-            var tracks = isAudio ? _session.State.AudioTracks : _session.State.SubtitleTracks;
-            int? selected = isAudio ? _session.State.SelectedAudioTrackId : _session.State.SelectedSubtitleTrackId;
-            string title = isAudio ? "Audio" : "Subtitles";
+            // Menus never stack: opening one while another is open replaces it
+            // and still returns focus to the right button on close.
+            if (!_focus.IsAtRootScope)
+                CloseActiveMenuAndRestoreFocus();
+
             UIElement originButton = isAudio ? (UIElement)AudioButton : SubtitleButton;
 
             _pendingTrackMenuIsAudio = isAudio;
 
-            FocusGroup group = _trackMenu.Populate(
-                title,
-                tracks,
-                selected,
-                includeOffOption: !isAudio,
-                includeSubtitleDelay: !isAudio,
-                subtitleDelaySeconds: _session.State.SubtitleDelaySeconds);
+            FocusGroup group = BuildTrackMenuGroup(isAudio);
 
             MenuHost.Content = _trackMenu;
             MenuHost.Visibility = Visibility.Visible;
@@ -803,26 +824,48 @@ namespace StremioVideoCenterControls
             RestartHideTimer();
         }
 
+        // The loaded file's tracks changed while a track menu is open (a new
+        // episode/source was loaded, or mpv updated the list): rebuild the
+        // menu from the new state so it never shows stale tracks.
+        private void RefreshOpenTrackMenuIfStale()
+        {
+            if (_session == null || _focus == null) return;
+            if (_uiState.OpenMenu != PlayerMenu.Audio && _uiState.OpenMenu != PlayerMenu.Subtitles) return;
+            if (_session.State.TracksVersion == _trackMenuVersion) return;
+
+            _focus.ReplaceActiveMenuGroup(BuildTrackMenuGroup(_pendingTrackMenuIsAudio));
+        }
+
+        // A track pick only asks mpv to switch (no restart, no reload, no
+        // seek). Whether it worked is decided by mpv: PlayerSession reads the
+        // real selection back, and a rejected/impossible request leaves the
+        // previous selection in place and shows a short, generic notice (never
+        // an mpv message or URL).
         private async void TrackMenu_TrackSelected(object sender, TrackMenuItemSelectedEventArgs e)
         {
+            bool isAudio = _pendingTrackMenuIsAudio;
+            bool applied = true;
+
             try
             {
                 if (_session != null)
                 {
-                    if (_pendingTrackMenuIsAudio)
-                    {
-                        if (e.TrackId.HasValue)
-                            await _session.SelectAudioTrackAsync(e.TrackId.Value);
-                    }
+                    if (isAudio)
+                        applied = e.TrackId.HasValue && await _session.SelectAudioTrackAsync(e.TrackId.Value);
                     else
-                    {
-                        await _session.SelectSubtitleTrackAsync(e.TrackId);
-                    }
+                        applied = await _session.SelectSubtitleTrackAsync(e.TrackId);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                applied = false;
+                StremioVideoCenterLogger.Info("Track selection failed: " + UserFacingErrors.ForLog(ex));
+            }
 
             CloseActiveMenuAndRestoreFocus();
+
+            if (!applied)
+                ShowNotice(isAudio ? "Couldn\u2019t change the audio track" : "Couldn\u2019t change the subtitles");
         }
 
         // Subtitle delay is a session-only mpv adjustment: it is sent to mpv
@@ -832,14 +875,22 @@ namespace StremioVideoCenterControls
         private async void TrackMenu_SubtitleDelayStepRequested(object sender, double deltaSeconds)
         {
             try { if (_session != null) await _session.AdjustSubtitleDelayAsync(deltaSeconds); }
-            catch { }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Subtitle delay change failed: " + UserFacingErrors.ForLog(ex));
+                ShowNotice("Couldn\u2019t change the subtitle delay");
+            }
             ShowControls();
         }
 
         private async void TrackMenu_SubtitleDelayResetRequested(object sender, EventArgs e)
         {
             try { if (_session != null) await _session.ResetSubtitleDelayAsync(); }
-            catch { }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Subtitle delay reset failed: " + UserFacingErrors.ForLog(ex));
+                ShowNotice("Couldn\u2019t reset the subtitle delay");
+            }
             ShowControls();
         }
 
@@ -921,6 +972,17 @@ namespace StremioVideoCenterControls
 
             switch (e.Key)
             {
+                // Focus stays inside an open menu: Tab walks the menu items
+                // instead of escaping to the control bar behind it.
+                case Key.Tab:
+                    if (inMenu)
+                    {
+                        _focus.MoveVertical(
+                            (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift ? -1 : 1);
+                        e.Handled = true;
+                    }
+                    break;
+
                 case Key.B:
                 case Key.Escape:
                 case Key.Back:
@@ -1168,6 +1230,30 @@ namespace StremioVideoCenterControls
         private void Overlay_PreviewMouseDown(object sender, MouseButtonEventArgs e)
         {
             ShowControls();
+
+            // A click outside an open menu closes it (and is consumed, so it
+            // cannot also press whatever control sits behind the menu). Focus
+            // returns to the button that opened it.
+            if (_focus != null && !_focus.IsAtRootScope && !IsWithinMenu(e.OriginalSource as DependencyObject))
+            {
+                CloseActiveMenuAndRestoreFocus();
+                e.Handled = true;
+            }
+        }
+
+        private bool IsWithinMenu(DependencyObject source)
+        {
+            while (source != null)
+            {
+                if (ReferenceEquals(source, MenuHost.Content))
+                    return true;
+
+                source = source is Visual || source is System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(source)
+                    : LogicalTreeHelper.GetParent(source);
+            }
+
+            return false;
         }
 
         // Any interaction: restart the idle timer and make sure the overlay

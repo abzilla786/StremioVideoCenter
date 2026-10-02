@@ -57,6 +57,15 @@ namespace StremioVideoCenter.Models
         // later). Session-only: never persisted, never part of media identity.
         public double SubtitleDelaySeconds { get; set; }
 
+        // False from the moment a new file is loaded until mpv has reported
+        // that file's track list. While false the track lists are empty and
+        // menus show "loading", never the previous file's tracks.
+        public bool TracksLoaded { get; set; }
+
+        // Incremented whenever the track lists or selection change, so an
+        // open menu can tell it is showing stale data.
+        public int TracksVersion { get; set; }
+
         public int? SelectedAudioTrackId { get; set; }
 
         // null = subtitles off.

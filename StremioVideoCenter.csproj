@@ -116,6 +116,10 @@
     <Compile Include="Controls\Player\PlayerSlider.cs" />
     <Compile Include="Controls\Player\StartupTrace.cs" />
     <Compile Include="Models\MpvTrackInfo.cs" />
+    <Compile Include="Models\TrackLabels.cs" />
+    <Compile Include="Models\TrackMenuLayout.cs" />
+    <Compile Include="Models\PlaybackTracks.cs" />
+    <Compile Include="Services\MpvTrackParser.cs" />
     <Compile Include="Models\PlaybackState.cs" />
     <Compile Include="Services\MpvIpcClient.cs" />
     <Compile Include="Controls\Player\OverlayVisibilityPolicy.cs" />

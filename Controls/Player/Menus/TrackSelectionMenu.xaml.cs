@@ -42,16 +42,17 @@ namespace StremioVideoCenterControls.Player.Menus
             InitializeComponent();
         }
 
-        // Rebuilds the menu contents and returns a FocusGroup ready to be
-        // pushed onto PlayerFocusController. Handles the "no tracks available"
-        // case explicitly rather than showing an empty list.
+        // Rebuilds the menu from mpv's current state and returns the
+        // FocusGroup for PlayerFocusController (to push, or to swap in for a
+        // live refresh). WHAT the menu contains and its focus order come from
+        // TrackMenuLayout (pure); this method only renders it:
+        //   - loading: "Loading tracks..." (never the previous file's tracks);
+        //   - loaded but none: a plain "no tracks" line, not an error;
+        //   - otherwise one button per track, the selected one marked, plus
+        //     (Subtitles) Off and the delay controls.
         public FocusGroup Populate(
             string title,
-            IReadOnlyList<MpvTrackInfo> tracks,
-            int? selectedTrackId,
-            bool includeOffOption,
-            bool includeSubtitleDelay = false,
-            double subtitleDelaySeconds = 0)
+            TrackMenuLayout layout)
         {
             TitleText.Text = title;
             _delayValueText = null;
@@ -59,46 +60,60 @@ namespace StremioVideoCenterControls.Player.Menus
             StackPanel list = new StackPanel();
             FocusGroup group = new FocusGroup();
 
-            if (includeOffOption)
-            {
-                Button offButton = BuildItemButton("Off", selectedTrackId == null);
-                offButton.Click += (s, e) => RaiseTrackSelected(null);
-                list.Children.Add(offButton);
-                group.Add(offButton);
+            // Items in layout order; the delay value (not an item, never
+            // focusable) sits between the "-" and "+" buttons.
+            Button minus = null;
+            Button plus = null;
+            Button reset = null;
 
-                if (selectedTrackId == null)
-                    group.InitialElement = offButton;
-            }
-
-            if (tracks != null)
+            foreach (TrackMenuItem item in layout.Items)
             {
-                foreach (MpvTrackInfo track in tracks)
+                switch (item.Kind)
                 {
-                    MpvTrackInfo capturedTrack = track;
-                    bool isSelected = selectedTrackId.HasValue && selectedTrackId.Value == capturedTrack.Id;
+                    case TrackMenuItemKind.Off:
+                    case TrackMenuItemKind.Track:
+                    {
+                        Button button = BuildItemButton(item.Label, item.IsSelected);
+                        int? trackId = item.TrackId;
+                        button.Click += (s, e) => RaiseTrackSelected(trackId);
+                        list.Children.Add(button);
+                        group.Add(button);
+                        if (item.IsSelected && group.InitialElement == null)
+                            group.InitialElement = button;
+                        break;
+                    }
 
-                    Button trackButton = BuildItemButton(capturedTrack.DisplayName, isSelected);
-                    trackButton.Click += (s, e) => RaiseTrackSelected(capturedTrack.Id);
-                    list.Children.Add(trackButton);
-                    group.Add(trackButton);
+                    case TrackMenuItemKind.DelayDecrease:
+                        minus = BuildDelayButton("\u2212", "Subtitles earlier");
+                        minus.Click += (s, e) => RaiseDelayStep(-SubtitleDelayStepSeconds);
+                        break;
 
-                    if (isSelected)
-                        group.InitialElement = trackButton;
+                    case TrackMenuItemKind.DelayIncrease:
+                        plus = BuildDelayButton("+", "Subtitles later");
+                        plus.Click += (s, e) => RaiseDelayStep(SubtitleDelayStepSeconds);
+                        break;
+
+                    case TrackMenuItemKind.DelayReset:
+                        reset = BuildItemButton("Reset to 0.0s", false);
+                        reset.HorizontalContentAlignment = HorizontalAlignment.Center;
+                        reset.Click += (s, e) =>
+                        {
+                            EventHandler handler = SubtitleDelayResetRequested;
+                            if (handler != null)
+                                handler(this, EventArgs.Empty);
+                        };
+                        break;
                 }
             }
 
-            // The delay row is part of the Subtitles menu even when there
-            // are no subtitle tracks, so it never makes the menu "empty".
-            bool hasTrackItems = list.Children.Count > 0;
-
-            if (includeSubtitleDelay)
+            if (layout.HasDelayRow && minus != null && plus != null && reset != null)
             {
-                AppendSubtitleDelayRow(list, group, subtitleDelaySeconds);
+                AppendSubtitleDelayRow(list, group, layout.DelaySeconds, minus, plus, reset);
             }
 
-            bool isEmpty = !hasTrackItems && !includeSubtitleDelay;
-            EmptyStateText.Visibility = isEmpty ? Visibility.Visible : Visibility.Collapsed;
-            ItemsHost.Content = isEmpty ? null : list;
+            EmptyStateText.Text = layout.StatusMessage ?? string.Empty;
+            EmptyStateText.Visibility = layout.StatusMessage != null ? Visibility.Visible : Visibility.Collapsed;
+            ItemsHost.Content = list.Children.Count > 0 ? list : null;
 
             return group;
         }
@@ -111,7 +126,13 @@ namespace StremioVideoCenterControls.Player.Menus
                 _delayValueText.Text = SubtitleDelay.Format(seconds);
         }
 
-        private void AppendSubtitleDelayRow(StackPanel list, FocusGroup group, double delaySeconds)
+        private void AppendSubtitleDelayRow(
+            StackPanel list,
+            FocusGroup group,
+            double delaySeconds,
+            Button minus,
+            Button plus,
+            Button reset)
         {
             list.Children.Add(new Border
             {
@@ -129,12 +150,7 @@ namespace StremioVideoCenterControls.Player.Menus
                 Margin = new Thickness(10, 2, 10, 4)
             });
 
-            Button minus = BuildDelayButton("\u2212", "Subtitles earlier");
-            minus.Click += (s, e) => RaiseDelayStep(-SubtitleDelayStepSeconds);
-
-            Button plus = BuildDelayButton("+", "Subtitles later");
-            plus.Click += (s, e) => RaiseDelayStep(SubtitleDelayStepSeconds);
-
+            // Display only: no action, not focusable.
             _delayValueText = new TextBlock
             {
                 Text = SubtitleDelay.Format(delaySeconds),
@@ -142,7 +158,9 @@ namespace StremioVideoCenterControls.Player.Menus
                 FontSize = 16,
                 MinWidth = 70,
                 TextAlignment = TextAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Center,
+                Focusable = false,
+                IsHitTestVisible = false
             };
 
             StackPanel row = new StackPanel
@@ -154,16 +172,6 @@ namespace StremioVideoCenterControls.Player.Menus
             row.Children.Add(_delayValueText);
             row.Children.Add(plus);
             list.Children.Add(row);
-
-            Button reset = BuildItemButton("Reset to 0.0s", false);
-            reset.Content = "Reset to 0.0s";
-            reset.HorizontalContentAlignment = HorizontalAlignment.Center;
-            reset.Click += (s, e) =>
-            {
-                EventHandler handler = SubtitleDelayResetRequested;
-                if (handler != null)
-                    handler(this, EventArgs.Empty);
-            };
             list.Children.Add(reset);
 
             group.Add(minus);

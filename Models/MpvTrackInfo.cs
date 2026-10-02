@@ -1,9 +1,9 @@
-using Newtonsoft.Json.Linq;
-
 namespace StremioVideoCenter.Models
 {
-    // One entry from mpv's "track-list" property. Populated via
-    // MpvTrackInfo.FromJson, never constructed by hand from UI code.
+    // One entry from mpv's "track-list" property. Plain data: parsed from
+    // mpv's JSON by MpvTrackParser, never constructed by hand from UI code.
+    // Track ids are local to the CURRENTLY LOADED file: a new file (next
+    // episode, replacement source) has its own tracks and ids.
     public sealed class MpvTrackInfo
     {
         public int Id { get; set; }
@@ -13,41 +13,20 @@ namespace StremioVideoCenter.Models
 
         public string Language { get; set; }
         public string Title { get; set; }
+        public string Codec { get; set; }
+
+        // mpv's demux-channel-count; 0 when mpv did not report it.
+        public int ChannelCount { get; set; }
+
         public bool IsSelected { get; set; }
         public bool IsDefault { get; set; }
         public bool IsForced { get; set; }
         public bool IsExternal { get; set; }
 
+        // Kept for compatibility; menus use TrackLabels.
         public string DisplayName
         {
-            get
-            {
-                if (!string.IsNullOrWhiteSpace(Title))
-                    return Title;
-
-                if (!string.IsNullOrWhiteSpace(Language))
-                    return Language;
-
-                return "Track " + Id;
-            }
-        }
-
-        public static MpvTrackInfo FromJson(JObject json)
-        {
-            if (json == null)
-                return null;
-
-            return new MpvTrackInfo
-            {
-                Id = json.Value<int?>("id") ?? 0,
-                Type = json.Value<string>("type"),
-                Language = json.Value<string>("lang"),
-                Title = json.Value<string>("title"),
-                IsSelected = json.Value<bool?>("selected") ?? false,
-                IsDefault = json.Value<bool?>("default") ?? false,
-                IsForced = json.Value<bool?>("forced") ?? false,
-                IsExternal = json.Value<bool?>("external") ?? false
-            };
+            get { return TrackLabels.Describe(this, false); }
         }
     }
 }

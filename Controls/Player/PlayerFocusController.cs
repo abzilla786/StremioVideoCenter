@@ -117,6 +117,28 @@ namespace StremioVideoCenterControls.Player
                 Focus(menuGroup.Elements[0]);
         }
 
+        // Live refresh of the open menu: swaps the active menu scope's group
+        // for a rebuilt one (the originating control to return to is kept)
+        // and focuses its initial element. Keeps focus inside the menu.
+        public void ReplaceActiveMenuGroup(FocusGroup newGroup)
+        {
+            if (newGroup == null || _scopes.Count <= 1)
+                return;
+
+            _scopes.Pop();
+            _scopes.Push(newGroup);
+
+            if (newGroup.InitialElement != null)
+                Focus(newGroup.InitialElement);
+            else if (newGroup.Elements.Count > 0)
+                Focus(newGroup.Elements[0]);
+            else if (_returnFocusStack.Count > 0)
+                // Nothing focusable in the rebuilt menu (e.g. "Loading
+                // tracks..."): park focus on the control that opened it so it
+                // is never left on a destroyed menu item. B still closes.
+                Focus(_returnFocusStack.Peek());
+        }
+
         // Pops the active scope and restores focus to whatever control opened
         // it. Returns null if the root scope was already active - the caller
         // should treat that as "close the player" rather than "close a menu".
