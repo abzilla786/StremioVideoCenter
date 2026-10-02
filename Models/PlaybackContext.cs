@@ -68,6 +68,17 @@ namespace StremioVideoCenter.Models
                 : new List<NormalizedPlaybackSource>();
         }
 
+        // Series/episode/neighbour information for a TV or anime episode,
+        // attached once the episode list is known. Null for movies and until
+        // the list has loaded. Deliberately a mutable slot on the context (not
+        // a second context): the exact-episode identity stays CanonicalKey.
+        public EpisodeContext Episode { get; private set; }
+
+        public void AttachEpisode(EpisodeContext episode)
+        {
+            Episode = episode;
+        }
+
         // True when Watch State/History can be recorded for this attempt.
         public bool HasIdentity
         {
@@ -89,8 +100,10 @@ namespace StremioVideoCenter.Models
         // failure recovery when falling back to the next candidate).
         public PlaybackContext WithSource(NormalizedPlaybackSource source)
         {
-            return new PlaybackContext(
+            PlaybackContext copy = new PlaybackContext(
                 ProfileId, CanonicalKey, ContentType, MediaItem, source, StartPositionSeconds, Candidates);
+            copy.Episode = Episode;
+            return copy;
         }
 
         // Stable, non-secret description of the source for the Watch State.

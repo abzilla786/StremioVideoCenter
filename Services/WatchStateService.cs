@@ -158,6 +158,15 @@ namespace StremioVideoCenter.Services
             // very next RecordProgress tick overwrites them with the new
             // session's real values within moments, the same way a brand
             // new entry's 0/0 starting values are immediately superseded.
+            // A completed item is never resumed from its old position: on a
+            // rewatch the position restarts at 0, so a stale ~100% position
+            // can neither be shown nor resumed if playback ends before the
+            // first valid position is recorded.
+            if (entry.IsCompleted)
+            {
+                entry.PositionSeconds = 0;
+            }
+
             entry.IsCompleted = false;
 
             entry.ContentType = contentType;
@@ -255,6 +264,31 @@ namespace StremioVideoCenter.Services
             }
 
             return entry;
+        }
+
+        // Marks exactly this episode/movie completed (genuine end of file)
+        // and persists immediately. Never touches any other entry. No-op if
+        // the entry does not exist (nothing was established for it).
+        public bool MarkCompleted(Guid profileId, string canonicalKey)
+        {
+            if (string.IsNullOrWhiteSpace(canonicalKey))
+            {
+                return false;
+            }
+
+            WatchStateEntry entry = FindEntry(profileId, canonicalKey);
+
+            if (entry == null)
+            {
+                return false;
+            }
+
+            entry.IsCompleted = true;
+            entry.LastPlayedUtc = DateTime.UtcNow;
+
+            TryPersist();
+
+            return true;
         }
 
         // Writes the current in-memory state to disk.

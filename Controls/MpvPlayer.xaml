@@ -47,6 +47,9 @@
                                 <Setter TargetName="ButtonBorder" Property="BorderBrush" Value="White" />
                                 <Setter TargetName="ButtonBorder" Property="BorderThickness" Value="3" />
                             </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.35" />
+                            </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="ButtonBorder" Property="Background" Value="#DD333333" />
                             </Trigger>
@@ -126,8 +129,41 @@
                     </Border.Background>
                 </Border>
 
-                <!-- Top bar: Exit -->
+                <!-- Top bar: Exit, and (episodes only) what is playing -->
                 <Grid Grid.Row="0" Margin="28,24,28,0">
+                    <StackPanel x:Name="EpisodeInfoPanel"
+                                Margin="120,0,28,0"
+                                VerticalAlignment="Top"
+                                Visibility="Collapsed"
+                                IsHitTestVisible="False"
+                                Focusable="False">
+                        <TextBlock x:Name="EpisodeSeriesText"
+                                   Foreground="#CCFFFFFF"
+                                   FontSize="14"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock x:Name="EpisodeLabelText"
+                                   Foreground="White"
+                                   FontSize="20"
+                                   FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <Border x:Name="NoticeBorder"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            Background="#CC111111"
+                            BorderBrush="#55FFFFFF"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="14,8"
+                            Visibility="Collapsed"
+                            IsHitTestVisible="False"
+                            Focusable="False">
+                        <TextBlock x:Name="NoticeText"
+                                   Foreground="White"
+                                   FontSize="15"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxWidth="460" />
+                    </Border>
                     <Button x:Name="CloseButton"
                             Style="{StaticResource PlayerButtonStyle}"
                             HorizontalAlignment="Left"
@@ -185,6 +221,8 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
@@ -214,8 +252,28 @@
                             ToolTip="Forward 10 seconds"
                             Click="ForwardButton_Click"
                             Width="44" Height="44" FontSize="18" Focusable="True" />
-                    <Button x:Name="MuteButton"
+                    <!-- Episode navigation: only shown for TV/anime episodes
+                         (MpvPlayer.SetEpisodeNavigation); a direction with no
+                         episode is disabled and skipped by focus movement. -->
+                    <Button x:Name="PreviousEpisodeButton"
                             Grid.Column="3"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x23EE;"
+                            ToolTip="Previous episode"
+                            Click="PreviousEpisodeButton_Click"
+                            Margin="10,0,0,0"
+                            Visibility="Collapsed"
+                            Width="44" Height="44" FontSize="17" Focusable="True" />
+                    <Button x:Name="NextEpisodeButton"
+                            Grid.Column="4"
+                            Style="{StaticResource PlayerButtonStyle}"
+                            Content="&#x23ED;"
+                            ToolTip="Next episode"
+                            Click="NextEpisodeButton_Click"
+                            Visibility="Collapsed"
+                            Width="44" Height="44" FontSize="17" Focusable="True" />
+                    <Button x:Name="MuteButton"
+                            Grid.Column="5"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x1F50A;"
                             ToolTip="Mute / Unmute"
@@ -223,7 +281,7 @@
                             Margin="10,0,0,0"
                             Width="44" Height="44" FontSize="17" Focusable="True" />
                     <player:PlayerSlider x:Name="VolumeSlider"
-                            Grid.Column="4"
+                            Grid.Column="6"
                             Style="{StaticResource PlayerSliderStyle}"
                             Minimum="0" Maximum="100" Value="100"
                             Width="100" Height="40"
@@ -234,7 +292,7 @@
                             Focusable="True"
                             ToolTip="Volume" />
                     <TextBlock x:Name="CurrentTimeText"
-                               Grid.Column="5"
+                               Grid.Column="7"
                                Text="00:00"
                                Foreground="White"
                                VerticalAlignment="Center"
@@ -243,7 +301,7 @@
                                Margin="14,0,8,0"
                                FontSize="15" />
                     <player:PlayerSlider x:Name="SeekSlider"
-                            Grid.Column="6"
+                            Grid.Column="8"
                             Style="{StaticResource PlayerSliderStyle}"
                             Minimum="0"
                             Maximum="1"
@@ -257,7 +315,7 @@
                             Focusable="True"
                             ToolTip="Seek" />
                     <TextBlock x:Name="DurationText"
-                               Grid.Column="7"
+                               Grid.Column="9"
                                Text="00:00"
                                Foreground="White"
                                VerticalAlignment="Center"
@@ -265,28 +323,28 @@
                                Margin="8,0,14,0"
                                FontSize="15" />
                     <Button x:Name="AudioButton"
-                            Grid.Column="8"
+                            Grid.Column="10"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="AUD"
                             ToolTip="Audio track"
                             Click="AudioButton_Click"
                             Width="48" Height="44" FontSize="14" Focusable="True" />
                     <Button x:Name="SubtitleButton"
-                            Grid.Column="9"
+                            Grid.Column="11"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="CC"
                             ToolTip="Subtitles"
                             Click="SubtitleButton_Click"
                             Width="48" Height="44" FontSize="14" Focusable="True" />
                     <Button x:Name="SettingsButton"
-                            Grid.Column="10"
+                            Grid.Column="12"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x2699;"
                             ToolTip="Settings"
                             Click="SettingsButton_Click"
                             Width="44" Height="44" FontSize="17" Focusable="True" />
                     <Button x:Name="FullscreenButton"
-                            Grid.Column="11"
+                            Grid.Column="13"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x26F6;"
                             ToolTip="Fullscreen"

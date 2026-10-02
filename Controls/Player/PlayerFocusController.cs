@@ -223,11 +223,26 @@ namespace StremioVideoCenterControls.Player
             if (index < 0)
                 index = 0;
 
-            index += direction;
-            if (index < 0) index = group.Elements.Count - 1;
-            if (index >= group.Elements.Count) index = 0;
+            // Step in the requested direction (wrapping), skipping elements that
+            // cannot currently take focus (collapsed, or disabled such as
+            // Previous/Next when there is no such episode).
+            for (int step = 0; step < group.Elements.Count; step++)
+            {
+                index += direction;
+                if (index < 0) index = group.Elements.Count - 1;
+                if (index >= group.Elements.Count) index = 0;
 
-            Focus(group.Elements[index]);
+                if (CanReceiveFocus(group.Elements[index]))
+                {
+                    Focus(group.Elements[index]);
+                    return;
+                }
+            }
+        }
+
+        private static bool CanReceiveFocus(UIElement element)
+        {
+            return element != null && element.IsEnabled && element.Visibility == Visibility.Visible;
         }
 
         public void Focus(UIElement element)

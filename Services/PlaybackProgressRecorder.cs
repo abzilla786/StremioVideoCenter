@@ -111,6 +111,27 @@ namespace StremioVideoCenter.Services
             return _dirty && PersistNow();
         }
 
+        // Genuine end of file: record the final valid progress (if any) and
+        // mark exactly this attempt's entry completed, persisted immediately.
+        // Completion does not depend on a valid position having been read.
+        public void Complete(PlaybackState state)
+        {
+            if (state != null && state.IsPlaybackEstablished && state.HasValidPosition)
+            {
+                _watchState.RecordProgress(
+                    _context.ProfileId,
+                    _context.CanonicalKey,
+                    state.PositionSeconds,
+                    state.DurationSeconds,
+                    true,
+                    persist: false);
+            }
+
+            _watchState.MarkCompleted(_context.ProfileId, _context.CanonicalKey);
+            _lastPersistUtc = _clock();
+            _dirty = false;
+        }
+
         private bool PersistNow()
         {
             _watchState.Flush();

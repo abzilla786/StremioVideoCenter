@@ -115,6 +115,31 @@ namespace StremioVideoCenter.Models
                     string.Equals(Name, Clean(candidate.Name), StringComparison.OrdinalIgnoreCase)) ? 1 : 0;
         }
 
+        // A "same kind of source" hint for a DIFFERENT episode: the same addon
+        // offering a stream with the same name (e.g. the same quality label)
+        // and the same kind as this one. Deliberately weaker than MatchTier -
+        // hash/filename identify one specific release and never carry over to
+        // another episode. Not a ranking: it only recognises the source the
+        // user just watched. Returns the first such candidate, or null.
+        public NormalizedPlaybackSource FindSimilarSource(IEnumerable<NormalizedPlaybackSource> candidates)
+        {
+            if (candidates == null || string.IsNullOrEmpty(Name) || string.IsNullOrEmpty(AddonName))
+                return null;
+
+            foreach (NormalizedPlaybackSource candidate in candidates)
+            {
+                if (candidate != null &&
+                    candidate.Kind == Kind &&
+                    string.Equals(AddonName, Clean(candidate.SourceAddonName), StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(Name, Clean(candidate.Name), StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
         public bool Matches(NormalizedPlaybackSource candidate)
         {
             return MatchTier(candidate) > 0;

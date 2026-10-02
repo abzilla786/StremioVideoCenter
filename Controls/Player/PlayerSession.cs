@@ -54,6 +54,10 @@ namespace StremioVideoCenterControls.Player
 
         private int _seekRequests;
 
+        // Ensures one EndOfFileReached per loaded file, however many signals
+        // (eof-reached property, end-file reason=eof) report the same end.
+        private bool _endOfFileRaised;
+
         public PlaybackState State { get; private set; }
 
         // The attempt currently loaded/loading. Set by PlayAsync.
@@ -186,8 +190,27 @@ namespace StremioVideoCenterControls.Player
             if (!IsRunning)
                 throw new InvalidOperationException("PlayerSession must be started before playing.");
 
+            // Reusing a running player for another episode: mpv's keep-open
+            // leaves it paused on the last frame and sub-delay would carry over,
+            // so start the new file un-paused with the subtitle delay reset
+            // (both are per-playback, session-only adjustments).
+            bool reusingLoadedPlayer = State.IsPlaybackEstablished || State.ReachedEndOfFile;
+
             Context = context;
             ResetPlaybackState();
+
+            if (reusingLoadedPlayer)
+            {
+                try
+                {
+                    await _ipc.SetPropertyAsync("pause", false).ConfigureAwait(true);
+                    await _ipc.SetPropertyAsync("sub-delay", 0.0).ConfigureAwait(true);
+                }
+                catch (MpvCommandException)
+                {
+                    // Best-effort; loadfile below reports real failures.
+                }
+            }
 
             try
             {
@@ -211,6 +234,7 @@ namespace StremioVideoCenterControls.Player
         {
             Interlocked.Increment(ref _playGeneration);
             _resumePending = false;
+            _endOfFileRaised = false;
 
             State.ReachedEndOfFile = false;
             State.EndFileReason = null;
@@ -462,10 +486,9 @@ namespace StremioVideoCenterControls.Player
             State.EndFileReason = string.IsNullOrEmpty(reason) ? null : reason;
             State.EndFileError = string.IsNullOrEmpty(fileError) ? null : fileError;
 
-            bool isEof = string.Equals(reason, "eof", StringComparison.OrdinalIgnoreCase);
-            bool isFailure =
-                string.Equals(reason, "error", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrEmpty(fileError);
+            EndFileKind kind = PlaybackEndClassifier.Classify(reason, fileError);
+            bool isEof = kind == EndFileKind.Eof;
+            bool isFailure = kind == EndFileKind.Failure;
 
             if (isEof)
                 State.ReachedEndOfFile = true;
@@ -473,11 +496,7 @@ namespace StremioVideoCenterControls.Player
             RaiseStateChanged();
 
             if (isEof)
-            {
-                EventHandler eofHandler = EndOfFileReached;
-                if (eofHandler != null)
-                    eofHandler(this, EventArgs.Empty);
-            }
+                RaiseEndOfFileOnce();
 
             if (isFailure)
             {
@@ -485,6 +504,18 @@ namespace StremioVideoCenterControls.Player
                 if (failedHandler != null)
                     failedHandler(this, EventArgs.Empty);
             }
+        }
+
+        private void RaiseEndOfFileOnce()
+        {
+            if (_endOfFileRaised)
+                return;
+
+            _endOfFileRaised = true;
+
+            EventHandler handler = EndOfFileReached;
+            if (handler != null)
+                handler(this, EventArgs.Empty);
         }
 
         private static void ParseEndFile(JObject raw, out string reason, out string fileError)
@@ -568,6 +599,17 @@ namespace StremioVideoCenterControls.Player
             }
 
             RaiseStateChanged();
+
+            // eof-reached is the normal-end signal under keep-open (see
+            // ObservePropertiesAsync). Only a genuine end of an ESTABLISHED
+            // file raises EndOfFileReached: never error/stop/quit.
+            if (name == "eof-reached")
+            {
+                if (State.ReachedEndOfFile && State.IsPlaybackEstablished)
+                    RaiseEndOfFileOnce();
+                else if (!State.ReachedEndOfFile)
+                    _endOfFileRaised = false;
+            }
 
             if (tracksUpdated)
             {

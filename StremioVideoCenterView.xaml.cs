@@ -3314,9 +3314,235 @@ namespace StremioVideoCenter
             };
         }
 
+        // =========================================================
+        // EPISODE NAVIGATION (Slice 18D)
+        // =========================================================
+        //
+        // Previous / Next / auto-next change the episode INSIDE the running
+        // player: the target's streams are resolved through the normal
+        // aggregation pipeline, its own Watch State / saved source / position
+        // are used through the 18B ResumePlanner, and the same MpvPlayer and
+        // mpv process load the new file (loadfile replace) under a NEW
+        // PlaybackContext. Episode identity is always the target's canonical
+        // key from the episode list.
+
+        private EpisodeListService _episodeListService;
+        private bool _isEpisodeTransitioning;
+        private int _playbackGeneration;
+
+        private EpisodeListService GetEpisodeListService()
+        {
+            if (_episodeListService == null)
+            {
+                _episodeListService = new EpisodeListService(new CinemetaService(), new KitsuService());
+            }
+
+            return _episodeListService;
+        }
+
+        private static bool IsEpisodeShaped(MediaItem item)
+        {
+            return item != null &&
+                   item.Episode.HasValue &&
+                   !string.IsNullOrWhiteSpace(item.StremioId);
+        }
+
+        // Attaches neighbours when the list is already cached. No network.
+        private void AttachCachedEpisodeContext(PlaybackContext context)
+        {
+            if (context == null || context.Episode != null || !IsEpisodeShaped(context.MediaItem))
+            {
+                return;
+            }
+
+            EpisodeList list = GetEpisodeListService().TryGetCached(context.MediaItem.StremioId);
+
+            if (list != null)
+            {
+                context.AttachEpisode(
+                    EpisodeContext.Create(list, context.CanonicalKey, context.MediaItem.Title));
+            }
+        }
+
+        // Loads the series' episode list in the background and, if this is
+        // still the current attempt, shows Previous/Next. Fail-soft: without a
+        // list the player simply has no episode navigation.
+        private async Task AttachEpisodeNavigationAsync(PlaybackContext context)
+        {
+            if (!IsEpisodeShaped(context.MediaItem))
+            {
+                return;
+            }
+
+            try
+            {
+                EpisodeList list = await GetEpisodeListService().GetAsync(context.MediaItem.StremioId);
+
+                if (list == null || _playbackContext != context || _stremioPlayer == null)
+                {
+                    return;
+                }
+
+                EpisodeContext episode =
+                    EpisodeContext.Create(list, context.CanonicalKey, context.MediaItem.Title);
+
+                if (episode != null)
+                {
+                    context.AttachEpisode(episode);
+                    _stremioPlayer.SetEpisodeNavigation(episode);
+                }
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info(
+                    "Episode list unavailable: " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
+        private void StremioPlayer_PreviousEpisodeRequested(object sender, EventArgs e)
+        {
+            if (sender == _stremioPlayer)
+            {
+                var ignored = NavigateEpisodeAsync(forward: false, automatic: false);
+            }
+        }
+
+        private void StremioPlayer_NextEpisodeRequested(object sender, EventArgs e)
+        {
+            if (sender == _stremioPlayer)
+            {
+                var ignored = NavigateEpisodeAsync(forward: true, automatic: false);
+            }
+        }
+
+        // mpv reported a genuine end of file (never error/stop/quit/exit).
+        // 1. Mark exactly this attempt's entry completed and persist it.
+        // 2. If a next episode exists, play it in the same player.
+        private void StremioPlayer_EndOfFileReached(object sender, EventArgs e)
+        {
+            if (sender != _stremioPlayer || _stremioPlayer == null)
+            {
+                return;
+            }
+
+            PlaybackContext context = _playbackContext;
+            PlaybackState state = _stremioPlayer.CurrentPlaybackState;
+
+            if (context == null || state == null)
+            {
+                return;
+            }
+
+            // Re-checked against live state: a stale end-of-file signal from a
+            // file that has since been replaced must not complete anything.
+            bool genuineEnd = state.ReachedEndOfFile && state.IsPlaybackEstablished;
+
+            if (genuineEnd && _progressRecorder != null)
+            {
+                _progressRecorder.Complete(state);
+                RefreshContinueWatching();
+            }
+
+            if (AutoNextPolicy.ShouldAutoNext(
+                    genuineEnd,
+                    state.IsPlaybackEstablished,
+                    context.Episode != null && context.Episode.HasNext,
+                    _isEpisodeTransitioning,
+                    playerClosing: false))
+            {
+                var ignored = NavigateEpisodeAsync(forward: true, automatic: true);
+            }
+        }
+
+        private async Task NavigateEpisodeAsync(bool forward, bool automatic)
+        {
+            PlaybackContext current = _playbackContext;
+            EpisodeContext episode = current != null ? current.Episode : null;
+
+            if (_stremioPlayer == null || episode == null || _isEpisodeTransitioning)
+            {
+                return;
+            }
+
+            EpisodeRef target = forward ? episode.Next : episode.Previous;
+
+            if (target == null)
+            {
+                return;
+            }
+
+            _isEpisodeTransitioning = true;
+
+            try
+            {
+                _stremioPlayer.ShowNotice(
+                    (forward ? "Next episode" : "Previous episode") +
+                    "\u2026  " + EpisodeContext.FormatLabel(target));
+
+                MediaItem targetItem = episode.BuildMediaItem(target, current.MediaItem);
+
+                // The target's OWN Watch State (same profile as the current
+                // attempt): incomplete -> its saved position and saved source;
+                // none/completed -> start from the beginning.
+                ResumePlan plan = ResumePlanner.Create(
+                    _watchStateService,
+                    current.ProfileId,
+                    target.CanonicalKey);
+
+                StremioVideoCenterLogger.Info(
+                    string.Format(
+                        "Episode {0}: target={1} resume={2} savedSource={3}",
+                        automatic ? "auto-next" : (forward ? "next" : "previous"),
+                        target.CanonicalKey,
+                        plan != null && plan.StartPositionSeconds.HasValue,
+                        plan != null && plan.SavedSource != null));
+
+                await PlaySelectedMediaAsync(
+                    targetItem,
+                    plan,
+                    new EpisodeTransition
+                    {
+                        ProfileId = current.ProfileId,
+                        CanonicalKey = target.CanonicalKey,
+                        Generation = _playbackGeneration,
+                        PreferredSource = current.BuildSavedSource()
+                    });
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info(
+                    "Episode navigation failed: " + UserFacingErrors.ForLog(ex));
+            }
+            finally
+            {
+                _isEpisodeTransitioning = false;
+            }
+        }
+
+        // Describes an in-player episode change (Previous / Next / auto-next).
+        // The player stays open and is reused; everything about the TARGET
+        // episode is resolved through the normal pipeline.
+        private sealed class EpisodeTransition
+        {
+            public Guid ProfileId;
+
+            // The target episode's canonical key (used verbatim as the request id).
+            public string CanonicalKey;
+
+            // _playbackGeneration when the transition began; a different value
+            // later means the player was closed/replaced meanwhile.
+            public int Generation;
+
+            // The source that played the episode being left, used only as a
+            // "same addon + same stream label" hint when the target episode has
+            // no saved source of its own.
+            public SavedSourceReference PreferredSource;
+        }
+
         private async Task PlaySelectedMediaAsync(
             MediaItem mediaItem,
-            ResumePlan resumePlan = null)
+            ResumePlan resumePlan = null,
+            EpisodeTransition transition = null)
         {
             int diagSeq = Interlocked.Increment(ref _diagPlaySeq);
 
@@ -3360,7 +3586,8 @@ namespace StremioVideoCenter
             // starts (the home grid isn't reachable while PlaybackTestHost
             // covers the screen), but this guarantees it rather than
             // relying on that reachability assumption alone.
-            if (_stremioPlayer != null)
+            // (An episode transition deliberately keeps the running player.)
+            if (_stremioPlayer != null && transition == null)
             {
                 ClosePlayer();
             }
@@ -3449,6 +3676,13 @@ namespace StremioVideoCenter
                     // so resume can only ever touch this exact episode.
                     request.ExplicitStremioId = resumePlan.CanonicalKey;
                 }
+                else if (transition != null)
+                {
+                    // Slice 18D: the target episode's canonical key from the
+                    // episode list - the same "tt:S:E" / "kitsu:id:episode"
+                    // shape, used verbatim.
+                    request.ExplicitStremioId = transition.CanonicalKey;
+                }
                 else if (mediaItem.Season.HasValue &&
                     mediaItem.Episode.HasValue &&
                     isKitsuId)
@@ -3534,6 +3768,13 @@ namespace StremioVideoCenter
                     normalizer.NormalizeAll(
                         set.Sources);
 
+                if (transition != null && transition.Generation != _playbackGeneration)
+                {
+                    // The player was closed (or replaced) while this episode's
+                    // streams were resolving: nothing left to start.
+                    return;
+                }
+
                 // The Source Selector is now actually ready to show -
                 // this is the deliberate hand-off point: the episode
                 // browser overlay (if any) is replaced by the Source
@@ -3556,6 +3797,14 @@ namespace StremioVideoCenter
                 NormalizedPlaybackSource selected =
                     ResumePlanner.FindSavedSource(resumePlan, normalizedSources);
 
+                // Slice 18D: an episode with no saved source of its own may reuse
+                // the source KIND the user was just watching (same addon, same
+                // stream label), matched against THIS episode's fresh sources.
+                if (selected == null && transition != null && transition.PreferredSource != null)
+                {
+                    selected = transition.PreferredSource.FindSimilarSource(normalizedSources);
+                }
+
                 bool autoSelectedSavedSource = selected != null;
 
                 if (resumePlan != null)
@@ -3572,6 +3821,15 @@ namespace StremioVideoCenter
 
                 if (selected == null)
                 {
+                    // The Source Selector lives beneath the player layer, so a
+                    // transition that genuinely needs it closes the player first
+                    // (flushing the old episode's progress) - the same as source
+                    // failure recovery.
+                    if (transition != null && _stremioPlayer != null)
+                    {
+                        ClosePlayer();
+                    }
+
                     selected =
                         await ShowSourceSelectorAsync(
                             normalizedSources,
@@ -3601,7 +3859,9 @@ namespace StremioVideoCenter
                 Guid? captureProfileId = _profileService?.GetActiveProfileId();
                 Guid contextProfileId = resumePlan != null
                     ? resumePlan.ProfileId
-                    : (captureProfileId ?? Guid.Empty);
+                    : (transition != null
+                        ? transition.ProfileId
+                        : (captureProfileId ?? Guid.Empty));
 
                 PlaybackContext context = new PlaybackContext(
                     contextProfileId,
@@ -3611,6 +3871,10 @@ namespace StremioVideoCenter
                     selected,
                     resumePlan != null ? resumePlan.StartPositionSeconds : null,
                     normalizedSources);
+
+                // Episode neighbours are known immediately when this series'
+                // list is already cached (always the case for a transition).
+                AttachCachedEpisodeContext(context);
 
                 if (!autoSelectedSavedSource)
                 {
@@ -3679,6 +3943,15 @@ namespace StremioVideoCenter
             PlaybackContext context,
             int diagSeq)
         {
+            // Reusing the running player for another episode: persist the
+            // episode being left (its recorder is bound to ITS context), then
+            // drop that recorder so nothing from it can reach the new episode.
+            if (_stremioPlayer != null)
+            {
+                FlushPlaybackProgress();
+            }
+
+            _playbackGeneration++;
             _playbackContext = context;
             _progressRecorder = null;
 
@@ -3706,11 +3979,28 @@ namespace StremioVideoCenter
                 _stremioPlayer.PlaybackEstablished +=
                     StremioPlayer_PlaybackEstablished;
 
+                // Slice 18D: episode navigation and genuine end of file.
+                _stremioPlayer.PreviousEpisodeRequested +=
+                    StremioPlayer_PreviousEpisodeRequested;
+                _stremioPlayer.NextEpisodeRequested +=
+                    StremioPlayer_NextEpisodeRequested;
+                _stremioPlayer.EndOfFileReached +=
+                    StremioPlayer_EndOfFileReached;
+
                 PlaybackTestHost.Children.Add(
                     _stremioPlayer);
 
                 PlaybackTestHost.Visibility =
                     Visibility.Visible;
+            }
+
+            // Show (or hide, for a movie) the episode line and Previous/Next;
+            // if the neighbours are not known yet, load them in the background.
+            _stremioPlayer.SetEpisodeNavigation(context.Episode);
+
+            if (context.Episode == null)
+            {
+                var ignoredNavigation = AttachEpisodeNavigationAsync(context);
             }
 
             StremioVideoCenterLogger.Info(
@@ -4648,6 +4938,12 @@ namespace StremioVideoCenter
                         StremioPlayer_PlaybackFailed;
                     _stremioPlayer.PlaybackEstablished -=
                         StremioPlayer_PlaybackEstablished;
+                    _stremioPlayer.PreviousEpisodeRequested -=
+                        StremioPlayer_PreviousEpisodeRequested;
+                    _stremioPlayer.NextEpisodeRequested -=
+                        StremioPlayer_NextEpisodeRequested;
+                    _stremioPlayer.EndOfFileReached -=
+                        StremioPlayer_EndOfFileReached;
                     _stremioPlayer.DisposePlayer();
                 }
                 catch
@@ -4669,7 +4965,9 @@ namespace StremioVideoCenter
             }
 
             // Slice 18A: no player open - drop the attempt's context and
-            // recorder (the next playback sets them fresh).
+            // recorder (the next playback sets them fresh). The generation
+            // bump cancels any episode transition still resolving streams.
+            _playbackGeneration++;
             _playbackContext = null;
             _progressRecorder = null;
 

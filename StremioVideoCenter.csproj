@@ -160,6 +160,9 @@
     <Compile Include="Services\WatchStateService.cs" />
     <Compile Include="Services\PlaybackProgressRecorder.cs" />
     <Compile Include="Services\PlaybackProgress.cs" />
+    <Compile Include="Services\AutoNextPolicy.cs" />
+    <Compile Include="Services\EpisodeListService.cs" />
+    <Compile Include="Models\EpisodeNavigation.cs" />
     <Compile Include="Services\ResumePlanner.cs" />
     <Compile Include="Services\UserFacingErrors.cs" />
     <Compile Include="Models\PlaybackContext.cs" />

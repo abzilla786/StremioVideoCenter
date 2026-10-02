@@ -98,6 +98,17 @@ namespace StremioVideoCenterControls
         // for eof/stop/quit.
         public event EventHandler PlaybackFailed;
 
+        // Episode navigation requests (Previous/Next button, PageUp/PageDown).
+        // The player only asks; the Video Center owns episode resolution.
+        public event EventHandler PreviousEpisodeRequested;
+        public event EventHandler NextEpisodeRequested;
+
+        // Raised on the UI thread for a genuine end of file only (mpv
+        // reason=eof / eof-reached on an established file) - never for
+        // error, stop, quit or manual exit. Consumers decide what follows
+        // (completion, auto-next).
+        public event EventHandler EndOfFileReached;
+
         // Raised on the UI thread once mpv confirms the selected file
         // loaded (PlayerSession.PlaybackEstablished). Always delivered
         // before the PlaybackStateChanged ticks that follow it.
@@ -192,6 +203,7 @@ namespace StremioVideoCenterControls
             FocusGroup seekRow = new FocusGroup(SeekSlider);
             FocusGroup bottomRow = new FocusGroup(
                 BottomPlayPauseButton, Back10Button, Forward10Button,
+                PreviousEpisodeButton, NextEpisodeButton,
                 MuteButton, VolumeSlider, AudioButton, SubtitleButton,
                 SettingsButton, FullscreenButton);
 
@@ -320,6 +332,7 @@ namespace StremioVideoCenterControls
 
             try { _progressTimer?.Stop(); } catch { }
             try { _hideControlsTimer?.Stop(); } catch { }
+            try { _noticeTimer?.Stop(); } catch { }
 
             // Closing the player must not leave the host window borderless/
             // maximised because fullscreen was toggled on.
@@ -468,7 +481,10 @@ namespace StremioVideoCenterControls
 
                 // Media launched: initial keyboard/controller focus goes to
                 // the bottom Play/Pause button (never the centre indicator).
-                if (_focus != null && _focus.IsAtRootScope)
+                // (When another episode is loaded into this same player the user
+                // is already inside the controls - e.g. on Next - so focus is
+                // left where it is.)
+                if (_focus != null && _focus.IsAtRootScope && !ControlsOverlay.IsKeyboardFocusWithin)
                 {
                     ShowControls();
                     _focus.FocusRootDefault();
@@ -504,7 +520,101 @@ namespace StremioVideoCenterControls
             {
                 if (_disposed) return;
                 ShowControls();
+
+                EventHandler handler = EndOfFileReached;
+                if (handler != null)
+                    handler(this, EventArgs.Empty);
             }));
+        }
+
+        // =====================================================================
+        // EPISODE NAVIGATION (TV / anime only)
+        // =====================================================================
+
+        // Shows the series/episode line and Previous/Next for an episode, or
+        // hides all of it for a movie (null). A direction with no episode is
+        // disabled, which also removes it from focus movement.
+        public void SetEpisodeNavigation(EpisodeContext episode)
+        {
+            if (_disposed) return;
+
+            if (episode == null)
+            {
+                EpisodeInfoPanel.Visibility = Visibility.Collapsed;
+                PreviousEpisodeButton.Visibility = Visibility.Collapsed;
+                NextEpisodeButton.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            EpisodeSeriesText.Text = episode.SeriesTitle ?? string.Empty;
+            EpisodeLabelText.Text = EpisodeContext.FormatLabel(episode.Current);
+            EpisodeInfoPanel.Visibility = Visibility.Visible;
+
+            PreviousEpisodeButton.Visibility = Visibility.Visible;
+            NextEpisodeButton.Visibility = Visibility.Visible;
+
+            PreviousEpisodeButton.IsEnabled = episode.HasPrevious;
+            NextEpisodeButton.IsEnabled = episode.HasNext;
+
+            PreviousEpisodeButton.ToolTip = episode.HasPrevious
+                ? "Previous episode \u2014 " + EpisodeContext.FormatCode(episode.Previous)
+                : "No previous episode";
+            NextEpisodeButton.ToolTip = episode.HasNext
+                ? "Next episode \u2014 " + EpisodeContext.FormatCode(episode.Next)
+                : "No next episode";
+
+            // If focus was on a button that has just become disabled, hand it
+            // back to the default control so it is never stranded.
+            if (_focus != null &&
+                (ReferenceEquals(Keyboard.FocusedElement, PreviousEpisodeButton) && !episode.HasPrevious ||
+                 ReferenceEquals(Keyboard.FocusedElement, NextEpisodeButton) && !episode.HasNext))
+            {
+                _focus.FocusRootDefault();
+            }
+        }
+
+        // A short, transient one-line notice (e.g. "Next episode - S03E05 -
+        // Title") that rides on the overlay and disappears by itself.
+        public void ShowNotice(string text)
+        {
+            if (_disposed || string.IsNullOrWhiteSpace(text)) return;
+
+            NoticeText.Text = text;
+            NoticeBorder.Visibility = Visibility.Visible;
+            ShowControls();
+
+            if (_noticeTimer == null)
+            {
+                _noticeTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+                _noticeTimer.Tick += (s, e) =>
+                {
+                    _noticeTimer.Stop();
+                    NoticeBorder.Visibility = Visibility.Collapsed;
+                };
+            }
+
+            _noticeTimer.Stop();
+            _noticeTimer.Start();
+        }
+
+        private DispatcherTimer _noticeTimer;
+
+        private void PreviousEpisodeButton_Click(object sender, RoutedEventArgs e)
+        {
+            RaiseEpisodeRequest(PreviousEpisodeRequested);
+        }
+
+        private void NextEpisodeButton_Click(object sender, RoutedEventArgs e)
+        {
+            RaiseEpisodeRequest(NextEpisodeRequested);
+        }
+
+        private void RaiseEpisodeRequest(EventHandler handler)
+        {
+            ShowControls();
+
+            if (handler != null)
+                handler(this, EventArgs.Empty);
         }
 
         private void Session_Disconnected(object sender, EventArgs e)
@@ -858,6 +968,19 @@ namespace StremioVideoCenterControls
                     e.Handled = true;
                     break;
                 }
+
+                // Episode navigation: dedicated keys, so Left/Right stay seek and
+                // Space stays play/pause. A no-op unless the buttons are active.
+                case Key.PageUp:
+                case Key.PageDown:
+                    if (!inMenu)
+                    {
+                        Button target = e.Key == Key.PageUp ? PreviousEpisodeButton : NextEpisodeButton;
+                        if (target.IsEnabled && target.Visibility == Visibility.Visible)
+                            target.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        e.Handled = true;
+                    }
+                    break;
 
                 case Key.M:
                     if (!inMenu)
