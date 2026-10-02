@@ -98,6 +98,16 @@ namespace StremioVideoCenter.Models
 
         // Same media/profile/resume position, different source (used by
         // failure recovery when falling back to the next candidate).
+        // As above, but with a fresh resume position (e.g. returning to the
+        // Source Selector after the user has already watched part of it).
+        public PlaybackContext WithSource(NormalizedPlaybackSource source, double? startPositionSeconds)
+        {
+            PlaybackContext copy = new PlaybackContext(
+                ProfileId, CanonicalKey, ContentType, MediaItem, source, startPositionSeconds, Candidates);
+            copy.Episode = Episode;
+            return copy;
+        }
+
         public PlaybackContext WithSource(NormalizedPlaybackSource source)
         {
             PlaybackContext copy = new PlaybackContext(

@@ -1835,6 +1835,11 @@ namespace StremioVideoCenter
                 case ControllerInput.A:
                     return SelectFocusedMediaCard();
 
+                // Home: Back is a navigation step up the hierarchy (to the
+                // Profile Selector), never "close the application".
+                case ControllerInput.B:
+                    return HandleHomeBack();
+
                 case ControllerInput.DPadLeft:
                     return HandleHomeDirectionalNavigation(Key.Left);
 
@@ -1849,6 +1854,54 @@ namespace StremioVideoCenter
 
                 default:
                     return false;
+            }
+        }
+
+        // The ONE Back command. Controller B, Esc and Backspace (and the
+        // overlays' own Back buttons) all end up in the same routing: the most
+        // specific active screen handles it, and only the Profile Selector
+        // leaves it unconsumed - which the plugin window turns into closing the
+        // application (see NavigationRules.Back).
+        public bool HandleBack()
+        {
+            return RouteButtonToActiveOverlayOrHome(ControllerInput.B);
+        }
+
+        private bool _isReturningToProfileSelection;
+
+        // Home -> Back -> Profile Selector, then back to Home with the chosen
+        // profile (the same flow as the Switch Profile button).
+        private bool HandleHomeBack()
+        {
+            // While a selection is still being resolved nothing sensible can be
+            // backed out of yet: consume the press (do not close anything).
+            if (_isResolvingMediaSelection || _isReturningToProfileSelection)
+            {
+                return true;
+            }
+
+            if (NavigationRules.Back(NavScreen.Home, false).Target != NavScreen.ProfileSelector)
+            {
+                return false;
+            }
+
+            var ignored = ReturnToProfileSelectionAsync();
+            return true;
+        }
+
+        private async Task ReturnToProfileSelectionAsync()
+        {
+            _isReturningToProfileSelection = true;
+
+            try
+            {
+                await ShowProfileSelectionAsync(isSwitching: true);
+
+                FocusDefaultHomeTarget();
+            }
+            finally
+            {
+                _isReturningToProfileSelection = false;
             }
         }
 
@@ -2404,6 +2457,7 @@ namespace StremioVideoCenter
                 }
 
                 ContentType selectedContentType = GetContentType(selectedItem);
+                MediaItem browsedSeries = null;
 
                 if ((selectedContentType == ContentType.TvShow || selectedContentType == ContentType.Anime) &&
                     !(selectedItem.Season.HasValue && selectedItem.Episode.HasValue))
@@ -2431,6 +2485,7 @@ namespace StremioVideoCenter
                         return;
                     }
 
+                    browsedSeries = selectedItem;
                     selectedItem = episode;
                 }
 
@@ -2448,6 +2503,13 @@ namespace StremioVideoCenter
                         "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} PlaySelectedMediaAsync returned",
                         diagSeq,
                         DateTime.UtcNow));
+
+                // Back on an episode's Source Selector returns to the Episode
+                // Selector (a movie's returns Home, which is where it already is).
+                if (_sourceSelectionCancelled && browsedSeries != null)
+                {
+                    await BrowseAndPlayEpisodesAsync(browsedSeries);
+                }
             }
             finally
             {
@@ -3508,6 +3570,13 @@ namespace StremioVideoCenter
                         Generation = _playbackGeneration,
                         PreferredSource = current.BuildSavedSource()
                     });
+
+                // The target episode needed a Source Selector and the user
+                // backed out of it: back to the Episode Selector.
+                if (_sourceSelectionCancelled)
+                {
+                    await BrowseAndPlayEpisodesAsync(BuildSeriesItem(current));
+                }
             }
             catch (Exception ex)
             {
@@ -3546,6 +3615,9 @@ namespace StremioVideoCenter
             EpisodeTransition transition = null)
         {
             int diagSeq = Interlocked.Increment(ref _diagPlaySeq);
+
+            // Set again below only if the user backs out of the Source Selector.
+            _sourceSelectionCancelled = false;
 
             StremioVideoCenterLogger.Info(
                 string.Format(
@@ -3846,6 +3918,9 @@ namespace StremioVideoCenter
 
                 if (selected == null)
                 {
+                    // Back on the Source Selector: the caller decides where
+                    // that leads (see NavigationRules.Back).
+                    _sourceSelectionCancelled = true;
                     return;
                 }
 
@@ -3905,6 +3980,7 @@ namespace StremioVideoCenter
 
                         if (alternative == null)
                         {
+                            _sourceSelectionCancelled = true;
                             return;
                         }
 
@@ -4130,6 +4206,10 @@ namespace StremioVideoCenter
 
                 if (next == null)
                 {
+                    // (Re-armed: a player started from the Episode Selector must
+                    // be able to report its own failure.)
+                    _isRecoveringFromFailure = false;
+                    await ContinueAfterSourceSelectorBackAsync(failedContext);
                     return;
                 }
 
@@ -4901,13 +4981,142 @@ namespace StremioVideoCenter
         // PLAYER CLOSE
         // =========================================================
 
-        private void StremioPlayer_CloseRequested(
+        // Back from the player (Exit button, B, Esc, Backspace - all of which
+        // arrive here as one CloseRequested): a deliberate exit, NOT an end of
+        // file, so nothing here can reach AutoNextPolicy. The player is closed
+        // (flushing valid progress) and the Source Selector for the exact media
+        // that was playing is shown again.
+        private async void StremioPlayer_CloseRequested(
             object sender,
             EventArgs e)
         {
-            // ClosePlayer also drops the playback context (and with it the
-            // recovery candidates).
-            ClosePlayer();
+            if (sender != _stremioPlayer || _isReturningToSelector)
+            {
+                return;
+            }
+
+            // Captured BEFORE ClosePlayer drops it: it still holds the exact
+            // item/episode, its canonical key and the source candidates.
+            PlaybackContext context = _playbackContext;
+
+            _isReturningToSelector = true;
+
+            try
+            {
+                ClosePlayer();
+
+                await ReturnToSourceSelectorAsync(context);
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info(
+                    "Return to Source Selector failed: " + UserFacingErrors.ForLog(ex));
+
+                ClosePlayer();
+            }
+            finally
+            {
+                _isReturningToSelector = false;
+            }
+        }
+
+        private bool _isReturningToSelector;
+
+        // Set by PlaySelectedMediaAsync when the user backs out of the Source
+        // Selector without choosing a source.
+        private bool _sourceSelectionCancelled;
+
+        // Re-shows the Source Selector for the media of a player that was just
+        // closed. Picking a source plays it (resuming from where the user
+        // actually stopped, read from the Watch State just flushed); Back goes
+        // to the Episode Selector for an episode, or Home for a movie.
+        private async Task ReturnToSourceSelectorAsync(PlaybackContext context)
+        {
+            if (context == null || context.MediaItem == null || context.Candidates == null)
+            {
+                return;
+            }
+
+            // Let ClosePlayer's deferred Home refocus (Input priority) run
+            // first so it cannot steal focus from the selector.
+            await Dispatcher.InvokeAsync(
+                () => { },
+                System.Windows.Threading.DispatcherPriority.ContextIdle);
+
+            NormalizedPlaybackSource next =
+                await ShowSourceSelectorAsync(context.Candidates, context.MediaItem);
+
+            // The new player must be closable while it loads.
+            _isReturningToSelector = false;
+
+            if (next != null)
+            {
+                ResumePlan plan = ResumePlanner.Create(
+                    _watchStateService,
+                    context.ProfileId,
+                    context.CanonicalKey);
+
+                await StartPlaybackAsync(
+                    context.WithSource(next, plan != null ? plan.StartPositionSeconds : null),
+                    0);
+
+                return;
+            }
+
+            await ContinueAfterSourceSelectorBackAsync(context);
+        }
+
+        // Back on the Source Selector: NavigationRules decides the target.
+        private async Task ContinueAfterSourceSelectorBackAsync(PlaybackContext context)
+        {
+            bool isEpisode = context.Episode != null || IsEpisodeShaped(context.MediaItem);
+
+            if (NavigationRules.Back(NavScreen.SourceSelector, isEpisode).Target == NavScreen.EpisodeSelector)
+            {
+                await BrowseAndPlayEpisodesAsync(BuildSeriesItem(context));
+            }
+        }
+
+        // The series-level item the Episode Selector needs, rebuilt from the
+        // episode that was playing.
+        private static MediaItem BuildSeriesItem(PlaybackContext context)
+        {
+            MediaItem episode = context.MediaItem;
+
+            return new MediaItem
+            {
+                StremioId = episode.StremioId,
+                Title = context.Episode != null
+                    ? context.Episode.SeriesTitle
+                    : EpisodeContext.DeriveSeriesTitle(episode.Title, null),
+                PosterPath = episode.PosterPath,
+                Year = episode.Year,
+                Type = episode.Type,
+                Genres = episode.Genres != null ? new List<string>(episode.Genres) : null
+            };
+        }
+
+        // Episode Selector -> episode -> Source Selector/player, repeating while
+        // the user backs out of a Source Selector (which returns here).
+        // Back on the Episode Selector itself ends the loop at Home.
+        private async Task BrowseAndPlayEpisodesAsync(MediaItem series)
+        {
+            while (true)
+            {
+                MediaItem episode = await ShowEpisodeBrowserAsync(series);
+
+                if (episode == null)
+                {
+                    return;
+                }
+
+                await PlaySelectedMediaAsync(episode);
+
+                if (!_sourceSelectionCancelled)
+                {
+                    return;
+                }
+            }
         }
 
         private void ClosePlayer()

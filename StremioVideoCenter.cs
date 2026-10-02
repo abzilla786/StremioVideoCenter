@@ -324,7 +324,13 @@ namespace StremioVideoCenter
             if (e.Key == System.Windows.Input.Key.Escape ||
                 e.Key == System.Windows.Input.Key.Back)
             {
-                CloseVideoCenter();
+                // Same Back command as controller B: the active screen handles
+                // it; only if nothing does (the Profile Selector, the root of
+                // the hierarchy) does Back close the application.
+                if (videoCenterView == null || !videoCenterView.HandleBack())
+                {
+                    CloseVideoCenter();
+                }
 
                 e.Handled = true;
             }

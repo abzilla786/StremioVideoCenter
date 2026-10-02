@@ -946,6 +946,12 @@ namespace StremioVideoCenterControls
                     CloseNameEntry();
                     FocusFirstTile();
                 }
+                else
+                {
+                    // Top level: Back is not ours - let it reach the plugin
+                    // window, which closes the application.
+                    return;
+                }
 
                 e.Handled = true;
                 return;
@@ -1141,12 +1147,13 @@ namespace StremioVideoCenterControls
 
             switch (button)
             {
-                // No Cancel/Back at the top level - see XAML header
-                // remarks. B is consumed (no-op) so it can never close
-                // this overlay or fall through to closing the whole
-                // Video Center window.
+                // The Profile Selector is the ROOT of the navigation
+                // hierarchy: Back here is deliberately NOT consumed, so it
+                // reaches the plugin window and closes the application
+                // (NavigationRules.Back(ProfileSelector)). Panels above
+                // (name entry / delete confirm) handle their own B earlier.
                 case ControllerInput.B:
-                    return true;
+                    return false;
 
                 case ControllerInput.DPadUp:
                     MoveFocus(FocusNavigationDirection.Up);
