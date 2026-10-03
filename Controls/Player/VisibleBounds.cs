@@ -59,6 +59,54 @@ namespace StremioVideoCenterControls.Player
         }
     }
 
+    // WPF limits a Popup's native window to a fraction of the screen, so the
+    // controls popup can come out smaller than requested. When the popup window
+    // is about to be sized (WM_WINDOWPOSCHANGING) this decides the size to use
+    // instead: the size we asked for, in device pixels. It only ever ENLARGES a
+    // window WPF made too small - never shrinks one - and ignores invalid input.
+    public static class PopupSizeOverride
+    {
+        // wpfWidth/wpfHeight : the size WPF is about to apply (device pixels).
+        // wantedDipWidth/Height : the size requested for the popup (DIPs).
+        // scaleX/scaleY : the popup window's DIP -> device pixel scale.
+        public static bool TryCompute(
+            int wpfWidth, int wpfHeight,
+            double wantedDipWidth, double wantedDipHeight,
+            double scaleX, double scaleY,
+            out int width, out int height)
+        {
+            width = wpfWidth;
+            height = wpfHeight;
+
+            if (!IsPositive(wantedDipWidth) || !IsPositive(wantedDipHeight) || !IsPositive(scaleX) || !IsPositive(scaleY))
+                return false;
+
+            int wantedWidth = (int)Math.Round(wantedDipWidth * scaleX);
+            int wantedHeight = (int)Math.Round(wantedDipHeight * scaleY);
+
+            bool changed = false;
+
+            if (wpfWidth > 0 && wantedWidth > wpfWidth)
+            {
+                width = wantedWidth;
+                changed = true;
+            }
+
+            if (wpfHeight > 0 && wantedHeight > wpfHeight)
+            {
+                height = wantedHeight;
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static bool IsPositive(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0;
+        }
+    }
+
     // The part of the player surface that is actually visible on screen.
     //
     // The mpv player fills a WPF container whose nominal size can be larger

@@ -134,6 +134,11 @@ namespace StremioVideoCenterControls
         {
             InitializeComponent();
 
+            // The popup's native window only exists while open; the size hook
+            // follows its lifetime (see AttachPopupSizeHook).
+            ControlsPopup.Opened += ControlsPopup_Opened;
+            ControlsPopup.Closed += ControlsPopup_Closed;
+
             Loaded += MpvPlayer_Loaded;
             Unloaded += MpvPlayer_Unloaded;
             SizeChanged += MpvPlayer_SizeChanged;
@@ -371,6 +376,9 @@ namespace StremioVideoCenterControls
             try { if (_uiState.IsFullscreen) ToggleFullscreen(); } catch { }
 
             try { ControlsPopup.IsOpen = false; } catch { }
+            try { ControlsPopup.Opened -= ControlsPopup_Opened; } catch { }
+            try { ControlsPopup.Closed -= ControlsPopup_Closed; } catch { }
+            DetachPopupSizeHook();
             try { PreviewKeyDown -= MpvPlayer_PreviewKeyDown; } catch { }
             try { SizeChanged -= MpvPlayer_SizeChanged; } catch { }
             try { Unloaded -= MpvPlayer_Unloaded; } catch { }
@@ -584,6 +592,11 @@ namespace StremioVideoCenterControls
                 _fitMaxWidth = 0;
             }
 
+            // The size we WANT for the popup (before any fit cap); the size hook
+            // restores it if WPF's own popup size restriction made the window smaller.
+            _wantedPopupWidth = width;
+            _wantedPopupHeight = height;
+
             if (_fitMaxHeight > 0) height = Math.Min(height, _fitMaxHeight);
             if (_fitMaxWidth > 0) width = Math.Min(width, _fitMaxWidth);
 
@@ -672,13 +685,21 @@ namespace StremioVideoCenterControls
             double clientHeight = client.Value.Height * fromDevice.M22;
             double clientWidth = client.Value.Width * fromDevice.M11;
 
-            double fittedHeight = OverlayFit.Constrain(ControlsOverlay.Height, clientHeight);
-            double fittedWidth = OverlayFit.Constrain(ControlsOverlay.Width, clientWidth);
+            // Fit the layout we WANT (not one a previous fit already shrank), so a
+            // popup window that later reaches the wanted size releases the cap.
+            double desiredHeight = _wantedPopupHeight > 0 ? _wantedPopupHeight : ControlsOverlay.Height;
+            double desiredWidth = _wantedPopupWidth > 0 ? _wantedPopupWidth : ControlsOverlay.Width;
 
-            if (fittedHeight < ControlsOverlay.Height - 0.5 || fittedWidth < ControlsOverlay.Width - 0.5)
+            double fittedHeight = OverlayFit.Constrain(desiredHeight, clientHeight);
+            double fittedWidth = OverlayFit.Constrain(desiredWidth, clientWidth);
+
+            double newMaxHeight = fittedHeight < desiredHeight - 0.5 ? fittedHeight : 0;
+            double newMaxWidth = fittedWidth < desiredWidth - 0.5 ? fittedWidth : 0;
+
+            if (Math.Abs(newMaxHeight - _fitMaxHeight) > 0.5 || Math.Abs(newMaxWidth - _fitMaxWidth) > 0.5)
             {
-                _fitMaxHeight = fittedHeight;
-                _fitMaxWidth = fittedWidth;
+                _fitMaxHeight = newMaxHeight;
+                _fitMaxWidth = newMaxWidth;
                 SyncControlsPopupSize();
             }
         }
@@ -729,6 +750,166 @@ namespace StremioVideoCenterControls
             return rect.HasValue
                 ? string.Format("({0:0},{1:0},{2:0},{3:0})[{4:0}x{5:0}]", rect.Value.Left, rect.Value.Top, rect.Value.Right, rect.Value.Bottom, rect.Value.Width, rect.Value.Height)
                 : "n/a";
+        }
+
+        // ---------------------------------------------------------------------
+        // POPUP SIZE HOOK
+        //
+        // WPF restricts a Popup's native window to a fraction of the screen
+        // (RestrictSize), so the controls popup is created smaller than the size
+        // requested, and the bottom-anchored control bar then sits too high.
+        // The hook watches the popup window's WM_WINDOWPOSCHANGING and, when WPF
+        // is about to apply a size smaller than the wanted one, raises cx/cy to
+        // the wanted size. Position (x/y) is never touched, nothing is ever
+        // shrunk, and SetWindowPos is not called. OverlayFit stays as the
+        // fallback if the window is still smaller than requested.
+        // ---------------------------------------------------------------------
+
+        private const int WmWindowPosChanging = 0x0046;
+        private const uint SwpNoSize = 0x0001;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeWindowPos
+        {
+            public IntPtr Hwnd;
+            public IntPtr HwndInsertAfter;
+            public int X;
+            public int Y;
+            public int Cx;
+            public int Cy;
+            public uint Flags;
+        }
+
+        private HwndSource _popupHookSource;
+        private HwndSourceHook _popupHook;
+        private double _wantedPopupWidth;
+        private double _wantedPopupHeight;
+        private bool _inPopupHook;
+        private int _popupHookLogCount;
+        private bool _popupHookAfterQueued;
+
+        private void ControlsPopup_Opened(object sender, EventArgs e)
+        {
+            if (_disposed) return;
+
+            AttachPopupSizeHook();
+
+            // The first sizing already happened before the window could be
+            // hooked; a re-placement makes WPF apply the size again (through the
+            // hook). Same sub-pixel nudge HostWindow_GeometryChanged relies on.
+            try
+            {
+                _popupNudge = !_popupNudge;
+                ControlsPopup.HorizontalOffset += _popupNudge ? 0.01 : -0.01;
+            }
+            catch { }
+
+            ScheduleOverlayCheck("popup hooked");
+        }
+
+        private void ControlsPopup_Closed(object sender, EventArgs e)
+        {
+            DetachPopupSizeHook();
+        }
+
+        private void AttachPopupSizeHook()
+        {
+            try
+            {
+                HwndSource source = PresentationSource.FromVisual(ControlsOverlay) as HwndSource;
+                if (source == null || source.IsDisposed) return;
+                if (ReferenceEquals(source, _popupHookSource)) return;
+
+                DetachPopupSizeHook();
+
+                _popupHook = PopupWndProc;
+                source.AddHook(_popupHook);
+                _popupHookSource = source;
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Popup size hook attach failed: " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
+        private void DetachPopupSizeHook()
+        {
+            try
+            {
+                if (_popupHookSource != null && _popupHook != null && !_popupHookSource.IsDisposed)
+                    _popupHookSource.RemoveHook(_popupHook);
+            }
+            catch { }
+
+            _popupHookSource = null;
+            _popupHook = null;
+        }
+
+        private IntPtr PopupWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg != WmWindowPosChanging || _inPopupHook || _disposed || lParam == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            _inPopupHook = true;
+            try
+            {
+                NativeWindowPos pos = (NativeWindowPos)Marshal.PtrToStructure(lParam, typeof(NativeWindowPos));
+                if ((pos.Flags & SwpNoSize) != 0)
+                    return IntPtr.Zero;
+
+                HwndSource source = _popupHookSource;
+                if (source == null || source.CompositionTarget == null)
+                    return IntPtr.Zero;
+
+                Matrix toDevice = source.CompositionTarget.TransformToDevice;
+                int width;
+                int height;
+
+                bool rewrite = PopupSizeOverride.TryCompute(
+                    pos.Cx, pos.Cy, _wantedPopupWidth, _wantedPopupHeight,
+                    toDevice.M11, toDevice.M22, out width, out height);
+
+                if (_popupHookLogCount < 30)
+                {
+                    _popupHookLogCount++;
+                    PopupDiag(string.Format(
+                        "popup-hook WINDOWPOS requested={0}x{1} at ({2},{3}) flags=0x{4:X} wanted={5:0.#}x{6:0.#}dip scale={7:0.###}x{8:0.###} rewritten={9}",
+                        pos.Cx, pos.Cy, pos.X, pos.Y, pos.Flags, _wantedPopupWidth, _wantedPopupHeight,
+                        toDevice.M11, toDevice.M22,
+                        rewrite ? (width + "x" + height) : "no (unchanged)"));
+                }
+
+                if (rewrite)
+                {
+                    pos.Cx = width;
+                    pos.Cy = height;
+                    Marshal.StructureToPtr(pos, lParam, false);
+                    ScheduleHookResultLog();
+                }
+            }
+            catch (Exception ex)
+            {
+                PopupDiag("popup-hook failed: " + UserFacingErrors.ForLog(ex));
+            }
+            finally
+            {
+                _inPopupHook = false;
+            }
+
+            return IntPtr.Zero;
+        }
+
+        // Logs the popup window once WPF has finished positioning it.
+        private void ScheduleHookResultLog()
+        {
+            if (_popupHookAfterQueued || _disposed) return;
+
+            _popupHookAfterQueued = true;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _popupHookAfterQueued = false;
+                if (!_disposed) LogPopupState("popup-after-hook");
+            }), DispatcherPriority.Background);
         }
 
         // ---------------------------------------------------------------------
@@ -852,12 +1033,16 @@ namespace StremioVideoCenterControls
                 double scaleX = popupSource != null && popupSource.CompositionTarget != null ? popupSource.CompositionTarget.TransformToDevice.M11 : 0;
                 double scaleY = popupSource != null && popupSource.CompositionTarget != null ? popupSource.CompositionTarget.TransformToDevice.M22 : 0;
 
+                FrameworkElement popupRoot = popupSource != null ? popupSource.RootVisual as FrameworkElement : null;
+                string rootSize = popupRoot != null ? string.Format("{0:0}x{1:0}", popupRoot.ActualWidth, popupRoot.ActualHeight) : "n/a";
+
                 PopupDiag(string.Format(
                     "{0} requested=popup {1:0.#}x{2:0.#} overlay {3:0.#}x{4:0.#} offset=({5:0.##},{6:0.##}) isOpen={7} " +
-                    "nativeWindow={8} client={9} popupDpi={10} popupTransformToDevice={11:0.###}x{12:0.###} fitMax={13:0}x{14:0}",
+                    "nativeWindow={8} client={9} popupDpi={10} popupTransformToDevice={11:0.###}x{12:0.###} fitMax={13:0}x{14:0} popupRoot={15} overlayActual={16:0}x{17:0}",
                     marker, ControlsPopup.Width, ControlsPopup.Height, ControlsOverlay.Width, ControlsOverlay.Height,
                     ControlsPopup.HorizontalOffset, ControlsPopup.VerticalOffset, ControlsPopup.IsOpen,
-                    Describe(win), Describe(client), SafeDpi(handle), scaleX, scaleY, _fitMaxWidth, _fitMaxHeight));
+                    Describe(win), Describe(client), SafeDpi(handle), scaleX, scaleY, _fitMaxWidth, _fitMaxHeight,
+                    rootSize, ControlsOverlay.ActualWidth, ControlsOverlay.ActualHeight));
             }
             catch (Exception ex)
             {
