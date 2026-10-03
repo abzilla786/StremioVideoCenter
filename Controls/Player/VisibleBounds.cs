@@ -37,6 +37,28 @@ namespace StremioVideoCenterControls.Player
         }
     }
 
+    // The overlay's content must never be laid out larger than the native
+    // window that actually displays it: anything beyond the window's client
+    // area is simply not painted, so a bottom-anchored control bar placed at the
+    // bottom of an over-tall layout would be invisible although it exists, has
+    // focus and shows tooltips.
+    public static class OverlayFit
+    {
+        // desired: the layout size wanted (DIPs); windowClient: the popup
+        // window's real client size in the same unit (<= 0 = unknown). Returns
+        // the size to lay out with - never larger than the window.
+        public static double Constrain(double desired, double windowClient)
+        {
+            if (double.IsNaN(desired) || double.IsInfinity(desired) || desired <= 0)
+                return desired;
+
+            if (double.IsNaN(windowClient) || double.IsInfinity(windowClient) || windowClient <= 0)
+                return desired;
+
+            return windowClient < desired - 1 ? windowClient : desired;
+        }
+    }
+
     // The part of the player surface that is actually visible on screen.
     //
     // The mpv player fills a WPF container whose nominal size can be larger

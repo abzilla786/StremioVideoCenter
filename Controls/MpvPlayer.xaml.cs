@@ -11,6 +11,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
@@ -420,6 +421,7 @@ namespace StremioVideoCenterControls
             if (_disposed) return;
 
             SyncControlsPopupSize();
+            ScheduleOverlayCheck("host window changed");
 
             if (ControlsPopup.IsOpen)
             {
@@ -571,6 +573,20 @@ namespace StremioVideoCenterControls
                 offsetY = (v.Top - nominal.Top) * fromDevice.M22;
             }
 
+            // A new nominal size invalidates any earlier "fit to the popup window"
+            // measurement; otherwise cap at what the popup window really shows.
+            if (Math.Abs(height - _lastNominalOverlayHeight) > 0.5 ||
+                Math.Abs(width - _lastNominalOverlayWidth) > 0.5)
+            {
+                _lastNominalOverlayHeight = height;
+                _lastNominalOverlayWidth = width;
+                _fitMaxHeight = 0;
+                _fitMaxWidth = 0;
+            }
+
+            if (_fitMaxHeight > 0) height = Math.Min(height, _fitMaxHeight);
+            if (_fitMaxWidth > 0) width = Math.Min(width, _fitMaxWidth);
+
             if (Math.Abs(ControlsPopup.Width - width) < 0.5 &&
                 Math.Abs(ControlsPopup.Height - height) < 0.5 &&
                 Math.Abs(ControlsPopup.HorizontalOffset - offsetX) < 0.5 &&
@@ -585,6 +601,125 @@ namespace StremioVideoCenterControls
             ControlsPopup.Height = height;
             ControlsOverlay.Width = width;
             ControlsOverlay.Height = height;
+
+            ScheduleOverlayCheck("size/offset changed");
+        }
+
+        // ---------------------------------------------------------------------
+        // OVERLAY GEOMETRY CHECK (bottom control bar visibility)
+        //
+        // The overlay is hosted in a Popup, i.e. in its OWN native window. The
+        // layout (Exit at the top, centre indicator in the middle, control bar
+        // anchored to the bottom) is computed for ControlsOverlay.Height, but
+        // only what falls inside that native window's client area is painted.
+        // If the window turns out smaller than the layout, the bottom bar is
+        // laid out - it has focus, shows tooltips - yet is never drawn.
+        // After the popup is open this reads the popup window's real client
+        // size, makes the layout fit it, and logs every figure involved (to
+        // StremioVideoCenter.log) so the actual geometry can be read off.
+        // ---------------------------------------------------------------------
+
+        private double _lastNominalOverlayHeight;
+        private double _lastNominalOverlayWidth;
+        private double _fitMaxHeight;
+        private double _fitMaxWidth;
+        private bool _overlayCheckQueued;
+        private string _lastOverlayLog;
+        private int _overlayLogCount;
+
+        private void ScheduleOverlayCheck(string reason)
+        {
+            if (_overlayCheckQueued || _disposed) return;
+
+            _overlayCheckQueued = true;
+
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _overlayCheckQueued = false;
+                if (_disposed) return;
+
+                try
+                {
+                    FitOverlayToPopupWindow();
+                    LogOverlayGeometry(reason);
+                }
+                catch (Exception ex)
+                {
+                    StremioVideoCenterLogger.Info("Overlay geometry check failed: " + UserFacingErrors.ForLog(ex));
+                }
+            }), DispatcherPriority.Background);
+        }
+
+        private void FitOverlayToPopupWindow()
+        {
+            if (!ControlsPopup.IsOpen) return;
+
+            HwndSource popupSource = PresentationSource.FromVisual(ControlsOverlay) as HwndSource;
+            if (popupSource == null || popupSource.CompositionTarget == null) return;
+
+            PixelRect? client = HostWindowGeometry.GetClientRectOnScreen(popupSource.Handle);
+            if (!client.HasValue) return;
+
+            Matrix fromDevice = popupSource.CompositionTarget.TransformFromDevice;
+            double clientHeight = client.Value.Height * fromDevice.M22;
+            double clientWidth = client.Value.Width * fromDevice.M11;
+
+            double fittedHeight = OverlayFit.Constrain(ControlsOverlay.Height, clientHeight);
+            double fittedWidth = OverlayFit.Constrain(ControlsOverlay.Width, clientWidth);
+
+            if (fittedHeight < ControlsOverlay.Height - 0.5 || fittedWidth < ControlsOverlay.Width - 0.5)
+            {
+                _fitMaxHeight = fittedHeight;
+                _fitMaxWidth = fittedWidth;
+                SyncControlsPopupSize();
+            }
+        }
+
+        private void LogOverlayGeometry(string reason)
+        {
+            if (_overlayLogCount >= 60) return;
+
+            HwndSource popupSource = PresentationSource.FromVisual(ControlsOverlay) as HwndSource;
+            PixelRect? popupWindow = popupSource != null ? HostWindowGeometry.GetWindowRectOnScreen(popupSource.Handle) : null;
+            PixelRect? popupClient = popupSource != null ? HostWindowGeometry.GetClientRectOnScreen(popupSource.Handle) : null;
+
+            PixelRect nominal;
+            PixelRect? visible = GetVisiblePlayerBounds(out nominal);
+
+            string bar = "n/a";
+            try
+            {
+                Point topLeft = BottomControls.TranslatePoint(new Point(0, 0), ControlsOverlay);
+                bar = string.Format(
+                    "pos=({0:0},{1:0}) size={2:0}x{3:0} bottom={4:0} vis={5} opacity={6:0.##}",
+                    topLeft.X, topLeft.Y, BottomControls.ActualWidth, BottomControls.ActualHeight,
+                    topLeft.Y + BottomControls.ActualHeight, BottomControls.IsVisible, BottomControls.Opacity);
+            }
+            catch { }
+
+            string text = string.Format(
+                "popupOpen={0} popupSize={1:0}x{2:0} offset=({3:0.##},{4:0.##}) overlay={5:0}x{6:0} opacity={7:0.##} hit={8} " +
+                "popupWindow={9} popupClient={10} rootGrid={11:0}x{12:0} nominal={13} visible={14} bottomBar[{15}] fitMax={16:0}x{17:0}",
+                ControlsPopup.IsOpen, ControlsPopup.Width, ControlsPopup.Height,
+                ControlsPopup.HorizontalOffset, ControlsPopup.VerticalOffset,
+                ControlsOverlay.ActualWidth, ControlsOverlay.ActualHeight, ControlsOverlay.Opacity, ControlsOverlay.IsHitTestVisible,
+                Describe(popupWindow), Describe(popupClient),
+                RootGrid.ActualWidth, RootGrid.ActualHeight,
+                Describe(nominal), Describe(visible), bar, _fitMaxWidth, _fitMaxHeight);
+
+            if (text == _lastOverlayLog) return;
+
+            _lastOverlayLog = text;
+            _overlayLogCount++;
+
+            StremioVideoCenterLogger.Info("[PLAYER-GEOMETRY] " + reason + ": " + text);
+        }
+
+        private static string Describe(PixelRect? rect)
+        {
+            return rect.HasValue
+                ? string.Format("({0:0},{1:0},{2:0},{3:0})[{4:0}x{5:0}]", rect.Value.Left, rect.Value.Top, rect.Value.Right, rect.Value.Bottom, rect.Value.Width, rect.Value.Height)
+                : "n/a";
         }
 
         // WPF Popup is a separate native window, which lets the controls render
@@ -685,6 +820,8 @@ namespace StremioVideoCenterControls
                     ShowControls();
                     _focus.FocusRootDefault();
                 }
+
+                ScheduleOverlayCheck("playback established");
 
                 EventHandler handler = PlaybackEstablished;
                 if (handler != null)
@@ -1604,7 +1741,14 @@ namespace StremioVideoCenterControls
             _overlayPolicy.NoteActivity(DateTime.UtcNow);
 
             SyncControlsPopupSize();
+
+            bool wasOpen = ControlsPopup.IsOpen;
             ControlsPopup.IsOpen = true;
+
+            // The popup window only exists once it is open: measure it then.
+            if (!wasOpen)
+                ScheduleOverlayCheck("popup opened");
+
             SetOverlayVisible(true);
         }
 
