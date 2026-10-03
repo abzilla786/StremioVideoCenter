@@ -595,12 +595,20 @@ namespace StremioVideoCenterControls
                 return;
             }
 
+            string resizeFrom = string.Format("from popup {0:0.#}x{1:0.#} offset=({2:0.##},{3:0.##}) to popup {4:0.#}x{5:0.#} offset=({6:0.##},{7:0.##})",
+                ControlsPopup.Width, ControlsPopup.Height, ControlsPopup.HorizontalOffset, ControlsPopup.VerticalOffset,
+                width, height, offsetX, offsetY);
+            bool diagResize = ControlsPopup.IsOpen;
+
             ControlsPopup.HorizontalOffset = offsetX;
             ControlsPopup.VerticalOffset = offsetY;
             ControlsPopup.Width = width;
             ControlsPopup.Height = height;
             ControlsOverlay.Width = width;
             ControlsOverlay.Height = height;
+
+            if (diagResize)
+                LogPopupState("popup-resize " + resizeFrom + " | state after assignment");
 
             ScheduleOverlayCheck("size/offset changed");
         }
@@ -713,6 +721,7 @@ namespace StremioVideoCenterControls
             _overlayLogCount++;
 
             StremioVideoCenterLogger.Info("[PLAYER-GEOMETRY] " + reason + ": " + text);
+            LogPopupState("popup-state-after-" + reason.Replace(' ', '-').Replace('/', '-'));
         }
 
         private static string Describe(PixelRect? rect)
@@ -720,6 +729,140 @@ namespace StremioVideoCenterControls
             return rect.HasValue
                 ? string.Format("({0:0},{1:0},{2:0},{3:0})[{4:0}x{5:0}]", rect.Value.Left, rect.Value.Top, rect.Value.Right, rect.Value.Bottom, rect.Value.Width, rect.Value.Height)
                 : "n/a";
+        }
+
+        // ---------------------------------------------------------------------
+        // POPUP CREATION DIAGNOSTICS (logging only; changes no behaviour)
+        //
+        // Finds what limits the ControlsPopup native window: the requested size,
+        // the monitor / work area, desktop metrics, DPI, or WPF itself. Markers:
+        // monitor / workArea / dpi / popup-pre-show / popup-post-show /
+        // popup-resize. Capped so it cannot flood the log.
+        // ---------------------------------------------------------------------
+
+        private int _popupDiagCount;
+        private const int PopupDiagLimit = 60;
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc callback, IntPtr data);
+
+        private delegate bool MonitorEnumProc(IntPtr monitor, IntPtr hdc, IntPtr rect, IntPtr data);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+        private const uint MonitorDefaultToPrimary = 1;
+
+        private static string DescribeNative(NativeRect r)
+        {
+            return string.Format("({0},{1},{2},{3})[{4}x{5}]", r.Left, r.Top, r.Right, r.Bottom, r.Right - r.Left, r.Bottom - r.Top);
+        }
+
+        private static string DescribeMonitor(IntPtr monitor, out string work)
+        {
+            NativeMonitorInfo info = new NativeMonitorInfo { Size = Marshal.SizeOf(typeof(NativeMonitorInfo)) };
+            work = "n/a";
+            if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info))
+                return "n/a";
+            work = DescribeNative(info.Work);
+            return DescribeNative(info.Monitor) + (((info.Flags & 1) != 0) ? " primary" : string.Empty);
+        }
+
+        private static string SafeDpi(IntPtr hwnd)
+        {
+            try { return hwnd == IntPtr.Zero ? "n/a" : GetDpiForWindow(hwnd).ToString(); }
+            catch { return "n/a"; }
+        }
+
+        private void PopupDiag(string text)
+        {
+            if (_popupDiagCount >= PopupDiagLimit) return;
+            _popupDiagCount++;
+            StremioVideoCenterLogger.Info("[PLAYER-GEOMETRY] " + text);
+        }
+
+        // Monitors, work areas, desktop metrics and DPI. Logged once per popup open.
+        private void LogDisplayDiagnostics()
+        {
+            try
+            {
+                PixelRect nominal;
+                GetVisiblePlayerBounds(out nominal);
+
+                NativePoint centre = new NativePoint
+                {
+                    X = (int)((nominal.Left + nominal.Right) / 2),
+                    Y = (int)((nominal.Top + nominal.Bottom) / 2)
+                };
+                NativePoint origin = new NativePoint { X = 0, Y = 0 };
+
+                string playerWork;
+                string playerMonitor = DescribeMonitor(MonitorFromPoint(centre, MonitorDefaultToNearest), out playerWork);
+                string primaryWork;
+                string primaryMonitor = DescribeMonitor(MonitorFromPoint(origin, MonitorDefaultToPrimary), out primaryWork);
+
+                PopupDiag("monitor player=" + playerMonitor + " primary=" + primaryMonitor + " nominal=" + Describe(nominal));
+                PopupDiag("workArea player=" + playerWork + " primary=" + primaryWork);
+
+                System.Text.StringBuilder all = new System.Text.StringBuilder();
+                EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, delegate (IntPtr m, IntPtr hdc, IntPtr rect, IntPtr data)
+                {
+                    string w;
+                    all.Append(DescribeMonitor(m, out w)).Append(" work=").Append(w).Append("; ");
+                    return true;
+                }, IntPtr.Zero);
+                PopupDiag("monitor all=" + all);
+
+                PopupDiag(string.Format(
+                    "desktop SystemParameters primary={0:0}x{1:0} workArea={2:0}x{3:0} virtual=({4:0},{5:0}){6:0}x{7:0} fullPrimary={8:0}x{9:0} (WPF DIPs)",
+                    SystemParameters.PrimaryScreenWidth, SystemParameters.PrimaryScreenHeight,
+                    SystemParameters.WorkArea.Width, SystemParameters.WorkArea.Height,
+                    SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+                    SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight,
+                    SystemParameters.FullPrimaryScreenWidth, SystemParameters.FullPrimaryScreenHeight));
+
+                Window window = Window.GetWindow(this);
+                IntPtr hostHandle = window != null ? new WindowInteropHelper(window).Handle : IntPtr.Zero;
+                DpiScale playerDpi = VisualTreeHelper.GetDpi(RootGrid);
+                PresentationSource playerSource = PresentationSource.FromVisual(RootGrid);
+                double toDeviceX = playerSource != null && playerSource.CompositionTarget != null ? playerSource.CompositionTarget.TransformToDevice.M11 : 0;
+                double toDeviceY = playerSource != null && playerSource.CompositionTarget != null ? playerSource.CompositionTarget.TransformToDevice.M22 : 0;
+
+                PopupDiag(string.Format(
+                    "dpi player scale={0:0.###}x{1:0.###} transformToDevice={2:0.###}x{3:0.###} hostWindowDpi={4} hostWindowRect={5}",
+                    playerDpi.DpiScaleX, playerDpi.DpiScaleY, toDeviceX, toDeviceY, SafeDpi(hostHandle),
+                    Describe(hostHandle != IntPtr.Zero ? HostWindowGeometry.GetWindowRectOnScreen(hostHandle) : null)));
+            }
+            catch (Exception ex)
+            {
+                PopupDiag("display diagnostics failed: " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
+        // Requested size (our Width/Height/offset), the popup native window and
+        // its client rect, and the popup window's own DPI.
+        private void LogPopupState(string marker)
+        {
+            try
+            {
+                HwndSource popupSource = PresentationSource.FromVisual(ControlsOverlay) as HwndSource;
+                IntPtr handle = popupSource != null ? popupSource.Handle : IntPtr.Zero;
+                PixelRect? win = handle != IntPtr.Zero ? HostWindowGeometry.GetWindowRectOnScreen(handle) : null;
+                PixelRect? client = handle != IntPtr.Zero ? HostWindowGeometry.GetClientRectOnScreen(handle) : null;
+                double scaleX = popupSource != null && popupSource.CompositionTarget != null ? popupSource.CompositionTarget.TransformToDevice.M11 : 0;
+                double scaleY = popupSource != null && popupSource.CompositionTarget != null ? popupSource.CompositionTarget.TransformToDevice.M22 : 0;
+
+                PopupDiag(string.Format(
+                    "{0} requested=popup {1:0.#}x{2:0.#} overlay {3:0.#}x{4:0.#} offset=({5:0.##},{6:0.##}) isOpen={7} " +
+                    "nativeWindow={8} client={9} popupDpi={10} popupTransformToDevice={11:0.###}x{12:0.###} fitMax={13:0}x{14:0}",
+                    marker, ControlsPopup.Width, ControlsPopup.Height, ControlsOverlay.Width, ControlsOverlay.Height,
+                    ControlsPopup.HorizontalOffset, ControlsPopup.VerticalOffset, ControlsPopup.IsOpen,
+                    Describe(win), Describe(client), SafeDpi(handle), scaleX, scaleY, _fitMaxWidth, _fitMaxHeight));
+            }
+            catch (Exception ex)
+            {
+                PopupDiag(marker + " failed: " + UserFacingErrors.ForLog(ex));
+            }
         }
 
         // WPF Popup is a separate native window, which lets the controls render
@@ -1743,11 +1886,24 @@ namespace StremioVideoCenterControls
             SyncControlsPopupSize();
 
             bool wasOpen = ControlsPopup.IsOpen;
+
+            if (!wasOpen)
+            {
+                LogDisplayDiagnostics();
+                LogPopupState("popup-pre-show");
+            }
+
             ControlsPopup.IsOpen = true;
 
             // The popup window only exists once it is open: measure it then.
             if (!wasOpen)
+            {
+                // Captured before the Background-priority fit runs, so the
+                // popup's original size is on record.
+                LogPopupState("popup-post-show");
+                Dispatcher.BeginInvoke(new Action(() => LogPopupState("popup-post-show-loaded")), DispatcherPriority.Loaded);
                 ScheduleOverlayCheck("popup opened");
+            }
 
             SetOverlayVisible(true);
         }
