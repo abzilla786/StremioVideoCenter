@@ -101,13 +101,45 @@ namespace StremioVideoCenterControls.Player
             NativeMethods.BringWindowToTop(child);
         }
 
+        // The native window is positioned with Win32 SetWindowPos, which takes
+        // PHYSICAL PIXELS, while ActualWidth/ActualHeight are WPF device-
+        // independent units. They are only equal at 100% display scaling; at any
+        // other scale (125%, 150%, a mirrored TV, ...) using them directly sizes
+        // the native window - and the mpv window inside it - too small, anchored
+        // top-left. Convert through the host's own DPI first.
+        private void GetPixelSize(out int width, out int height)
+        {
+            double scaleX = 1.0;
+            double scaleY = 1.0;
+
+            PresentationSource source = PresentationSource.FromVisual(this);
+            if (source != null && source.CompositionTarget != null)
+            {
+                Matrix toDevice = source.CompositionTarget.TransformToDevice;
+                scaleX = toDevice.M11;
+                scaleY = toDevice.M22;
+            }
+
+            width = DisplayScale.ToPixels(ActualWidth, scaleX);
+            height = DisplayScale.ToPixels(ActualHeight, scaleY);
+        }
+
+        // Moving to a monitor with a different scale changes the conversion
+        // without changing the DIP size, so re-sync on a DPI change too.
+        protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+        {
+            base.OnDpiChanged(oldDpi, newDpi);
+            SynchronizeNativeWindow();
+        }
+
         public void SynchronizeNativeWindow()
         {
             if (_handle == IntPtr.Zero)
                 return;
 
-            int width = Math.Max(1, (int)Math.Round(ActualWidth));
-            int height = Math.Max(1, (int)Math.Round(ActualHeight));
+            int width;
+            int height;
+            GetPixelSize(out width, out height);
 
             NativeMethods.SetWindowPos(_handle, IntPtr.Zero, 0, 0, width, height,
                 NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);

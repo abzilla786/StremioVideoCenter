@@ -175,6 +175,15 @@ namespace StremioVideoCenterControls
             // when startup fails, so Exit stays reachable).
             _hideControlsTimer.Start();
 
+            // The controls popup is a separate native window: it does not move
+            // when the host window moves/changes state, so follow those events.
+            _hostWindow = Window.GetWindow(this);
+            if (_hostWindow != null)
+            {
+                _hostWindow.LocationChanged += HostWindow_GeometryChanged;
+                _hostWindow.StateChanged += HostWindow_GeometryChanged;
+            }
+
             try
             {
                 StartupTrace.Log("MpvPlayer_Loaded: about to call EnsureStartedAsync");
@@ -349,6 +358,13 @@ namespace StremioVideoCenterControls
             // A menu left open over a closing player resumes nothing.
             _menuGuard.Discard();
 
+            if (_hostWindow != null)
+            {
+                _hostWindow.LocationChanged -= HostWindow_GeometryChanged;
+                _hostWindow.StateChanged -= HostWindow_GeometryChanged;
+                _hostWindow = null;
+            }
+
             // Closing the player must not leave the host window borderless/
             // maximised because fullscreen was toggled on.
             try { if (_uiState.IsFullscreen) ToggleFullscreen(); } catch { }
@@ -392,6 +408,39 @@ namespace StremioVideoCenterControls
         // =====================================================================
         // POPUP SIZING / PLACEMENT
         // =====================================================================
+
+        private Window _hostWindow;
+        private bool _popupNudge;
+
+        // Re-places the (separate-window) popup after the host window moved or
+        // changed state: size/offset are recomputed from the CURRENT geometry,
+        // and a sub-pixel offset change forces WPF to reposition the popup.
+        private void HostWindow_GeometryChanged(object sender, EventArgs e)
+        {
+            if (_disposed) return;
+
+            SyncControlsPopupSize();
+
+            if (ControlsPopup.IsOpen)
+            {
+                _popupNudge = !_popupNudge;
+                ControlsPopup.HorizontalOffset += _popupNudge ? 0.01 : -0.01;
+            }
+        }
+
+        // A DPI change (moving to a monitor with another scale) changes the
+        // device-pixel size of the player without changing its DIP size.
+        protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+        {
+            base.OnDpiChanged(oldDpi, newDpi);
+
+            if (_disposed) return;
+
+            try { _mpvHost?.SynchronizeNativeWindow(); }
+            catch { }
+
+            SyncControlsPopupSize();
+        }
 
         private void MpvPlayer_SizeChanged(object sender, SizeChangedEventArgs e)
         {

@@ -287,10 +287,39 @@ namespace StremioVideoCenter
         // CONSTRUCTOR
         // =========================================================
 
+        private void MainScrollViewer_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            ApplyResponsiveHeroSize(e.NewSize.Width, e.NewSize.Height);
+        }
+
+        // Scales the hero's three fixed-size elements down (uniformly, keeping
+        // the design aspect ratio) so the hero never exceeds the actual
+        // viewport. Sizes come from the real ActualWidth/ActualHeight of the
+        // scroll viewer - nothing here knows about any display resolution.
+        private void ApplyResponsiveHeroSize(double viewportWidth, double viewportHeight)
+        {
+            double width;
+            double height;
+
+            StremioVideoCenterControls.Player.HeroLayout.Compute(
+                viewportWidth, viewportHeight, out width, out height);
+
+            HeroMediaFrame.Width = width;
+            HeroMediaFrame.Height = height;
+            HeroCarouselControls.Width = width;
+            HeroCarouselControls.Height = height;
+            HeroContentGrid.Width = width;
+            HeroContainer.MinHeight = StremioVideoCenterControls.Player.HeroLayout.ContainerMinHeight(height);
+        }
+
         public StremioVideoCenterView(
             StremioVideoCenterConfiguration configuration = null)
         {
             InitializeComponent();
+
+            // The Home hero has a design size (1240 x 698); keep it within the
+            // space the window actually has (see ApplyResponsiveHeroSize).
+            MainScrollViewer.SizeChanged += MainScrollViewer_SizeChanged;
 
             configuration = configuration ?? new StremioVideoCenterConfiguration();
 

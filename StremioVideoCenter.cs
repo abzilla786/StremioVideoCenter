@@ -11,6 +11,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Threading;
 
 
@@ -214,6 +215,13 @@ namespace StremioVideoCenter
             // PresentationSource (and therefore its own DPI context) to
             // convert the physical-pixel bounds captured above back into.
             videoCenterWindow.Loaded += VideoCenterWindow_Loaded;
+            videoCenterWindow.SourceInitialized += VideoCenterWindow_SourceInitialized;
+
+            // Keep the window glued to Playnite's client area for as long as it
+            // is open: Playnite moving/resizing/maximising/changing monitor or
+            // DPI, and display configuration changes (mirroring a TV, a
+            // resolution change), all re-sync it. See SyncHostBounds.
+            SubscribeHostGeometryEvents();
 
             // Keyboard close handling.
             videoCenterWindow.KeyDown += VideoCenterWindow_KeyDown;
@@ -274,6 +282,17 @@ namespace StremioVideoCenter
             videoCenterWindow.Topmost = false;
         }
 
+        // The native window exists but has not been shown yet: place it now so
+        // it never appears at a wrong size first.
+        private void VideoCenterWindow_SourceInitialized(object sender, EventArgs e)
+        {
+            if (videoCenterWindow != null)
+            {
+                videoCenterWindow.SourceInitialized -= VideoCenterWindow_SourceInitialized;
+                SyncHostBounds();
+            }
+        }
+
         private void VideoCenterWindow_Loaded(
             object sender,
             System.Windows.RoutedEventArgs e)
@@ -284,6 +303,16 @@ namespace StremioVideoCenter
             }
 
             videoCenterWindow.Loaded -= VideoCenterWindow_Loaded;
+
+            // Authoritative placement: Playnite's CLIENT area in physical pixels,
+            // applied with SetWindowPos (no DPI-dependent DIP round trip).
+            // Only if that is unavailable does the older DIP-based placement
+            // below run as a fallback.
+            if (SyncHostBounds())
+            {
+                EnsureVideoCenterForeground();
+                return;
+            }
 
             var source = System.Windows.PresentationSource.FromVisual(videoCenterWindow);
 
@@ -315,6 +344,164 @@ namespace StremioVideoCenter
             // EnsureVideoCenterForeground's own remarks for why the
             // earlier call from OpenVideoCenter() alone was not reliable.
             EnsureVideoCenterForeground();
+        }
+
+        // =========================================================
+        // HOST GEOMETRY (one source of truth: Playnite's client area)
+        // =========================================================
+        //
+        // The Video Center window must cover exactly the area Playnite's
+        // window shows its content in - its CLIENT area, in PHYSICAL pixels.
+        // Previously the bounds were captured once at open time, built from
+        // Playnite's outer ActualWidth/ActualHeight anchored at the client
+        // origin, and applied through device-independent units (whose scale
+        // depends on which monitor's DPI the window is on at that moment). So a
+        // later move/resize/monitor or display change left the window with the
+        // old geometry, and the DIP round trip could be off by the DPI ratio.
+        //
+        // Now: read Playnite's client rectangle with GetClientRect/
+        // ClientToScreen, position our window with SetWindowPos in the same
+        // physical pixels, and repeat whenever anything that can change it
+        // changes. WPF inside the window then lays itself out from the real
+        // window size (everything below is plain ActualWidth/ActualHeight).
+
+        private bool isSyncingHostBounds;
+        private bool hostBoundsSyncQueued;
+        private bool hostGeometryEventsHooked;
+
+        private void SubscribeHostGeometryEvents()
+        {
+            if (hostGeometryEventsHooked || playniteWindow == null || videoCenterWindow == null)
+            {
+                return;
+            }
+
+            hostGeometryEventsHooked = true;
+
+            playniteWindow.LocationChanged += HostGeometryChanged;
+            playniteWindow.SizeChanged += HostGeometrySizeChanged;
+            playniteWindow.StateChanged += HostGeometryChanged;
+            playniteWindow.DpiChanged += HostGeometryDpiChanged;
+
+            videoCenterWindow.StateChanged += HostGeometryChanged;
+            videoCenterWindow.DpiChanged += HostGeometryDpiChanged;
+
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += HostGeometryChanged;
+        }
+
+        private void UnsubscribeHostGeometryEvents()
+        {
+            if (!hostGeometryEventsHooked)
+            {
+                return;
+            }
+
+            hostGeometryEventsHooked = false;
+
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= HostGeometryChanged;
+
+            if (playniteWindow != null)
+            {
+                playniteWindow.LocationChanged -= HostGeometryChanged;
+                playniteWindow.SizeChanged -= HostGeometrySizeChanged;
+                playniteWindow.StateChanged -= HostGeometryChanged;
+                playniteWindow.DpiChanged -= HostGeometryDpiChanged;
+            }
+
+            if (videoCenterWindow != null)
+            {
+                videoCenterWindow.StateChanged -= HostGeometryChanged;
+                videoCenterWindow.DpiChanged -= HostGeometryDpiChanged;
+            }
+        }
+
+        private void HostGeometryChanged(object sender, EventArgs e)
+        {
+            QueueHostBoundsSync();
+        }
+
+        private void HostGeometrySizeChanged(object sender, System.Windows.SizeChangedEventArgs e)
+        {
+            QueueHostBoundsSync();
+        }
+
+        private void HostGeometryDpiChanged(object sender, System.Windows.DpiChangedEventArgs e)
+        {
+            QueueHostBoundsSync();
+        }
+
+        // Coalesces bursts of change events into one sync, run after the
+        // window system has finished applying the change.
+        private void QueueHostBoundsSync()
+        {
+            if (hostBoundsSyncQueued || videoCenterWindow == null)
+            {
+                return;
+            }
+
+            hostBoundsSyncQueued = true;
+
+            videoCenterWindow.Dispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    hostBoundsSyncQueued = false;
+                    SyncHostBounds();
+                }),
+                DispatcherPriority.Background);
+        }
+
+        // Positions the Video Center window over Playnite's client area.
+        // Returns true if it is now (or already was) at the right place, false
+        // if the geometry could not be determined (callers may fall back).
+        private bool SyncHostBounds()
+        {
+            if (videoCenterWindow == null || playniteWindow == null)
+            {
+                return false;
+            }
+
+            // While the player has put this window into its own fullscreen
+            // (maximised) state, that state owns the geometry; leaving it
+            // raises StateChanged and lands back here.
+            if (videoCenterWindow.WindowState != System.Windows.WindowState.Normal)
+            {
+                return true;
+            }
+
+            if (isSyncingHostBounds)
+            {
+                return true;
+            }
+
+            IntPtr zinoHandle = new WindowInteropHelper(videoCenterWindow).Handle;
+            IntPtr hostHandle = new WindowInteropHelper(playniteWindow).Handle;
+
+            StremioVideoCenterControls.Player.PixelRect? target =
+                HostWindowGeometry.GetClientRectOnScreen(hostHandle);
+
+            if (!target.HasValue || zinoHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            StremioVideoCenterControls.Player.PixelRect? current =
+                HostWindowGeometry.GetWindowRectOnScreen(zinoHandle);
+
+            if (current.HasValue && !HostWindowGeometry.NeedsUpdate(current.Value, target.Value))
+            {
+                return true;
+            }
+
+            isSyncingHostBounds = true;
+
+            try
+            {
+                return HostWindowGeometry.SetWindowRect(zinoHandle, target.Value);
+            }
+            finally
+            {
+                isSyncingHostBounds = false;
+            }
         }
 
         private void VideoCenterWindow_KeyDown(
@@ -544,6 +731,8 @@ namespace StremioVideoCenter
      object sender,
      EventArgs e)
         {
+            UnsubscribeHostGeometryEvents();
+
             if (videoCenterWindow != null)
             {
                 videoCenterWindow.KeyDown -= VideoCenterWindow_KeyDown;

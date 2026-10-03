@@ -126,6 +126,8 @@
     <Compile Include="Controls\Player\SubtitleDelay.cs" />
     <Compile Include="Controls\Player\PlayerStateRules.cs" />
     <Compile Include="Controls\Player\VisibleBounds.cs" />
+    <Compile Include="Controls\Player\DisplayScale.cs" />
+    <Compile Include="Services\HostWindowGeometry.cs" />
     <Compile Include="Controls\Player\MenuPlaybackGuard.cs" />
     <Compile Include="Services\MpvProcessService.cs" />
     <Compile Include="Services\StremioVideoCenterLogger.cs" />

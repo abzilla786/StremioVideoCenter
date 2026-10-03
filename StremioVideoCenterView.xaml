@@ -568,7 +568,8 @@
                           Background="#151225">
 
 
-                        <Grid Width="1240"
+                        <Grid x:Name="HeroContentGrid"
+                              Width="1240"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Top">
 
