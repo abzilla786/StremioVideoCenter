@@ -207,15 +207,42 @@
                     </Border>
                 </Grid>
 
-                <!-- Bottom player bar (single row): Play/Pause, seek -/+10s,
-                     mute, volume, current time, seek bar, duration, Audio,
-                     Subtitles, Settings, Fullscreen. -->
+                <!-- Bottom controls area (bottom-anchored, two rows):
+                     row 0 = seek/progress bar spanning the width,
+                     row 1 = interactive buttons plus volume and time.
+                     Rows 120/*/110: 28 + 10 + 48 + 20 margin = 106 fits row 2. -->
                 <Grid x:Name="BottomControls"
                       Grid.Row="2"
-                      Margin="28,0,28,22"
-                      VerticalAlignment="Bottom"
-                      Height="48">
-                    <Grid.ColumnDefinitions>
+                      Margin="28,0,28,20"
+                      VerticalAlignment="Bottom">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="28" />
+                        <RowDefinition Height="10" />
+                        <RowDefinition Height="48" />
+                    </Grid.RowDefinitions>
+
+                    <player:PlayerSlider x:Name="SeekSlider"
+                            AutomationProperties.Name="Seek"
+                            Grid.Row="0"
+                            Style="{StaticResource PlayerSliderStyle}"
+                            Minimum="0"
+                            Maximum="1"
+                            Value="0"
+                            Height="28"
+                            VerticalAlignment="Center"
+                            IsMoveToPointEnabled="True"
+                            ValueChanged="SeekSlider_ValueChanged"
+                            PreviewMouseDown="SeekSlider_PreviewMouseDown"
+                            PreviewMouseUp="SeekSlider_PreviewMouseUp"
+                            LostMouseCapture="SeekSlider_LostMouseCapture"
+                            MinWidth="120"
+                            Focusable="True"
+                            ToolTip="Seek" />
+
+                    <Grid x:Name="BottomButtonRow" Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
@@ -229,8 +256,7 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
+                        </Grid.ColumnDefinitions>
 
                     <Button x:Name="BottomPlayPauseButton"
                             AutomationProperties.Name="Play or pause"
@@ -306,36 +332,17 @@
                                VerticalAlignment="Center"
                                TextAlignment="Right"
                                MinWidth="58"
-                               Margin="14,0,8,0"
+                               Margin="14,0,0,0"
                                FontSize="15" />
-                    <player:PlayerSlider x:Name="SeekSlider"
-                            AutomationProperties.Name="Seek"
-                            Grid.Column="8"
-                            Style="{StaticResource PlayerSliderStyle}"
-                            Minimum="0"
-                            Maximum="1"
-                            Value="0"
-                            Height="28"
-                            VerticalAlignment="Center"
-                            IsMoveToPointEnabled="True"
-                            ValueChanged="SeekSlider_ValueChanged"
-                            PreviewMouseDown="SeekSlider_PreviewMouseDown"
-                            PreviewMouseUp="SeekSlider_PreviewMouseUp"
-                            LostMouseCapture="SeekSlider_LostMouseCapture"
-                            MinWidth="120"
-                            Focusable="True"
-                            ToolTip="Seek" />
-                    <TextBlock x:Name="DurationText"
-                               Grid.Column="9"
-                               Text="00:00"
-                               Foreground="White"
+                    <TextBlock Grid.Column="8"
+                               Text="/"
+                               Foreground="#99FFFFFF"
                                VerticalAlignment="Center"
-                               MinWidth="58"
-                               Margin="8,0,14,0"
+                               Margin="6,0,6,0"
                                FontSize="15" />
                     <Button x:Name="AudioButton"
                             AutomationProperties.Name="Audio tracks"
-                            Grid.Column="10"
+                            Grid.Column="11"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="AUD"
                             ToolTip="Audio track"
@@ -343,14 +350,14 @@
                             Width="48" Height="44" FontSize="14" Focusable="True" />
                     <Button x:Name="SubtitleButton"
                             AutomationProperties.Name="Subtitles"
-                            Grid.Column="11"
+                            Grid.Column="12"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="CC"
                             ToolTip="Subtitles"
                             Click="SubtitleButton_Click"
                             Width="48" Height="44" FontSize="14" Focusable="True" />
                     <Button x:Name="SettingsButton"
-                            Grid.Column="12"
+                            Grid.Column="13"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x2699;"
                             ToolTip="Settings"
@@ -359,12 +366,21 @@
                             Width="44" Height="44" FontSize="17" Focusable="True" />
                     <Button x:Name="FullscreenButton"
                             AutomationProperties.Name="Fullscreen"
-                            Grid.Column="13"
+                            Grid.Column="14"
                             Style="{StaticResource PlayerButtonStyle}"
                             Content="&#x26F6;"
                             ToolTip="Fullscreen"
                             Click="FullscreenButton_Click"
                             Width="44" Height="44" FontSize="20" Focusable="True" />
+                    <TextBlock x:Name="DurationText"
+                               Grid.Column="9"
+                               Text="00:00"
+                               Foreground="White"
+                               VerticalAlignment="Center"
+                               MinWidth="58"
+                               Margin="0"
+                               FontSize="15" />
+                    </Grid>
                 </Grid>
 
                 <!-- Audio/Subtitle/Settings menus render here, above everything
