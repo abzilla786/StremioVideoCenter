@@ -107,6 +107,59 @@ namespace StremioVideoCenterControls.Player
         }
     }
 
+    // Which host the player controls overlay lives in. Window (the default) is
+    // an owned, borderless, transparent WPF Window; it is not subject to the WPF
+    // Popup's 75%-of-screen size restriction. Popup is the original host, kept
+    // as the rollback. Chosen once at start-up from an environment variable
+    // (ZINO_PLAYER_OVERLAY = popup | window | window-active), so rolling back
+    // needs no rebuild.
+    public enum OverlayHostKind
+    {
+        Popup,
+        Window,
+        ActivatableWindow
+    }
+
+    public static class OverlayHostMode
+    {
+        public const string EnvironmentVariable = "ZINO_PLAYER_OVERLAY";
+
+        public static OverlayHostKind Parse(string value)
+        {
+            string v = (value ?? string.Empty).Trim().ToLowerInvariant();
+
+            if (v == "popup")
+                return OverlayHostKind.Popup;
+
+            if (v == "window-active" || v == "activatable")
+                return OverlayHostKind.ActivatableWindow;
+
+            return OverlayHostKind.Window;
+        }
+    }
+
+    // Extended window styles for the overlay window: a tool window (kept out of
+    // Alt+Tab and the taskbar) and, unless it should be activatable, no-activate
+    // so it never takes activation from the Video Center window.
+    public static class OverlayWindowStyle
+    {
+        public const long WsExToolWindow = 0x00000080L;
+        public const long WsExAppWindow = 0x00040000L;
+        public const long WsExNoActivate = 0x08000000L;
+
+        public static long Apply(long exStyle, bool noActivate)
+        {
+            long result = (exStyle | WsExToolWindow) & ~WsExAppWindow;
+
+            if (noActivate)
+                result |= WsExNoActivate;
+            else
+                result &= ~WsExNoActivate;
+
+            return result;
+        }
+    }
+
     // The part of the player surface that is actually visible on screen.
     //
     // The mpv player fills a WPF container whose nominal size can be larger

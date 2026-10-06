@@ -376,6 +376,7 @@ namespace StremioVideoCenterControls
             try { if (_uiState.IsFullscreen) ToggleFullscreen(); } catch { }
 
             try { ControlsPopup.IsOpen = false; } catch { }
+            CloseOverlayWindow();
             try { ControlsPopup.Opened -= ControlsPopup_Opened; } catch { }
             try { ControlsPopup.Closed -= ControlsPopup_Closed; } catch { }
             DetachPopupSizeHook();
@@ -431,7 +432,7 @@ namespace StremioVideoCenterControls
             SyncControlsPopupSize();
             ScheduleOverlayCheck("host window changed");
 
-            if (ControlsPopup.IsOpen)
+            if (_overlayHostKind == OverlayHostKind.Popup && ControlsPopup.IsOpen)
             {
                 _popupNudge = !_popupNudge;
                 ControlsPopup.HorizontalOffset += _popupNudge ? 0.01 : -0.01;
@@ -560,6 +561,14 @@ namespace StremioVideoCenterControls
             if (ControlsPopup == null || RootGrid == null)
                 return;
 
+            // Window host: the same visible-viewport rectangle, applied to the
+            // overlay window instead of the popup (see OVERLAY WINDOW HOST).
+            if (_overlayHostKind != OverlayHostKind.Popup)
+            {
+                SyncOverlayWindowBounds();
+                return;
+            }
+
             double width = Math.Max(1.0, RootGrid.ActualWidth);
             double height = Math.Max(1.0, RootGrid.ActualHeight);
             double offsetX = 0;
@@ -661,8 +670,15 @@ namespace StremioVideoCenterControls
 
                 try
                 {
-                    FitOverlayToPopupWindow();
-                    LogOverlayGeometry(reason);
+                    if (_overlayHostKind == OverlayHostKind.Popup)
+                    {
+                        FitOverlayToPopupWindow();
+                        LogOverlayGeometry(reason);
+                    }
+                    else
+                    {
+                        LogOverlayWindowState(reason);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -750,6 +766,276 @@ namespace StremioVideoCenterControls
             return rect.HasValue
                 ? string.Format("({0:0},{1:0},{2:0},{3:0})[{4:0}x{5:0}]", rect.Value.Left, rect.Value.Top, rect.Value.Right, rect.Value.Bottom, rect.Value.Width, rect.Value.Height)
                 : "n/a";
+        }
+
+        // ---------------------------------------------------------------------
+        // OVERLAY WINDOW HOST (reversible spike; replaces the Popup host)
+        //
+        // A WPF Popup is limited to 75% of the screen area, which left the
+        // controls ~25% short of the viewport. The same ControlsOverlay is
+        // instead hosted in an owned, borderless, transparent WPF Window that is
+        // positioned on the visible player rectangle in physical pixels with the
+        // existing VisibleBounds / HostWindowGeometry code. A top-level owned
+        // window is always above its owner, so it stays above the native mpv
+        // child window exactly like the Popup did. Nothing about mpv, the host
+        // window or the controls themselves changes.
+        //
+        // Rollback without rebuilding: set the environment variable
+        // ZINO_PLAYER_OVERLAY=popup (window-active makes the window activatable).
+        // ---------------------------------------------------------------------
+
+        private static readonly OverlayHostKind _overlayHostKind =
+            OverlayHostMode.Parse(Environment.GetEnvironmentVariable(OverlayHostMode.EnvironmentVariable));
+
+        private OverlayHostWindow _overlayWindow;
+        private int _overlayWindowLogCount;
+        private string _lastOverlayWindowLog;
+
+        // Owned, borderless, transparent, never in the taskbar or Alt+Tab.
+        private sealed class OverlayHostWindow : Window
+        {
+            private const int GwlExStyle = -20;
+            private readonly bool _noActivate;
+
+            public OverlayHostWindow(bool noActivate)
+            {
+                _noActivate = noActivate;
+
+                WindowStyle = WindowStyle.None;
+                ResizeMode = ResizeMode.NoResize;
+                AllowsTransparency = true;
+                Background = Brushes.Transparent;
+                ShowInTaskbar = false;
+                ShowActivated = false;
+                Topmost = false;
+                SizeToContent = SizeToContent.Manual;
+                WindowStartupLocation = WindowStartupLocation.Manual;
+            }
+
+            protected override void OnSourceInitialized(EventArgs e)
+            {
+                base.OnSourceInitialized(e);
+
+                try
+                {
+                    IntPtr handle = new WindowInteropHelper(this).Handle;
+                    long current = GetExStyle(handle);
+                    long updated = OverlayWindowStyle.Apply(current, _noActivate);
+                    if (updated != current)
+                        SetExStyle(handle, updated);
+                }
+                catch { }
+            }
+
+            [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+            private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+            [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+            private static extern int GetWindowLong32(IntPtr hWnd, int nIndex);
+
+            [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+            private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr value);
+
+            [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
+            private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int value);
+
+            private static long GetExStyle(IntPtr handle)
+            {
+                return IntPtr.Size == 8
+                    ? GetWindowLongPtr64(handle, GwlExStyle).ToInt64()
+                    : GetWindowLong32(handle, GwlExStyle);
+            }
+
+            private static void SetExStyle(IntPtr handle, long value)
+            {
+                if (IntPtr.Size == 8)
+                    SetWindowLongPtr64(handle, GwlExStyle, new IntPtr(value));
+                else
+                    SetWindowLong32(handle, GwlExStyle, unchecked((int)value));
+            }
+        }
+
+        // Creates the overlay window (once) and moves ControlsOverlay out of the
+        // popup into it. Needs the host window to exist and be shown, so it is
+        // created lazily on first use; returns false until then.
+        private bool EnsureOverlayWindow()
+        {
+            if (_overlayWindow != null) return true;
+            if (_disposed) return false;
+
+            Window owner = Window.GetWindow(this);
+            if (owner == null || !owner.IsVisible) return false;
+
+            try
+            {
+                OverlayHostWindow window = new OverlayHostWindow(_overlayHostKind != OverlayHostKind.ActivatableWindow);
+
+                // The popup child inherited these from the UserControl; a window
+                // would not, so carry them over to keep the controls identical.
+                window.FontFamily = FontFamily;
+                window.FontSize = FontSize;
+                window.FontWeight = FontWeight;
+                window.FontStyle = FontStyle;
+                window.Foreground = Foreground;
+                window.FlowDirection = FlowDirection;
+                window.UseLayoutRounding = UseLayoutRounding;
+
+                ControlsPopup.IsOpen = false;
+                ControlsPopup.Child = null;
+
+                // The overlay now fills whatever size the window is given.
+                ControlsOverlay.ClearValue(FrameworkElement.WidthProperty);
+                ControlsOverlay.ClearValue(FrameworkElement.HeightProperty);
+
+                window.Content = ControlsOverlay;
+                window.Owner = owner;
+
+                _overlayWindow = window;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Overlay window creation failed: " + UserFacingErrors.ForLog(ex));
+                return false;
+            }
+        }
+
+        // Applies the visible player rectangle (physical pixels) to the overlay
+        // window. Same rectangle the MPV host is laid out in; no second geometry
+        // system, and no DIP round trip.
+        private void SyncOverlayWindowBounds()
+        {
+            if (_overlayWindow == null || RootGrid == null || _disposed)
+                return;
+
+            try
+            {
+                PixelRect nominal;
+                PixelRect? visible = GetVisiblePlayerBounds(out nominal);
+
+                PixelRect target;
+                if (visible.HasValue && !visible.Value.IsEmpty)
+                    target = visible.Value;
+                else if (!nominal.IsEmpty)
+                    target = nominal;
+                else
+                    return;
+
+                IntPtr handle = new WindowInteropHelper(_overlayWindow).EnsureHandle();
+                PixelRect? current = HostWindowGeometry.GetWindowRectOnScreen(handle);
+
+                if (current.HasValue && !HostWindowGeometry.NeedsUpdate(current.Value, target))
+                    return;
+
+                HostWindowGeometry.SetWindowRect(handle, target);
+                ScheduleOverlayCheck("overlay window bounds");
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Overlay window sync failed: " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
+        // Opens the controls host: the popup, or the overlay window.
+        private void OpenControlsHost()
+        {
+            if (_disposed) return;
+
+            if (_overlayHostKind == OverlayHostKind.Popup)
+            {
+                ControlsPopup.IsOpen = true;
+                return;
+            }
+
+            if (!EnsureOverlayWindow()) return;
+
+            SyncOverlayWindowBounds();
+
+            if (_overlayWindow.IsVisible) return;
+
+            try
+            {
+                _overlayWindow.Show();
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Overlay window show failed: " + UserFacingErrors.ForLog(ex));
+                return;
+            }
+
+            // Show can re-apply WPF's own default placement; the physical-pixel
+            // rectangle is authoritative.
+            SyncOverlayWindowBounds();
+
+            if (_overlayHostKind == OverlayHostKind.ActivatableWindow)
+            {
+                try { _overlayWindow.Activate(); } catch { }
+            }
+
+            LogDisplayDiagnostics();
+            ScheduleOverlayCheck("overlay window opened");
+        }
+
+        private void CloseOverlayWindow()
+        {
+            OverlayHostWindow window = _overlayWindow;
+            _overlayWindow = null;
+
+            if (window == null) return;
+
+            try { window.Content = null; } catch { }
+            try { window.Owner = null; } catch { }
+            try { window.Close(); } catch { }
+        }
+
+        // Diagnostics for the window host (a window rect and client rect that
+        // match the visible rectangle show the Popup limit is gone).
+        private void LogOverlayWindowState(string reason)
+        {
+            if (_overlayWindowLogCount >= 40 || _overlayWindow == null) return;
+
+            try
+            {
+                HwndSource source = PresentationSource.FromVisual(ControlsOverlay) as HwndSource;
+                IntPtr handle = source != null ? source.Handle : IntPtr.Zero;
+                Window owner = _overlayWindow.Owner;
+                IntPtr ownerHandle = owner != null ? new WindowInteropHelper(owner).Handle : IntPtr.Zero;
+
+                PixelRect nominal;
+                PixelRect? visible = GetVisiblePlayerBounds(out nominal);
+
+                string bar = "n/a";
+                try
+                {
+                    Point topLeft = BottomControls.TranslatePoint(new Point(0, 0), ControlsOverlay);
+                    bar = string.Format("top={0:0} bottom={1:0} vis={2}",
+                        topLeft.Y, topLeft.Y + BottomControls.ActualHeight, BottomControls.IsVisible);
+                }
+                catch { }
+
+                double scaleX = source != null && source.CompositionTarget != null ? source.CompositionTarget.TransformToDevice.M11 : 0;
+
+                string text = string.Format(
+                    "overlay-window {0}: kind={1} visible={2} window={3} client={4} owner={5} nominal={6} visibleRect={7} " +
+                    "overlayActual={8:0}x{9:0} bottomBar[{10}] dpi={11} scale={12:0.###} opacity={13:0.##}",
+                    reason, _overlayHostKind, _overlayWindow.IsVisible,
+                    Describe(handle != IntPtr.Zero ? HostWindowGeometry.GetWindowRectOnScreen(handle) : null),
+                    Describe(handle != IntPtr.Zero ? HostWindowGeometry.GetClientRectOnScreen(handle) : null),
+                    Describe(ownerHandle != IntPtr.Zero ? HostWindowGeometry.GetWindowRectOnScreen(ownerHandle) : null),
+                    Describe(nominal), Describe(visible),
+                    ControlsOverlay.ActualWidth, ControlsOverlay.ActualHeight, bar,
+                    SafeDpi(handle), scaleX, ControlsOverlay.Opacity);
+
+                if (text == _lastOverlayWindowLog) return;
+
+                _lastOverlayWindowLog = text;
+                _overlayWindowLogCount++;
+                StremioVideoCenterLogger.Info("[PLAYER-GEOMETRY] " + text);
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("[PLAYER-GEOMETRY] overlay-window log failed: " + UserFacingErrors.ForLog(ex));
+            }
         }
 
         // ---------------------------------------------------------------------
@@ -2002,7 +2288,7 @@ namespace StremioVideoCenterControls
             {
                 try
                 {
-                    ControlsPopup.IsOpen = true;
+                    OpenControlsHost();
                     _focus.FocusRootDefault();
                 }
                 catch { }
@@ -2069,6 +2355,13 @@ namespace StremioVideoCenterControls
             _overlayPolicy.NoteActivity(DateTime.UtcNow);
 
             SyncControlsPopupSize();
+
+            if (_overlayHostKind != OverlayHostKind.Popup)
+            {
+                OpenControlsHost();
+                SetOverlayVisible(true);
+                return;
+            }
 
             bool wasOpen = ControlsPopup.IsOpen;
 
