@@ -5,6 +5,7 @@ using StremioVideoCenterControls.Player;
 using StremioVideoCenterControls.Player.Menus;
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -2368,18 +2369,18 @@ namespace StremioVideoCenterControls
 
         // Any interaction: restart the idle timer and make sure the overlay
         // is visible.
-        private void ShowControls()
+        private void ShowControls([CallerMemberName] string caller = null)
         {
             if (_disposed) return;
 
-            _overlayPolicy.NoteActivity(DateTime.UtcNow);
+            NoteOverlayActivity("ShowControls<-" + caller);
 
             SyncControlsPopupSize();
 
             if (_overlayHostKind != OverlayHostKind.Popup)
             {
                 OpenControlsHost();
-                SetOverlayVisible(true);
+                SetOverlayVisible(true, "ShowControls<-" + caller);
                 return;
             }
 
@@ -2403,22 +2404,24 @@ namespace StremioVideoCenterControls
                 ScheduleOverlayCheck("popup opened");
             }
 
-            SetOverlayVisible(true);
+            SetOverlayVisible(true, "ShowControls<-" + caller);
         }
 
         // Retained name for the many "interaction happened" call sites; the
         // idle timer itself is now owned by OverlayVisibilityPolicy.
-        private void RestartHideTimer()
+        private void RestartHideTimer([CallerMemberName] string caller = null)
         {
             if (_disposed) return;
-            _overlayPolicy.NoteActivity(DateTime.UtcNow);
+            NoteOverlayActivity("RestartHideTimer<-" + caller);
         }
 
-        private void SetOverlayVisible(bool visible)
+        private void SetOverlayVisible(bool visible, string trigger = null)
         {
             if (_overlayVisible == visible) return;
 
             _overlayVisible = visible;
+
+            LogFadeTransition(visible, trigger);
             _uiState.ControlsVisible = visible;
 
             // A faded-out overlay must not intercept clicks meant for nothing.
@@ -2520,14 +2523,87 @@ namespace StremioVideoCenterControls
                 state != null && state.IsPlaybackEstablished && !state.ReachedEndOfFile;
             bool paused = state == null || !state.IsPlaying;
 
+            bool menuOpen = _uiState.OpenMenu != PlayerMenu.None;
+            bool seeking = _uiState.IsSeekBarBeingDragged;
+
             bool visible = _overlayPolicy.ShouldBeVisible(
                 DateTime.UtcNow,
                 playbackRunning,
                 paused,
-                _uiState.OpenMenu != PlayerMenu.None,
-                _uiState.IsSeekBarBeingDragged);
+                menuOpen,
+                seeking);
 
-            SetOverlayVisible(visible);
+            LogFadeInputsIfChanged(state, playbackRunning, paused, menuOpen, seeking, visible);
+
+            SetOverlayVisible(visible, "tick");
+        }
+
+        // =====================================================================
+        // [PLAYER-FADE] DIAGNOSTICS (logging only)
+        //
+        // Every show/hide of the controls is logged with the policy inputs and
+        // WHO caused it: ShowControls/RestartHideTimer record their caller
+        // (compiler-supplied method name), the cursor poll records the cursor
+        // position and delta, and any change of the policy inputs (playing/
+        // paused/established/eof/menu/seeking) is logged on its own. This
+        // identifies the source of an unexpected fade cycle without altering the
+        // fade behaviour.
+        // =====================================================================
+
+        private string _lastActivityReason = "start";
+        private DateTime _lastActivityUtc = DateTime.UtcNow;
+        private string _lastCursorDetail = "none";
+        private string _lastFadeInputs;
+        private int _fadeLogCount;
+        private const int FadeLogLimit = 400;
+
+        private void NoteOverlayActivity(string reason)
+        {
+            _overlayPolicy.NoteActivity(DateTime.UtcNow);
+            _lastActivityReason = reason;
+            _lastActivityUtc = DateTime.UtcNow;
+        }
+
+        private void FadeLog(string text)
+        {
+            if (_fadeLogCount >= FadeLogLimit) return;
+            _fadeLogCount++;
+            StremioVideoCenterLogger.Info("[PLAYER-FADE] " + text);
+        }
+
+        private void LogFadeTransition(bool visible, string trigger)
+        {
+            try
+            {
+                PlaybackState state = _session != null ? _session.State : null;
+                FadeLog(string.Format(
+                    "{0} t={1:HH:mm:ss.fff} trigger={2} lastActivity={3} ageMs={4:0} cursor={5} " +
+                    "established={6} playing={7} eof={8} menu={9} seeking={10}",
+                    visible ? "SHOW" : "HIDE", DateTime.Now, trigger ?? "?",
+                    _lastActivityReason, (DateTime.UtcNow - _lastActivityUtc).TotalMilliseconds,
+                    _lastCursorDetail,
+                    state != null && state.IsPlaybackEstablished,
+                    state != null && state.IsPlaying,
+                    state != null && state.ReachedEndOfFile,
+                    _uiState.OpenMenu, _uiState.IsSeekBarBeingDragged));
+            }
+            catch { }
+        }
+
+        private void LogFadeInputsIfChanged(
+            PlaybackState state, bool running, bool paused, bool menuOpen, bool seeking, bool visible)
+        {
+            string inputs = string.Format(
+                "running={0} paused={1} menu={2} seeking={3} established={4} playing={5} eof={6}",
+                running, paused, menuOpen, seeking,
+                state != null && state.IsPlaybackEstablished,
+                state != null && state.IsPlaying,
+                state != null && state.ReachedEndOfFile);
+
+            if (inputs == _lastFadeInputs) return;
+
+            _lastFadeInputs = inputs;
+            FadeLog(string.Format("INPUTS t={0:HH:mm:ss.fff} {1} policyVisible={2}", DateTime.Now, inputs, visible));
         }
 
         // Samples the OS cursor: WPF never sees mouse movement over the native
@@ -2539,13 +2615,25 @@ namespace StremioVideoCenterControls
             if (!GetCursorPos(out point)) return;
 
             bool moved = _haveCursorSample && (point.X != _lastCursorX || point.Y != _lastCursorY);
+            int deltaX = _haveCursorSample ? point.X - _lastCursorX : 0;
+            int deltaY = _haveCursorSample ? point.Y - _lastCursorY : 0;
 
             _haveCursorSample = true;
             _lastCursorX = point.X;
             _lastCursorY = point.Y;
 
-            if (moved && IsScreenPointOverPlayer(point))
-                ShowControls();
+            if (!moved) return;
+
+            bool overPlayer = IsScreenPointOverPlayer(point);
+            _lastCursorDetail = string.Format("({0},{1}) d=({2},{3}) overPlayer={4}", point.X, point.Y, deltaX, deltaY, overPlayer);
+
+            // Cursor activity that arrives while the controls are hidden is the
+            // case worth seeing; while visible it would only flood the log.
+            if (!_overlayVisible)
+                FadeLog(string.Format("CURSOR-MOVE-WHILE-HIDDEN t={0:HH:mm:ss.fff} {1}", DateTime.Now, _lastCursorDetail));
+
+            if (overPlayer)
+                ShowControls("PollCursorActivity");
         }
 
         private bool IsScreenPointOverPlayer(NativePoint point)

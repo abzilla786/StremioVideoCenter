@@ -21,45 +21,79 @@ namespace StremioVideoCenterControls.Player
         }
     }
 
-    // The Home hero's media frame has a design size (1240 x 698). It must never
-    // be larger than the space actually available, otherwise it overflows a
-    // narrow viewport and is cut off, or dominates a short one. The size is
-    // scaled DOWN uniformly (the design aspect ratio is kept, so artwork is not
-    // distorted) and never scaled up past the design size.
+    // Result of HeroLayout.Compute: the uniform scale applied to the hero's
+    // design layout, and the resulting on-screen sizes (WPF DIPs).
+    public struct HeroLayoutResult
+    {
+        public double Scale;
+        public double Width;       // hero media frame width
+        public double Height;      // hero media frame height (aspect preserved)
+        public double ContentTop;  // where the info panel starts: the frame height
+        public double ContentWidth;// info panel content width (= frame width)
+    }
+
+    // Responsive sizing of the Home hero. 1240 x 698 is the hero's DESIGN
+    // REFERENCE, not a runtime size: the hero (media frame, arrows, info text)
+    // is laid out at that size and scaled UNIFORMLY, so its aspect ratio and the
+    // relationships between its parts never change.
+    //
+    // The scale comes only from the available viewport (WPF DIPs, as given by
+    // the layout - no display, device or resolution is ever named):
+    //   - by height: the hero keeps the share of the viewport height the
+    //     original design had (a 698 frame in a 1440-high viewport), which
+    //     leaves room for the navigation bar and the first content rows;
+    //   - by width: it never uses more than WidthFraction of the viewport width,
+    //     so the carousel arrows at its edges stay inside the viewport.
+    // The smaller of the two wins, bounded by MinScale / MaxScale.
     public static class HeroLayout
     {
         public const double DesignWidth = 1240;
         public const double DesignHeight = 698;
 
-        // Fraction of the viewport height the hero may occupy, leaving the
-        // navigation bar and the first rows visible.
-        public const double MaxHeightFraction = 0.75;
+        // The viewport height the hero's height proportion was designed against.
+        public const double ReferenceViewportHeight = 1440;
 
-        public const double MinWidth = 320;
+        // Largest share of the viewport width the hero may use.
+        public const double WidthFraction = 0.96;
 
-        // The hero container's design minimum height (750) is the media frame
-        // height plus a fixed margin; it scales with the frame.
-        public const double DesignContainerMinHeight = 750;
+        public const double MinScale = 0.4;
+        public const double MaxScale = 2.0;
 
-        public static double ContainerMinHeight(double heroHeight)
+        // Carousel arrow geometry in design units (they scale with the hero):
+        // they sit ArrowInset inside the frame edge, never flush against it.
+        public const double ArrowWidth = 68;
+        public const double ArrowInset = 18;
+
+        private static bool IsUsable(double value)
         {
-            return Math.Round(heroHeight * DesignContainerMinHeight / DesignHeight);
+            return value > 0 && !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
-        public static void Compute(
-            double viewportWidth, double viewportHeight,
-            out double width, out double height)
+        public static HeroLayoutResult Compute(double viewportWidth, double viewportHeight)
         {
-            double scale = 1.0;
+            double scale = double.MaxValue;
 
-            if (viewportWidth > 0 && !double.IsInfinity(viewportWidth))
-                scale = Math.Min(scale, viewportWidth / DesignWidth);
+            if (IsUsable(viewportHeight))
+                scale = Math.Min(scale, viewportHeight / ReferenceViewportHeight);
 
-            if (viewportHeight > 0 && !double.IsInfinity(viewportHeight))
-                scale = Math.Min(scale, (viewportHeight * MaxHeightFraction) / DesignHeight);
+            if (IsUsable(viewportWidth))
+                scale = Math.Min(scale, WidthFraction * viewportWidth / DesignWidth);
 
-            width = Math.Max(MinWidth, Math.Round(DesignWidth * scale));
-            height = Math.Round(width * DesignHeight / DesignWidth);
+            // Viewport unknown: show the design size.
+            if (scale == double.MaxValue)
+                scale = 1.0;
+
+            scale = Math.Max(MinScale, Math.Min(MaxScale, scale));
+
+            double width = Math.Round(DesignWidth * scale);
+
+            HeroLayoutResult result = new HeroLayoutResult();
+            result.Scale = scale;
+            result.Width = width;
+            result.Height = Math.Round(width * DesignHeight / DesignWidth);
+            result.ContentTop = result.Height;
+            result.ContentWidth = width;
+            return result;
         }
     }
 }

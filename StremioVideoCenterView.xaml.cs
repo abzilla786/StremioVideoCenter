@@ -292,24 +292,43 @@ namespace StremioVideoCenter
             ApplyResponsiveHeroSize(e.NewSize.Width, e.NewSize.Height);
         }
 
-        // Scales the hero's three fixed-size elements down (uniformly, keeping
-        // the design aspect ratio) so the hero never exceeds the actual
-        // viewport. Sizes come from the real ActualWidth/ActualHeight of the
-        // scroll viewer - nothing here knows about any display resolution.
+        private double _lastHeroViewportWidth = -1;
+        private double _lastHeroViewportHeight = -1;
+
+        // Scales the hero (design 1240 x 698, see HeroLayout) uniformly from the
+        // viewport WPF actually provides. Everything is in DIPs, straight from
+        // layout, so DPI, monitor and window changes arrive as SizeChanged and are
+        // handled the same way; nothing here knows about any display, device or
+        // resolution. The info panel follows the frame through the layout rows.
         private void ApplyResponsiveHeroSize(double viewportWidth, double viewportHeight)
         {
-            double width;
-            double height;
+            StremioVideoCenterControls.Player.HeroLayoutResult layout =
+                StremioVideoCenterControls.Player.HeroLayout.Compute(viewportWidth, viewportHeight);
 
-            StremioVideoCenterControls.Player.HeroLayout.Compute(
-                viewportWidth, viewportHeight, out width, out height);
+            HeroCanvasScale.ScaleX = layout.Scale;
+            HeroCanvasScale.ScaleY = layout.Scale;
+            HeroContentScale.ScaleX = layout.Scale;
+            HeroContentScale.ScaleY = layout.Scale;
 
-            HeroMediaFrame.Width = width;
-            HeroMediaFrame.Height = height;
-            HeroCarouselControls.Width = width;
-            HeroCarouselControls.Height = height;
-            HeroContentGrid.Width = width;
-            HeroContainer.MinHeight = StremioVideoCenterControls.Player.HeroLayout.ContainerMinHeight(height);
+            if (Math.Abs(viewportWidth - _lastHeroViewportWidth) < 0.5 &&
+                Math.Abs(viewportHeight - _lastHeroViewportHeight) < 0.5)
+            {
+                return;
+            }
+
+            _lastHeroViewportWidth = viewportWidth;
+            _lastHeroViewportHeight = viewportHeight;
+
+            // Diagnostic: the viewport and result actually used for the hero.
+            try
+            {
+                DpiScale dpi = VisualTreeHelper.GetDpi(this);
+                StremioVideoCenterLogger.Info(string.Format(
+                    "[HOME-LAYOUT] viewport={0:0.#}x{1:0.#} dipScale={2:0.###} hero={3:0}x{4:0} scale={5:0.###} contentTop={6:0}",
+                    viewportWidth, viewportHeight, dpi.DpiScaleX,
+                    layout.Width, layout.Height, layout.Scale, layout.ContentTop));
+            }
+            catch { }
         }
 
         public StremioVideoCenterView(
