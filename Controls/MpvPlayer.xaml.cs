@@ -4,6 +4,7 @@ using StremioVideoCenter.Services;
 using StremioVideoCenterControls.Player;
 using StremioVideoCenterControls.Player.Menus;
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -115,6 +116,13 @@ namespace StremioVideoCenterControls
         // before the PlaybackStateChanged ticks that follow it.
         public event EventHandler PlaybackEstablished;
 
+        // Raised for arrow keys that reach the controls overlay. The overlay is
+        // its own PresentationSource (Popup or owned Window), so those keys never
+        // pass through the Video Center view's PreviewKeyDown; the view uses this
+        // to apply that same handler (controller-echo suppression and keyboard ->
+        // D-pad routing) to overlay keys. See Overlay_PreviewKeyDown.
+        public event KeyEventHandler OverlayKeyPreview;
+
         // Null before a session exists / after DisposePlayer. Exposes the
         // exact same PlaybackState instance RefreshFromState already
         // reads from - not a copy, not a second source of truth.
@@ -138,6 +146,8 @@ namespace StremioVideoCenterControls
             // follows its lifetime (see AttachPopupSizeHook).
             ControlsPopup.Opened += ControlsPopup_Opened;
             ControlsPopup.Closed += ControlsPopup_Closed;
+
+            RegisterOverlayToolTips();
 
             Loaded += MpvPlayer_Loaded;
             Unloaded += MpvPlayer_Unloaded;
@@ -1503,12 +1513,12 @@ namespace StremioVideoCenterControls
             PreviousEpisodeButton.IsEnabled = episode.HasPrevious;
             NextEpisodeButton.IsEnabled = episode.HasNext;
 
-            PreviousEpisodeButton.ToolTip = episode.HasPrevious
+            SetOverlayToolTip(PreviousEpisodeButton, episode.HasPrevious
                 ? "Previous episode \u2014 " + EpisodeContext.FormatCode(episode.Previous)
-                : "No previous episode";
-            NextEpisodeButton.ToolTip = episode.HasNext
+                : "No previous episode");
+            SetOverlayToolTip(NextEpisodeButton, episode.HasNext
                 ? "Next episode \u2014 " + EpisodeContext.FormatCode(episode.Next)
-                : "No next episode";
+                : "No next episode");
 
             // If focus was on a button that has just become disabled, hand it
             // back to the default control so it is never stranded.
@@ -2022,7 +2032,17 @@ namespace StremioVideoCenterControls
         // that actually fires while focus is on a control inside the popup.
         private void Overlay_PreviewKeyDown(object sender, KeyEventArgs e)
         {
-            HandlePlayerKeyDown(e);
+            bool directional =
+                e.Key == Key.Left || e.Key == Key.Right || e.Key == Key.Up || e.Key == Key.Down;
+
+            KeyEventHandler host = OverlayKeyPreview;
+            bool forwarded = PlayerStateRules.ShouldForwardKeyToHost(directional, host != null);
+
+            if (forwarded)
+                host(this, e);
+
+            if (PlayerStateRules.ShouldHandleKeyLocally(forwarded, e.Handled))
+                HandlePlayerKeyDown(e);
         }
 
         // Defensive fallback for the (normally brief) window where focus is on
@@ -2412,6 +2432,80 @@ namespace StremioVideoCenterControls
             };
 
             ControlsOverlay.BeginAnimation(UIElement.OpacityProperty, animation);
+
+            FadeOverlayDecorations(visible, animation);
+        }
+
+        // =====================================================================
+        // FADE: things drawn OUTSIDE ControlsOverlay's visual tree
+        //
+        // Fading ControlsOverlay.Opacity only fades what lives under it. Two
+        // pieces of keyboard-focus feedback do not:
+        //   - the focus rectangle of the sliders (FocusVisualStyle) is an Adorner,
+        //     drawn by the AdornerLayer that sits ABOVE the overlay content in the
+        //     host's AdornerDecorator, so it ignores the overlay's Opacity;
+        //   - ToolTips (the label shown for the focused control) are separate
+        //     top-level popup windows owned by the control.
+        // Both are made to follow the same fade, driven by the same
+        // SetOverlayVisible call, so the existing fade lifecycle stays the only one.
+        // =====================================================================
+
+        private readonly List<ToolTip> _overlayToolTips = new List<ToolTip>();
+
+        // Gives every overlay control an explicit, closable ToolTip instance
+        // (a plain string ToolTip creates an internal one that cannot be closed).
+        private void RegisterOverlayToolTips()
+        {
+            FrameworkElement[] owners =
+            {
+                CloseButton, BottomPlayPauseButton, Back10Button, Forward10Button,
+                PreviousEpisodeButton, NextEpisodeButton, MuteButton, VolumeSlider,
+                SeekSlider, AudioButton, SubtitleButton, SettingsButton, FullscreenButton
+            };
+
+            foreach (FrameworkElement owner in owners)
+            {
+                if (owner == null || owner.ToolTip == null) continue;
+
+                ToolTip tip = owner.ToolTip as ToolTip;
+                if (tip == null)
+                {
+                    tip = new ToolTip { Content = owner.ToolTip };
+                    owner.ToolTip = tip;
+                }
+
+                _overlayToolTips.Add(tip);
+            }
+        }
+
+        private static void SetOverlayToolTip(FrameworkElement owner, string text)
+        {
+            ToolTip tip = owner.ToolTip as ToolTip;
+            if (tip != null)
+                tip.Content = text;
+            else
+                owner.ToolTip = text;
+        }
+
+        private void FadeOverlayDecorations(bool visible, DoubleAnimation animation)
+        {
+            try
+            {
+                // No new tooltips while faded; restored when the controls return.
+                ToolTipService.SetIsEnabled(ControlsOverlay, visible);
+
+                if (!visible)
+                {
+                    foreach (ToolTip tip in _overlayToolTips)
+                        tip.IsOpen = false;
+                }
+
+                System.Windows.Documents.AdornerLayer adorners =
+                    System.Windows.Documents.AdornerLayer.GetAdornerLayer(ControlsOverlay);
+                if (adorners != null)
+                    adorners.BeginAnimation(UIElement.OpacityProperty, animation);
+            }
+            catch { }
         }
 
         private void HideControlsTimer_Tick(object sender, EventArgs e)

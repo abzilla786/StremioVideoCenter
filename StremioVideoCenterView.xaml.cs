@@ -4087,6 +4087,13 @@ namespace StremioVideoCenter
                 _stremioPlayer.EndOfFileReached +=
                     StremioPlayer_EndOfFileReached;
 
+                // The player's controls overlay is its own PresentationSource, so
+                // its arrow keys never pass through this view's PreviewKeyDown.
+                // Forward them to the same handler (controller-echo suppression
+                // and keyboard -> D-pad routing) so one input = one action.
+                _stremioPlayer.OverlayKeyPreview +=
+                    StremioVideoCenterView_PreviewKeyDown;
+
                 PlaybackTestHost.Children.Add(
                     _stremioPlayer);
 
@@ -5197,6 +5204,8 @@ namespace StremioVideoCenter
                         StremioPlayer_NextEpisodeRequested;
                     _stremioPlayer.EndOfFileReached -=
                         StremioPlayer_EndOfFileReached;
+                    _stremioPlayer.OverlayKeyPreview -=
+                        StremioVideoCenterView_PreviewKeyDown;
                     _stremioPlayer.DisposePlayer();
                 }
                 catch

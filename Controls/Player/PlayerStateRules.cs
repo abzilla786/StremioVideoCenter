@@ -45,6 +45,23 @@ namespace StremioVideoCenterControls.Player
             return Math.Max(0, target);
         }
 
+        // Keys that reach the controls overlay arrive in the overlay window's own
+        // input tree, which the Video Center view's PreviewKeyDown never sees.
+        // Arrow keys are therefore forwarded to the view's existing arrow
+        // handling (controller-echo suppression, keyboard -> D-pad routing) so
+        // one physical input produces exactly one navigation action.
+        public static bool ShouldForwardKeyToHost(bool isDirectionalKey, bool hostCanHandle)
+        {
+            return isDirectionalKey && hostCanHandle;
+        }
+
+        // The overlay's own key handling runs unless the host already consumed
+        // a forwarded key.
+        public static bool ShouldHandleKeyLocally(bool forwardedToHost, bool handledByHost)
+        {
+            return !(forwardedToHost && handledByHost);
+        }
+
         // Centre play-state indicator glyph. It reflects actual state only:
         //   not yet established (loading)  -> ellipsis
         //   playing                        -> play
