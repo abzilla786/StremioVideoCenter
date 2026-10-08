@@ -416,12 +416,12 @@ namespace StremioVideoCenter.ViewModels
             // older incomplete entry updates its LastPlayedUtc, which moves
             // it back toward the front of this ordering on the very next
             // LoadContinueWatching call.
-            List<WatchStateEntry> incompleteEntries = watchStateService
-                .GetEntriesForProfile(profileId)
-                .Where(entry => entry != null && !entry.IsCompleted)
-                .OrderByDescending(entry => entry.LastPlayedUtc)
-                .Take(25)
-                .ToList();
+            // Slice 18 fix: ONE card per series (the latest played episode, while
+            // incomplete) instead of one per episode - see
+            // ContinueWatchingProjection. Per-episode Watch State is untouched.
+            List<WatchStateEntry> incompleteEntries = ContinueWatchingProjection.Project(
+                watchStateService.GetEntriesForProfile(profileId),
+                ContinueWatchingProjection.MaxCards);
 
             foreach (WatchStateEntry entry in incompleteEntries)
             {
@@ -439,9 +439,14 @@ namespace StremioVideoCenter.ViewModels
                     Type = entry.Type,
                     Season = entry.SeasonNumber,
                     Episode = entry.EpisodeNumber,
-                    Progress = entry.DurationSeconds > 0
-                        ? entry.PositionSeconds / entry.DurationSeconds
-                        : 0
+                    // Slice 18B: shared calculation (safe for missing
+                    // duration, clamped to 100%) - Watch State stays the
+                    // only source of truth.
+                    Progress = PlaybackProgress.ForEntry(entry),
+
+                    // Selecting this card resumes this exact entry via
+                    // the shared resume pipeline.
+                    ResumeCanonicalKey = entry.CanonicalKey
                 };
 
                 ContinueWatching.Add(mediaItem);

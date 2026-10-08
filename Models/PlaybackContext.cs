@@ -1,0 +1,130 @@
+using System;
+using System.Collections.Generic;
+
+namespace StremioVideoCenter.Models
+{
+    // Everything the player needs to know about ONE playback attempt,
+    // captured once when the attempt starts and passed down unchanged:
+    //   StremioVideoCenterView -> MpvPlayer -> PlayerSession -> mpv
+    //
+    // It only wraps existing models (MediaItem, NormalizedPlaybackSource);
+    // it does not introduce a second identity scheme. CanonicalKey is
+    // exactly ContentRequest.BuildStremioId() ("tt…", "tt…:S:E",
+    // "kitsu:id:episode").
+    //
+    // ProfileId is captured at start so a profile switch (or any later
+    // GetActiveProfileId() call) can never redirect this attempt's
+    // progress into another profile's Watch State.
+    //
+    // Immutable: a recovery retry with a different source creates a NEW
+    // context via WithSource, leaving the original untouched.
+    //
+    // The context holds the stream URL (inside Source) because the player
+    // must be able to load it. It must never be logged or displayed -
+    // ToString() is deliberately URL-free.
+    public sealed class PlaybackContext
+    {
+        public Guid ProfileId { get; private set; }
+
+        public string CanonicalKey { get; private set; }
+
+        public ContentType ContentType { get; private set; }
+
+        public MediaItem MediaItem { get; private set; }
+
+        public NormalizedPlaybackSource Source { get; private set; }
+
+        // Position to resume at once mpv confirms the file is loaded, or
+        // null to start from the beginning. Null/<=0 both mean "no resume".
+        public double? StartPositionSeconds { get; private set; }
+
+        // The other sources offered for this media (session-scoped, in
+        // memory only). Failure recovery removes the failed candidate from
+        // this list and re-shows the Source Selector with what remains.
+        // Shared by reference between a context and its WithSource copies
+        // so the removals accumulate across retries. May be empty.
+        public List<NormalizedPlaybackSource> Candidates { get; private set; }
+
+        public PlaybackContext(
+            Guid profileId,
+            string canonicalKey,
+            ContentType contentType,
+            MediaItem mediaItem,
+            NormalizedPlaybackSource source,
+            double? startPositionSeconds,
+            IEnumerable<NormalizedPlaybackSource> candidates = null)
+        {
+            if (source == null || source.Source == null)
+                throw new ArgumentNullException(nameof(source));
+
+            ProfileId = profileId;
+            CanonicalKey = canonicalKey;
+            ContentType = contentType;
+            MediaItem = mediaItem;
+            Source = source;
+            StartPositionSeconds = startPositionSeconds;
+            Candidates = candidates != null
+                ? new List<NormalizedPlaybackSource>(candidates)
+                : new List<NormalizedPlaybackSource>();
+        }
+
+        // Series/episode/neighbour information for a TV or anime episode,
+        // attached once the episode list is known. Null for movies and until
+        // the list has loaded. Deliberately a mutable slot on the context (not
+        // a second context): the exact-episode identity stays CanonicalKey.
+        public EpisodeContext Episode { get; private set; }
+
+        public void AttachEpisode(EpisodeContext episode)
+        {
+            Episode = episode;
+        }
+
+        // True when Watch State/History can be recorded for this attempt.
+        public bool HasIdentity
+        {
+            get { return ProfileId != Guid.Empty && !string.IsNullOrWhiteSpace(CanonicalKey); }
+        }
+
+        // The playable URL. Internal to the playback path - never log it.
+        public string PlaybackUrl
+        {
+            get { return Source.Source.Url; }
+        }
+
+        public bool HasResumePosition
+        {
+            get { return StartPositionSeconds.HasValue && StartPositionSeconds.Value > 0; }
+        }
+
+        // Same media/profile/resume position, different source (used by
+        // failure recovery when falling back to the next candidate).
+        // As above, but with a fresh resume position (e.g. returning to the
+        // Source Selector after the user has already watched part of it).
+        public PlaybackContext WithSource(NormalizedPlaybackSource source, double? startPositionSeconds)
+        {
+            PlaybackContext copy = new PlaybackContext(
+                ProfileId, CanonicalKey, ContentType, MediaItem, source, startPositionSeconds, Candidates);
+            copy.Episode = Episode;
+            return copy;
+        }
+
+        public PlaybackContext WithSource(NormalizedPlaybackSource source)
+        {
+            PlaybackContext copy = new PlaybackContext(
+                ProfileId, CanonicalKey, ContentType, MediaItem, source, StartPositionSeconds, Candidates);
+            copy.Episode = Episode;
+            return copy;
+        }
+
+        // Stable, non-secret description of the source for the Watch State.
+        public SavedSourceReference BuildSavedSource()
+        {
+            return SavedSourceReference.FromSource(Source);
+        }
+
+        public override string ToString()
+        {
+            return "PlaybackContext(" + CanonicalKey + ")";
+        }
+    }
+}

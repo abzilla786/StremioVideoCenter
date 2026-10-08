@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 
 namespace StremioVideoCenterControls.Player.Menus
@@ -22,54 +23,192 @@ namespace StremioVideoCenterControls.Player.Menus
     // duplicated because the two menus only differ in title/whether OFF is shown.
     public partial class TrackSelectionMenu : UserControl
     {
+        // Subtitle-delay step in seconds, used by the Subtitles menu's
+        // "-" / "+" buttons.
+        public const double SubtitleDelayStepSeconds = SubtitleDelay.StepSeconds;
+
         public event EventHandler<TrackMenuItemSelectedEventArgs> TrackSelected;
+
+        // Raised (menu stays open) when the user presses the delay "-" or
+        // "+" button; the argument is the signed step in seconds.
+        public event EventHandler<double> SubtitleDelayStepRequested;
+
+        // Raised (menu stays open) when the user presses "Reset".
+        public event EventHandler SubtitleDelayResetRequested;
+
+        private TextBlock _delayValueText;
 
         public TrackSelectionMenu()
         {
             InitializeComponent();
         }
 
-        // Rebuilds the menu contents and returns a FocusGroup ready to be
-        // pushed onto PlayerFocusController. Handles the "no tracks available"
-        // case explicitly rather than showing an empty list.
+        // Rebuilds the menu from mpv's current state and returns the
+        // FocusGroup for PlayerFocusController (to push, or to swap in for a
+        // live refresh). WHAT the menu contains and its focus order come from
+        // TrackMenuLayout (pure); this method only renders it:
+        //   - loading: "Loading tracks..." (never the previous file's tracks);
+        //   - loaded but none: a plain "no tracks" line, not an error;
+        //   - otherwise one button per track, the selected one marked, plus
+        //     (Subtitles) Off and the delay controls.
         public FocusGroup Populate(
             string title,
-            IReadOnlyList<MpvTrackInfo> tracks,
-            int? selectedTrackId,
-            bool includeOffOption)
+            TrackMenuLayout layout)
         {
             TitleText.Text = title;
+            _delayValueText = null;
 
             StackPanel list = new StackPanel();
+            StackPanel delayPanel = new StackPanel();
             FocusGroup group = new FocusGroup();
 
-            if (includeOffOption)
-            {
-                Button offButton = BuildItemButton("Off", selectedTrackId == null);
-                offButton.Click += (s, e) => RaiseTrackSelected(null);
-                list.Children.Add(offButton);
-                group.Add(offButton);
-            }
+            // Items in layout order; the delay value (not an item, never
+            // focusable) sits between the "-" and "+" buttons.
+            Button minus = null;
+            Button plus = null;
+            Button reset = null;
 
-            if (tracks != null)
+            foreach (TrackMenuItem item in layout.Items)
             {
-                foreach (MpvTrackInfo track in tracks)
+                switch (item.Kind)
                 {
-                    MpvTrackInfo capturedTrack = track;
-                    bool isSelected = selectedTrackId.HasValue && selectedTrackId.Value == capturedTrack.Id;
+                    case TrackMenuItemKind.Off:
+                    case TrackMenuItemKind.Track:
+                    {
+                        Button button = BuildItemButton(item.Label, item.IsSelected);
+                        int? trackId = item.TrackId;
+                        button.Click += (s, e) => RaiseTrackSelected(trackId);
+                        list.Children.Add(button);
+                        group.Add(button);
+                        if (item.IsSelected && group.InitialElement == null)
+                            group.InitialElement = button;
+                        break;
+                    }
 
-                    Button trackButton = BuildItemButton(capturedTrack.DisplayName, isSelected);
-                    trackButton.Click += (s, e) => RaiseTrackSelected(capturedTrack.Id);
-                    list.Children.Add(trackButton);
-                    group.Add(trackButton);
+                    case TrackMenuItemKind.DelayDecrease:
+                        minus = BuildDelayButton("\u2212", "Subtitles earlier");
+                        minus.Click += (s, e) => RaiseDelayStep(-SubtitleDelayStepSeconds);
+                        break;
+
+                    case TrackMenuItemKind.DelayIncrease:
+                        plus = BuildDelayButton("+", "Subtitles later");
+                        plus.Click += (s, e) => RaiseDelayStep(SubtitleDelayStepSeconds);
+                        break;
+
+                    case TrackMenuItemKind.DelayReset:
+                        reset = BuildItemButton("Reset to 0.0s", false);
+                        reset.HorizontalContentAlignment = HorizontalAlignment.Center;
+                        reset.Click += (s, e) =>
+                        {
+                            EventHandler handler = SubtitleDelayResetRequested;
+                            if (handler != null)
+                                handler(this, EventArgs.Empty);
+                        };
+                        break;
                 }
             }
 
-            bool isEmpty = list.Children.Count == 0;
-            EmptyStateText.Visibility = isEmpty ? Visibility.Visible : Visibility.Collapsed;
-            ItemsHost.Content = isEmpty ? null : list;
+            if (layout.HasDelayRow && minus != null && plus != null && reset != null)
+            {
+                AppendSubtitleDelayRow(delayPanel, group, layout.DelaySeconds, minus, plus, reset);
+            }
+
+            EmptyStateText.Text = layout.StatusMessage ?? string.Empty;
+            EmptyStateText.Visibility = layout.StatusMessage != null ? Visibility.Visible : Visibility.Collapsed;
+            ItemsHost.Content = list.Children.Count > 0 ? list : null;
+            DelayHost.Content = delayPanel.Children.Count > 0 ? delayPanel : null;
 
             return group;
+        }
+
+        // Caps the scrolling track list so the whole menu fits inside the player
+        // (the delay controls below it always stay visible).
+        public void SetMaxListHeight(double height)
+        {
+            ItemsScroll.MaxHeight = System.Math.Max(120, height);
+        }
+
+        // Live-updates the displayed delay while the menu is open (called when
+        // mpv echoes a new sub-delay). No-op for the Audio menu.
+        public void UpdateSubtitleDelay(double seconds)
+        {
+            if (_delayValueText != null)
+                _delayValueText.Text = SubtitleDelay.Format(seconds);
+        }
+
+        private void AppendSubtitleDelayRow(
+            StackPanel list,
+            FocusGroup group,
+            double delaySeconds,
+            Button minus,
+            Button plus,
+            Button reset)
+        {
+            list.Children.Add(new Border
+            {
+                Height = 1,
+                Margin = new Thickness(8, 8, 8, 6),
+                Background = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF))
+            });
+
+            list.Children.Add(new TextBlock
+            {
+                Text = "Subtitle Delay",
+                Foreground = Brushes.White,
+                FontSize = 14,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(10, 2, 10, 4)
+            });
+
+            // Display only: no action, not focusable.
+            _delayValueText = new TextBlock
+            {
+                Text = SubtitleDelay.Format(delaySeconds),
+                Foreground = Brushes.White,
+                FontSize = 16,
+                MinWidth = 70,
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Focusable = false,
+                IsHitTestVisible = false
+            };
+
+            StackPanel row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            row.Children.Add(minus);
+            row.Children.Add(_delayValueText);
+            row.Children.Add(plus);
+            list.Children.Add(row);
+            list.Children.Add(reset);
+
+            group.Add(minus);
+            group.Add(plus);
+            group.Add(reset);
+        }
+
+        private void RaiseDelayStep(double deltaSeconds)
+        {
+            EventHandler<double> handler = SubtitleDelayStepRequested;
+            if (handler != null)
+                handler(this, deltaSeconds);
+        }
+
+        private Button BuildDelayButton(string text, string toolTip)
+        {
+            return new Button
+            {
+                Style = (Style)Resources["MenuItemButtonStyle"],
+                Content = text,
+                ToolTip = toolTip,
+                Width = 52,
+                FontSize = 18,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                Background = new SolidColorBrush(Color.FromArgb(0x66, 0x00, 0x00, 0x00)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF))
+            };
         }
 
         private void RaiseTrackSelected(int? trackId)
@@ -81,15 +220,35 @@ namespace StremioVideoCenterControls.Player.Menus
 
         private Button BuildItemButton(string text, bool isSelected)
         {
-            return new Button
+            string full = (isSelected ? "\u25CF " : "\u25CB ") + text;
+
+            // Keyboard/controller navigation scrolls the focused item into view.
+            KeyboardFocusChangedEventHandler bringIntoView = (s, e) =>
+            {
+                FrameworkElement element = s as FrameworkElement;
+                if (element != null) element.BringIntoView();
+            };
+
+            // A long label is trimmed with an ellipsis (full text in the
+            // tooltip) instead of being silently clipped by the menu border.
+            Button itemButton = new Button
             {
                 Style = (Style)Resources["MenuItemButtonStyle"],
-                Content = (isSelected ? "\u25CF " : "\u25CB ") + text,
+                Content = new TextBlock
+                {
+                    Text = full,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxWidth = 380
+                },
+                ToolTip = full,
                 Background = isSelected
                     ? new SolidColorBrush(Color.FromArgb(0x99, 0x33, 0x88, 0xFF))
                     : new SolidColorBrush(Color.FromArgb(0x66, 0x00, 0x00, 0x00)),
                 BorderBrush = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF))
             };
+
+            itemButton.GotKeyboardFocus += bringIntoView;
+            return itemButton;
         }
     }
 }

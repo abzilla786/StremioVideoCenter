@@ -161,6 +161,22 @@ namespace StremioVideoCenter.Services
             return null;
         }
 
+        // Waits up to timeoutMilliseconds for mpv to exit on its own (e.g.
+        // after a graceful "quit" command). Returns true if it has exited.
+        // Never throws.
+        public bool WaitForExit(int timeoutMilliseconds)
+        {
+            try
+            {
+                Process process = _process;
+                return process == null || process.HasExited || process.WaitForExit(timeoutMilliseconds);
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
         private void KillAndDisposeProcess()
         {
             try

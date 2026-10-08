@@ -48,12 +48,50 @@ namespace StremioVideoCenterControls
 
             Loaded +=
                 MediaCard_Loaded;
+
+            DataContextChanged +=
+                MediaCard_DataContextChanged;
+        }
+
+        private void MediaCard_DataContextChanged(
+            object sender,
+            DependencyPropertyChangedEventArgs e)
+        {
+            UpdateProgressBar();
+        }
+
+        // Slice 18B: MediaItem.Progress is already the shared, clamped
+        // PlaybackProgress value (0 = no bar), so this only renders it.
+        private void UpdateProgressBar()
+        {
+            double progress = 0;
+
+            if (DataContext is MediaItem mediaItem)
+            {
+                progress = mediaItem.Progress;
+            }
+
+            if (double.IsNaN(progress) || progress <= 0)
+            {
+                ProgressTrack.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            if (progress > 1)
+            {
+                progress = 1;
+            }
+
+            ((ScaleTransform)ProgressFill.RenderTransform).ScaleX = progress;
+            ProgressTrack.Visibility = Visibility.Visible;
         }
 
         private async void MediaCard_Loaded(
             object sender,
             RoutedEventArgs e)
         {
+            UpdateProgressBar();
+
             if (DataContext is MediaItem mediaItem)
             {
                 await mediaItem.LoadPosterAsync();

@@ -462,10 +462,23 @@
                     (and everything below it, since Home already scrolls in
                     MainScrollViewer) taller instead of being cut off.
                 -->
+                <!--
+                    Responsive hero: HeroCanvas and HeroContentGrid are laid out at
+                    the 1240 x 698 DESIGN REFERENCE and scaled uniformly by
+                    HeroLayout (code-behind: ApplyResponsiveHeroSize) from the
+                    actual viewport, so aspect ratio and the arrows' position
+                    inside the frame never change. The info panel is its own
+                    row, so it always starts exactly where the frame ends - no
+                    hard-coded offset.
+                -->
                 <Grid x:Name="HeroContainer"
-                      MinHeight="750"
                       Margin="0,0,0,25"
                       Background="#0D0D0F">
+
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
 
                     <!-- ================================================= -->
@@ -473,8 +486,13 @@
                     <!-- ================================================= -->
 
                     <Grid x:Name="HeroCanvas"
+                          Grid.Row="0"
                           HorizontalAlignment="Center"
                           VerticalAlignment="Top">
+
+                        <Grid.LayoutTransform>
+                            <ScaleTransform x:Name="HeroCanvasScale" ScaleX="1" ScaleY="1"/>
+                        </Grid.LayoutTransform>
 
 
                         <Grid x:Name="HeroMediaFrame"
@@ -522,6 +540,7 @@
 
                             <Button x:Name="HeroPreviousButton"
                                     Content="‹"
+                                    Margin="18,0,0,0"
                                     HorizontalAlignment="Left"
                                     VerticalAlignment="Center"
                                     Style="{DynamicResource HeroCarouselArrowStyle}"
@@ -535,6 +554,7 @@
 
                             <Button x:Name="HeroNextButton"
                                     Content="›"
+                                    Margin="0,0,18,0"
                                     HorizontalAlignment="Right"
                                     VerticalAlignment="Center"
                                     Style="{DynamicResource HeroCarouselArrowStyle}"
@@ -561,16 +581,21 @@
                         content) for the same reason - see below.
                     -->
                     <Grid x:Name="HeroContentPanel"
+                          Grid.Row="1"
                           HorizontalAlignment="Stretch"
                           VerticalAlignment="Top"
-                          MinHeight="227"
-                          Margin="0,698,0,0"
                           Background="#151225">
 
 
-                        <Grid Width="1240"
+                        <Grid x:Name="HeroContentGrid"
+                              Width="1240"
+                              MinHeight="227"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Top">
+
+                            <Grid.LayoutTransform>
+                                <ScaleTransform x:Name="HeroContentScale" ScaleX="1" ScaleY="1"/>
+                            </Grid.LayoutTransform>
 
                             <Grid.RowDefinitions>
 

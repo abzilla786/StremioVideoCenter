@@ -109,7 +109,8 @@ namespace StremioVideoCenter.Services
             string title,
             string posterPath,
             string year,
-            string displayType)
+            string displayType,
+            SavedSourceReference savedSource = null)
         {
             if (string.IsNullOrWhiteSpace(canonicalKey))
             {
@@ -157,6 +158,15 @@ namespace StremioVideoCenter.Services
             // very next RecordProgress tick overwrites them with the new
             // session's real values within moments, the same way a brand
             // new entry's 0/0 starting values are immediately superseded.
+            // A completed item is never resumed from its old position: on a
+            // rewatch the position restarts at 0, so a stale ~100% position
+            // can neither be shown nor resumed if playback ends before the
+            // first valid position is recorded.
+            if (entry.IsCompleted)
+            {
+                entry.PositionSeconds = 0;
+            }
+
             entry.IsCompleted = false;
 
             entry.ContentType = contentType;
@@ -168,6 +178,14 @@ namespace StremioVideoCenter.Services
             entry.Year = year;
             entry.Type = displayType;
             entry.LastPlayedUtc = now;
+
+            // Remember the source that actually played. A null reference
+            // (no usable identifier) keeps whatever was saved before
+            // rather than erasing a good one.
+            if (savedSource != null && savedSource.IsUsable)
+            {
+                entry.SavedSource = savedSource;
+            }
 
             EnforceRetentionCap(profileId);
 
@@ -198,7 +216,8 @@ namespace StremioVideoCenter.Services
             string canonicalKey,
             double positionSeconds,
             double durationSeconds,
-            bool reachedEndOfFile)
+            bool reachedEndOfFile,
+            bool persist = true)
         {
             if (string.IsNullOrWhiteSpace(canonicalKey))
             {
@@ -235,9 +254,47 @@ namespace StremioVideoCenter.Services
                 entry.IsCompleted = true;
             }
 
-            TryPersist();
+            // persist=false updates memory only; PlaybackProgressRecorder
+            // throttles disk writes and calls Flush() at important moments
+            // (pause/seek/close/failure/completion). Whole-config
+            // SavePluginSettings on every 500 ms poll is far too heavy.
+            if (persist)
+            {
+                TryPersist();
+            }
 
             return entry;
+        }
+
+        // Marks exactly this episode/movie completed (genuine end of file)
+        // and persists immediately. Never touches any other entry. No-op if
+        // the entry does not exist (nothing was established for it).
+        public bool MarkCompleted(Guid profileId, string canonicalKey)
+        {
+            if (string.IsNullOrWhiteSpace(canonicalKey))
+            {
+                return false;
+            }
+
+            WatchStateEntry entry = FindEntry(profileId, canonicalKey);
+
+            if (entry == null)
+            {
+                return false;
+            }
+
+            entry.IsCompleted = true;
+            entry.LastPlayedUtc = DateTime.UtcNow;
+
+            TryPersist();
+
+            return true;
+        }
+
+        // Writes the current in-memory state to disk.
+        public void Flush()
+        {
+            TryPersist();
         }
 
         // =========================================================

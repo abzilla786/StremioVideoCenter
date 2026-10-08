@@ -32,6 +32,10 @@ namespace StremioVideoCenterControls.Player
             get { return _elements; }
         }
 
+        // Where focus lands when this group is pushed as a menu scope
+        // (e.g. the currently selected track). Defaults to the first element.
+        public UIElement InitialElement { get; set; }
+
         public void Add(UIElement element)
         {
             if (element != null && !_elements.Contains(element))
@@ -107,8 +111,32 @@ namespace StremioVideoCenterControls.Player
             _returnFocusStack.Push(elementToReturnFocusTo);
             _scopes.Push(menuGroup);
 
-            if (menuGroup.Elements.Count > 0)
+            if (menuGroup.InitialElement != null)
+                Focus(menuGroup.InitialElement);
+            else if (menuGroup.Elements.Count > 0)
                 Focus(menuGroup.Elements[0]);
+        }
+
+        // Live refresh of the open menu: swaps the active menu scope's group
+        // for a rebuilt one (the originating control to return to is kept)
+        // and focuses its initial element. Keeps focus inside the menu.
+        public void ReplaceActiveMenuGroup(FocusGroup newGroup)
+        {
+            if (newGroup == null || _scopes.Count <= 1)
+                return;
+
+            _scopes.Pop();
+            _scopes.Push(newGroup);
+
+            if (newGroup.InitialElement != null)
+                Focus(newGroup.InitialElement);
+            else if (newGroup.Elements.Count > 0)
+                Focus(newGroup.Elements[0]);
+            else if (_returnFocusStack.Count > 0)
+                // Nothing focusable in the rebuilt menu (e.g. "Loading
+                // tracks..."): park focus on the control that opened it so it
+                // is never left on a destroyed menu item. B still closes.
+                Focus(_returnFocusStack.Peek());
         }
 
         // Pops the active scope and restores focus to whatever control opened
@@ -217,11 +245,26 @@ namespace StremioVideoCenterControls.Player
             if (index < 0)
                 index = 0;
 
-            index += direction;
-            if (index < 0) index = group.Elements.Count - 1;
-            if (index >= group.Elements.Count) index = 0;
+            // Step in the requested direction (wrapping), skipping elements that
+            // cannot currently take focus (collapsed, or disabled such as
+            // Previous/Next when there is no such episode).
+            for (int step = 0; step < group.Elements.Count; step++)
+            {
+                index += direction;
+                if (index < 0) index = group.Elements.Count - 1;
+                if (index >= group.Elements.Count) index = 0;
 
-            Focus(group.Elements[index]);
+                if (CanReceiveFocus(group.Elements[index]))
+                {
+                    Focus(group.Elements[index]);
+                    return;
+                }
+            }
+        }
+
+        private static bool CanReceiveFocus(UIElement element)
+        {
+            return element != null && element.IsEnabled && element.Visibility == Visibility.Visible;
         }
 
         public void Focus(UIElement element)

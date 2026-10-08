@@ -31,6 +31,20 @@ namespace StremioVideoCenter.Models
         // error/stop/quit/redirect end-file reasons.
         public bool ReachedEndOfFile { get; set; }
 
+        // True once mpv has confirmed the selected file loaded
+        // (file-loaded). Reset to false before every new loadfile.
+        public bool IsPlaybackEstablished { get; set; }
+
+        // True once playback is established AND a numeric time-pos has
+        // been read since (and no resume seek is still pending). Only then
+        // is PositionSeconds a real position - 0 is a legitimate value
+        // when this is true, and meaningless when it is false.
+        public bool HasValidPosition { get; set; }
+
+        // Incremented on every user-issued seek, so persistence can flush
+        // immediately on a seek without inferring it from position jumps.
+        public int SeekCounter { get; set; }
+
         // Last mpv end-file reason and file_error (null if absent), kept
         // for diagnostics/failure handling. Contains no URL.
         public string EndFileReason { get; set; }
@@ -38,6 +52,19 @@ namespace StremioVideoCenter.Models
 
         public IReadOnlyList<MpvTrackInfo> AudioTracks { get; set; }
         public IReadOnlyList<MpvTrackInfo> SubtitleTracks { get; set; }
+
+        // mpv's sub-delay property in seconds (positive = subtitles appear
+        // later). Session-only: never persisted, never part of media identity.
+        public double SubtitleDelaySeconds { get; set; }
+
+        // False from the moment a new file is loaded until mpv has reported
+        // that file's track list. While false the track lists are empty and
+        // menus show "loading", never the previous file's tracks.
+        public bool TracksLoaded { get; set; }
+
+        // Incremented whenever the track lists or selection change, so an
+        // open menu can tell it is showing stale data.
+        public int TracksVersion { get; set; }
 
         public int? SelectedAudioTrackId { get; set; }
 
