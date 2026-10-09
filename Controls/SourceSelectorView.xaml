@@ -90,6 +90,50 @@
         </Style>
 
         <!--
+            Provider filter chip (Slice 19B). Same Border/ControlTemplate
+            shape and focus/hover triggers as the header buttons above. The
+            selected state is applied from code (Background/BorderBrush/
+            Foreground) so the template needs no extra state.
+        -->
+        <Style x:Key="ProviderChipButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="#1A1A1F" />
+            <Setter Property="Foreground" Value="#DDDDDD" />
+            <Setter Property="BorderBrush" Value="#44FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,10,8" />
+            <Setter Property="Focusable" Value="True" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="ChipBorder"
+                                Height="32"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="16">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="ChipBorder" Property="BorderBrush" Value="White" />
+                                <Setter TargetName="ChipBorder" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ChipBorder" Property="Background" Value="#33333A" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!--
             Source item button style. The visible focus/hover states are the
             important part for controller/keyboard navigation - mouse click
             and keyboard/controller activation both end up going through
@@ -296,6 +340,14 @@
 
             </Grid>
 
+            <!-- Slice 19B: provider filter chips (All Sources + one per
+                 provider that returned sources). Built in code; collapsed
+                 unless two or more providers supplied sources. WrapPanel so
+                 it wraps on narrow viewports. -->
+            <WrapPanel x:Name="ProviderFilterPanel"
+                       Margin="19,16,0,0"
+                       Visibility="Collapsed" />
+
         </StackPanel>
 
         <!-- ========================================================= -->
@@ -329,7 +381,8 @@
                        Margin="0,0,0,12"
                        Opacity="0.5" />
 
-            <TextBlock Text="No playable sources found."
+            <TextBlock x:Name="EmptyStateText"
+                       Text="No playable sources found."
                        Foreground="#CCCCCC"
                        FontSize="16"
                        Margin="0,0,0,20"

@@ -1126,6 +1126,24 @@
             Visibility="Collapsed" />
 
         <!-- ========================================================= -->
+        <!-- MOVIE DETAILS HOST (Slice 19B)                             -->
+        <!-- ========================================================= -->
+        <!--
+            Dedicated movie details page (Controls/MovieDetailsView.xaml),
+            shown between a movie selection and the Source Selector - see
+            StremioVideoCenterView.xaml.cs ShowMovieDetailsAsync. Above the
+            page hosts (1000) so it covers Search/My List/History/Home, but
+            below SourceSelectorHost/EpisodeBrowserHost/PlaybackTestHost
+            (2000) so the Source Selector and player open over it and Back
+            from the Source Selector uncovers Details again.
+        -->
+        <Grid
+            x:Name="MovieDetailsHost"
+            Panel.ZIndex="1500"
+            Background="Black"
+            Visibility="Collapsed" />
+
+        <!-- ========================================================= -->
         <!-- FEEDBACK TOAST (Slice 17C)                                 -->
         <!-- ========================================================= -->
         <!--

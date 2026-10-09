@@ -79,6 +79,9 @@
     <Compile Include="Controls\EpisodeBrowserView.xaml.cs">
       <DependentUpon>EpisodeBrowserView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\MovieDetailsView.xaml.cs">
+      <DependentUpon>MovieDetailsView.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Controls\LocalMediaView.xaml.cs">
       <DependentUpon>LocalMediaView.xaml</DependentUpon>
     </Compile>
@@ -147,6 +150,7 @@
     <Compile Include="Models\AddonInstance.cs" />
     <Compile Include="Services\HeroRecommendationService.cs" />
     <Compile Include="Services\OmdbService.cs" />
+    <Compile Include="Services\SourceProviderGrouping.cs" />
     <Compile Include="Services\StremioAddonService.cs" />
     <Compile Include="Services\StremioAddonRegistry.cs" />
     <Compile Include="Services\StremioContentDiscoveryService.cs" />
@@ -226,6 +230,10 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Controls\EpisodeBrowserView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\MovieDetailsView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

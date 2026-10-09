@@ -67,6 +67,19 @@ namespace StremioVideoCenter
         private EpisodeBrowserView _activeEpisodeBrowser;
 
         // =========================================================
+        // MOVIE DETAILS (Slice 19B)
+        // =========================================================
+        //
+        // Non-null only while a MovieDetailsView is shown for one movie
+        // selection. It stays mounted (beneath the Source Selector and the
+        // player) for the whole movie flow, so Back from the Source
+        // Selector lands on it. _movieDetailsBusy is true while Watch Now
+        // is resolving sources, during which Details ignores Back/Watch Now.
+
+        private MovieDetailsView _activeMovieDetails;
+        private bool _movieDetailsBusy;
+
+        // =========================================================
         // MEDIA SELECTION IN-FLIGHT GUARD (navigation stabilization pass)
         // =========================================================
         //
@@ -1149,6 +1162,15 @@ namespace StremioVideoCenter
 
         private void FocusFirstAvailableSection()
         {
+            // Slice 19B: while Movie Details is open (e.g. after the Source
+            // Selector above it closes) focus belongs to Details, never to a
+            // hidden Home card.
+            if (_activeMovieDetails != null)
+            {
+                _activeMovieDetails.FocusPrimary();
+                return;
+            }
+
             List<MediaSection> populatedSections =
                 GetPopulatedSections();
 
@@ -1634,7 +1656,7 @@ namespace StremioVideoCenter
             // page instead. Episode Browser and Source Selector have their
             // own ScrollViewers: leave the event unhandled so it reaches
             // the one under the pointer.
-            if (_activeEpisodeBrowser != null || _activeSourceSelector != null)
+            if (_activeEpisodeBrowser != null || _activeSourceSelector != null || _activeMovieDetails != null)
             {
                 return;
             }
@@ -1725,7 +1747,7 @@ namespace StremioVideoCenter
 
             StremioVideoCenterLogger.Info(
                 string.Format(
-                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activeHistory={9} activeMyList={10} activePlayer={11}",
+                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activeHistory={9} activeMyList={10} activePlayer={11} activeMovieDetails={12}",
                     seq,
                     button,
                     _activeEpisodeBrowser != null,
@@ -1737,7 +1759,8 @@ namespace StremioVideoCenter
                     _activeSearchPage != null,
                     _activeHistoryView != null,
                     _activeMyListView != null,
-                    _stremioPlayer != null));
+                    _stremioPlayer != null,
+                    _activeMovieDetails != null));
 
             // Controller navigation stabilisation fix: record the exact
             // D-pad direction this call is about to handle, before any
@@ -1822,6 +1845,15 @@ namespace StremioVideoCenter
             if (_activeSourceSelector != null)
             {
                 return _activeSourceSelector.HandleControllerInput(button);
+            }
+
+            // Movie Details (Slice 19B) sits below the Source Selector and
+            // above every page it can be opened from. The player is checked
+            // after the pages further down, so Details must yield to it
+            // explicitly while a movie is playing over it.
+            if (_activeMovieDetails != null && _stremioPlayer == null)
+            {
+                return _activeMovieDetails.HandleControllerInput(button);
             }
 
             // Local Media owns input while its overlay is open - same
@@ -2461,6 +2493,18 @@ namespace StremioVideoCenter
 
             _isResolvingMediaSelection = true;
 
+            // Slice 19B: every user-initiated selection (card, Search, My
+            // List, History, Hero) starts on All Sources. The provider filter
+            // is cleared HERE - the one entry funnel - and not in
+            // PlaySelectedMediaAsync, which Movie Details' Watch Now also
+            // calls again for the same movie (Source Selector -> Back ->
+            // Watch Now) and the episode loop calls again for the same
+            // episode; those re-entries are the same content and must keep
+            // the choice. A different title/episode is also protected by the
+            // content key in ShowSourceSelectorAsync.
+            _providerFilterContentKey = null;
+            _providerFilterKey = null;
+
             try
             {
                 // Slice 12: only ContentType.TvShow opened the episode
@@ -2506,6 +2550,17 @@ namespace StremioVideoCenter
 
                 ContentType selectedContentType = GetContentType(selectedItem);
                 MediaItem browsedSeries = null;
+
+                // Slice 19B: a movie opens its Movie Details page first;
+                // Watch Now there continues into the unchanged source
+                // discovery/selection/playback pipeline. Episode-shaped
+                // items (already resolved) and TV/Anime keep their paths.
+                if (selectedContentType == ContentType.Movie &&
+                    !(selectedItem.Season.HasValue && selectedItem.Episode.HasValue))
+                {
+                    await ShowMovieDetailsAsync(selectedItem);
+                    return;
+                }
 
                 if ((selectedContentType == ContentType.TvShow || selectedContentType == ContentType.Anime) &&
                     !(selectedItem.Season.HasValue && selectedItem.Episode.HasValue))
@@ -2673,6 +2728,145 @@ namespace StremioVideoCenter
             // see this method's remarks above for why.
 
             return result;
+        }
+
+        // =========================================================
+        // SHOW MOVIE DETAILS (Slice 19B)
+        // =========================================================
+        //
+        // Mounts a fresh MovieDetailsView in MovieDetailsHost and returns
+        // when the user closes it. Watch Now runs the existing
+        // PlaySelectedMediaAsync pipeline for the movie while Details stays
+        // mounted beneath the Source Selector/player, so Back from the
+        // Source Selector (or the player closing and then Back) uncovers
+        // Details. My List goes through the same helpers every other screen
+        // uses. The originating screen (Home/Search/My List/History) is
+        // never torn down, so closing Details simply uncovers it again, and
+        // keyboard focus is restored to the card that opened it.
+        private async Task ShowMovieDetailsAsync(MediaItem movie)
+        {
+            IInputElement previousFocus = Keyboard.FocusedElement;
+
+            var details = new MovieDetailsView();
+            var closedSource = new TaskCompletionSource<bool>();
+
+            EventHandler onClosed = (sender, args) =>
+            {
+                // Ignore Back while sources are being resolved; the
+                // discovery in flight would otherwise open the Source
+                // Selector over a page the user just left.
+                if (_movieDetailsBusy)
+                {
+                    return;
+                }
+
+                closedSource.TrySetResult(true);
+            };
+
+            EventHandler onMyListToggleRequested = (sender, args) =>
+            {
+                bool? nowInList = ToggleMyListAndRefresh(movie);
+
+                if (nowInList.HasValue)
+                {
+                    details.SetMyListState(nowInList.Value);
+                }
+            };
+
+            EventHandler onWatchNowRequested = async (sender, args) =>
+            {
+                if (_movieDetailsBusy)
+                {
+                    return;
+                }
+
+                _movieDetailsBusy = true;
+                details.SetBusy(true);
+
+                try
+                {
+                    await PlaySelectedMediaAsync(movie);
+                }
+                catch (Exception ex)
+                {
+                    StremioVideoCenterLogger.Error(
+                        "Movie Details: Watch Now failed.",
+                        ex);
+
+                    ShowToast("Couldn't load sources. Please try again.");
+                }
+                finally
+                {
+                    _movieDetailsBusy = false;
+                    details.SetBusy(false);
+
+                    // The Source Selector's My List button may have changed it.
+                    details.SetMyListState(IsMediaItemInMyList(movie));
+                }
+            };
+
+            details.Closed += onClosed;
+            details.MyListToggleRequested += onMyListToggleRequested;
+            details.WatchNowRequested += onWatchNowRequested;
+
+            details.SetMyListState(IsMediaItemInMyList(movie));
+
+            _activeMovieDetails = details;
+
+            MovieDetailsHost.Children.Add(details);
+            MovieDetailsHost.Visibility = Visibility.Visible;
+
+            // Focus once the control is laid out; the metadata fetch below
+            // never delays it.
+            details.Dispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    if (ReferenceEquals(_activeMovieDetails, details))
+                    {
+                        details.FocusPrimary();
+                    }
+                }),
+                System.Windows.Threading.DispatcherPriority.Loaded);
+
+            // Fail-soft (CinemetaService.GetMetaAsync never throws); not
+            // awaited so the page is interactive immediately.
+            Task loadTask = details.LoadAsync(movie, new CinemetaService());
+
+            await closedSource.Task;
+
+            details.Closed -= onClosed;
+            details.MyListToggleRequested -= onMyListToggleRequested;
+            details.WatchNowRequested -= onWatchNowRequested;
+
+            MovieDetailsHost.Children.Remove(details);
+            MovieDetailsHost.Visibility = Visibility.Collapsed;
+
+            if (ReferenceEquals(_activeMovieDetails, details))
+            {
+                _activeMovieDetails = null;
+            }
+
+            RestoreFocusAfterMovieDetails(previousFocus);
+        }
+
+        // Returns focus to the card/button that opened Details when it is
+        // still on screen (Search results, My List, History, a Home row,
+        // the Hero button); otherwise falls back to the usual Home focus.
+        private void RestoreFocusAfterMovieDetails(IInputElement previousFocus)
+        {
+            UIElement previous = previousFocus as UIElement;
+
+            if (previous != null && previous.IsVisible && previous.Focusable)
+            {
+                Keyboard.Focus(previous);
+
+                if (ReferenceEquals(Keyboard.FocusedElement, previous))
+                {
+                    return;
+                }
+            }
+
+            FocusFirstAvailableSection();
         }
 
         // =========================================================
@@ -4626,6 +4820,24 @@ namespace StremioVideoCenter
         // observational - no behaviour here is changed.
         private static int _diagSrcSelSeq;
 
+        // Slice 19B: the Source Selector provider filter last chosen, scoped
+        // to the content (title + season + episode) it was chosen for.
+        // _providerFilterKey null = All Sources. In-memory only.
+        private string _providerFilterContentKey;
+        private string _providerFilterKey;
+
+        private static string BuildProviderFilterContentKey(MediaItem mediaItem)
+        {
+            if (mediaItem == null || string.IsNullOrWhiteSpace(mediaItem.StremioId))
+            {
+                return null;
+            }
+
+            return mediaItem.StremioId + "|" +
+                (mediaItem.Season.HasValue ? mediaItem.Season.Value.ToString() : string.Empty) + "|" +
+                (mediaItem.Episode.HasValue ? mediaItem.Episode.Value.ToString() : string.Empty);
+        }
+
         private async Task<NormalizedPlaybackSource> ShowSourceSelectorAsync(
             List<NormalizedPlaybackSource> sources,
             MediaItem mediaItem)
@@ -4675,8 +4887,28 @@ namespace StremioVideoCenter
             SourceSelectorHost.Children.Add(selector);
             SourceSelectorHost.Visibility = Visibility.Visible;
 
-            selector.Populate(sources, mediaItem);
+            // Slice 19B: restore the provider filter the user last chose for
+            // THIS content (e.g. on return from playback). Ignored by the
+            // selector if that provider has no sources in this list.
+            string providerFilterContentKey = BuildProviderFilterContentKey(mediaItem);
+
+            string preferredProviderKey =
+                providerFilterContentKey != null &&
+                string.Equals(providerFilterContentKey, _providerFilterContentKey, StringComparison.Ordinal)
+                    ? _providerFilterKey
+                    : null;
+
+            selector.Populate(sources, mediaItem, preferredProviderKey);
             selector.SetMyListState(IsMediaItemInMyList(mediaItem));
+
+            // Diagnostic only: no provider key/URL is logged.
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[ProviderFilter] SrcSel#{0} contentKeyAvailable={1} restoreRequested={2} restored={3}",
+                    diagSeq,
+                    providerFilterContentKey != null,
+                    preferredProviderKey != null,
+                    selector.SelectedProviderKey != null));
 
             // This is the point the user's diagnostic request calls out
             // specifically: the Source Selector control has now been
@@ -4692,6 +4924,12 @@ namespace StremioVideoCenter
 
             NormalizedPlaybackSource result =
                 await completionSource.Task;
+
+            // Slice 19B: remember the provider filter for this content. The
+            // key is kept in memory only (it derives from a configured
+            // manifest URL) - never logged, displayed or persisted.
+            _providerFilterContentKey = providerFilterContentKey;
+            _providerFilterKey = selector.SelectedProviderKey;
 
             StremioVideoCenterLogger.Info(
                 string.Format(
