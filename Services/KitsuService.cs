@@ -125,6 +125,28 @@ namespace StremioVideoCenter.Services
             return await GetCollectionAsync(url);
         }
 
+        // Slice 19A: same request as SearchAnimeAsync, but a transport/HTTP/
+        // parse failure (including the request deadline) is thrown instead of
+        // being converted into an empty list, so Search can distinguish "Kitsu
+        // answered with no matches" from "the request failed". Used only by
+        // SearchView; SearchAnimeAsync above keeps its fail-soft contract.
+        public async Task<List<KitsuAnimeResource>> SearchAnimeOrThrowAsync(string query, int offset = 0, int limit = MaxPageLimit)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                throw new ArgumentException("A search query is required.", nameof(query));
+            }
+
+            string url =
+                BaseUrl +
+                "/anime?filter%5Btext%5D=" + Uri.EscapeDataString(query) +
+                "&include=categories" +
+                "&page%5Blimit%5D=" + ClampLimit(limit) +
+                "&page%5Boffset%5D=" + Math.Max(0, offset);
+
+            return await GetCollectionOrThrowAsync(url);
+        }
+
         // =========================================================
         // POPULAR (sort=-userCount - a real, confirmed sortable
         // attribute; see class remarks for why this is used instead of
@@ -395,20 +417,7 @@ namespace StremioVideoCenter.Services
         {
             try
             {
-                string json = await DownloadStringAsync(url);
-
-                // Slice 17C fix: Search/Popular now request include=categories
-                // (same as BrowseAnimeAsync), so every item they return -
-                // Home's Popular row, Hero, Search - carries its categories
-                // (and therefore genres) when it is added to My List/History.
-                KitsuAnimeCollectionResponse response = Deserialize<KitsuAnimeCollectionResponse>(json);
-
-                List<KitsuAnimeResource> items =
-                    response?.Data ?? new List<KitsuAnimeResource>();
-
-                ResolveCategories(items, response?.Included);
-
-                return items;
+                return await GetCollectionOrThrowAsync(url);
             }
             catch
             {
@@ -417,6 +426,33 @@ namespace StremioVideoCenter.Services
                 // AnimeFlvCatalogueService.
                 return new List<KitsuAnimeResource>();
             }
+        }
+
+        // Slice 19A: the request/parse body of GetCollectionAsync, without its
+        // catch, so SearchAnimeOrThrowAsync can surface failures. A
+        // well-formed response with no "data" entries is a legitimate empty
+        // result; an empty/unparseable body is a failure.
+        private async Task<List<KitsuAnimeResource>> GetCollectionOrThrowAsync(string url)
+        {
+            string json = await DownloadStringAsync(url);
+
+            // Slice 17C fix: Search/Popular now request include=categories
+            // (same as BrowseAnimeAsync), so every item they return -
+            // Home's Popular row, Hero, Search - carries its categories
+            // (and therefore genres) when it is added to My List/History.
+            KitsuAnimeCollectionResponse response = Deserialize<KitsuAnimeCollectionResponse>(json);
+
+            if (response == null)
+            {
+                throw new InvalidDataException("Kitsu returned an empty collection response.");
+            }
+
+            List<KitsuAnimeResource> items =
+                response.Data ?? new List<KitsuAnimeResource>();
+
+            ResolveCategories(items, response.Included);
+
+            return items;
         }
 
         // =========================================================

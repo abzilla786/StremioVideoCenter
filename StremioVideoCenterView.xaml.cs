@@ -3849,6 +3849,14 @@ namespace StremioVideoCenter
                         diagSeq,
                         DateTime.UtcNow));
 
+                // Slice 19A: a movie opened from a source that carries no
+                // synopsis (e.g. Search's Cinemeta catalog results) has its
+                // overview fetched once, in parallel with source discovery,
+                // so the Source Selector can show it. Null (no fetch) when
+                // an overview is already present or this is not a plain movie.
+                Task<string> movieOverviewTask =
+                    BeginMovieOverviewHydration(mediaItem, resumePlan, transition);
+
                 PlaybackSourceSet set =
                     await aggregator.AggregateAsync(
                         request);
@@ -3946,6 +3954,8 @@ namespace StremioVideoCenter
                     // transition that genuinely needs it closes the player first
                     // (flushing the old episode's progress) - the same as source
                     // failure recovery.
+                    await ApplyMovieOverviewAsync(mediaItem, movieOverviewTask);
+
                     selected =
                         await ShowSourceSelectorReplacingPlayerAsync(
                             normalizedSources,
@@ -5301,6 +5311,86 @@ namespace StremioVideoCenter
         // =========================================================
         // STREMIO TYPE
         // =========================================================
+
+        // =========================================================
+        // MOVIE SYNOPSIS HYDRATION (Slice 19A)
+        // =========================================================
+        //
+        // The Source Selector shows MediaItem.Overview for a movie but never
+        // fetches it. Home's catalogue items carry an Overview; Search's
+        // Cinemeta catalog results may not. When (and only when) a plain
+        // movie has no overview and a Cinemeta (tt...) id, the full
+        // CinemetaService.GetMetaAsync("movie", id) description is fetched.
+        // Not started for resume, episode transitions, TV/anime (the Episode
+        // Browser owns their synopsis), or an item that already has an
+        // overview. Fail-soft: unavailable metadata leaves Overview empty
+        // (no synopsis is invented) and never blocks source selection.
+        private const int MovieOverviewWaitMs = 3000;
+
+        private Task<string> BeginMovieOverviewHydration(
+            MediaItem mediaItem,
+            ResumePlan resumePlan,
+            EpisodeTransition transition)
+        {
+            if (mediaItem == null ||
+                resumePlan != null ||
+                transition != null ||
+                mediaItem.Season.HasValue ||
+                mediaItem.Episode.HasValue ||
+                !string.IsNullOrWhiteSpace(mediaItem.Overview) ||
+                GetContentType(mediaItem) != ContentType.Movie)
+            {
+                return null;
+            }
+
+            string imdbId = mediaItem.StremioId;
+
+            if (string.IsNullOrWhiteSpace(imdbId) ||
+                !imdbId.StartsWith("tt", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return FetchMovieOverviewAsync(imdbId);
+        }
+
+        private static async Task<string> FetchMovieOverviewAsync(string imdbId)
+        {
+            // GetMetaAsync is fail-soft: null for not-found/unreachable.
+            CinemetaMeta meta = await new CinemetaService().GetMetaAsync("movie", imdbId);
+
+            string description = meta?.Description;
+
+            return string.IsNullOrWhiteSpace(description) ? null : description.Trim();
+        }
+
+        // Bounded wait: the fetch normally finishes during source discovery,
+        // but a slow Cinemeta must never delay the Source Selector by more
+        // than MovieOverviewWaitMs - the selector then opens without a
+        // synopsis rather than waiting.
+        private async Task ApplyMovieOverviewAsync(MediaItem mediaItem, Task<string> overviewTask)
+        {
+            if (mediaItem == null || overviewTask == null)
+            {
+                return;
+            }
+
+            Task finished = await Task.WhenAny(overviewTask, Task.Delay(MovieOverviewWaitMs));
+
+            if (finished != overviewTask)
+            {
+                StremioVideoCenterLogger.Info("[SYNOPSIS] movie overview not ready within wait; opening without it");
+                return;
+            }
+
+            string overview = await overviewTask;
+
+            if (!string.IsNullOrWhiteSpace(overview) &&
+                string.IsNullOrWhiteSpace(mediaItem.Overview))
+            {
+                mediaItem.Overview = overview;
+            }
+        }
 
         private string GetStremioType(
             MediaItem mediaItem)

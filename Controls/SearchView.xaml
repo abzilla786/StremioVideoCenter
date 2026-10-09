@@ -209,6 +209,13 @@
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">
                 <StackPanel Margin="32,0,32,40">
+                    <!-- Slice 19A: shown only when some (not all) providers failed but others returned results. -->
+                    <TextBlock x:Name="PartialFailureText"
+                               Foreground="#E0A458"
+                               FontSize="14"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,12"
+                               Visibility="Collapsed" />
                     <controls:MediaSection x:Name="MoviesSection" Title="MOVIES" Visibility="Collapsed" />
                     <controls:MediaSection x:Name="TvSection" Title="TV SHOWS" Visibility="Collapsed" />
                     <controls:MediaSection x:Name="AnimeSection" Title="ANIME" Visibility="Collapsed" />
@@ -229,6 +236,17 @@
                        Text="No results found."
                        Foreground="#AAAAAA"
                        FontSize="16"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Visibility="Collapsed" />
+
+            <!-- Slice 19A: a request FAILED (distinct from EmptyText = successful search, no matches). -->
+            <TextBlock x:Name="ErrorText"
+                       Foreground="#E0A458"
+                       FontSize="16"
+                       TextWrapping="Wrap"
+                       TextAlignment="Center"
+                       MaxWidth="560"
                        HorizontalAlignment="Center"
                        VerticalAlignment="Center"
                        Visibility="Collapsed" />

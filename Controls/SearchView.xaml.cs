@@ -257,6 +257,17 @@ namespace StremioVideoCenterControls
             }
         }
 
+        // Slice 19A: outcome of one provider's search. Failed distinguishes
+        // "the request failed" from "the provider answered with no matches"
+        // (Failed == false, Items empty) - the two were previously both an
+        // empty list.
+        private sealed class ProviderSearchResult
+        {
+            public string Label;
+            public List<MediaItem> Items = new List<MediaItem>();
+            public bool Failed;
+        }
+
         private async Task SubmitSearchAsync()
         {
             string query = SearchBox.Text?.Trim();
@@ -270,9 +281,9 @@ namespace StremioVideoCenterControls
 
             ShowLoadingState();
 
-            Task<List<MediaItem>> moviesTask = SafeSearchCinemetaAsync("movie", query, "Movie");
-            Task<List<MediaItem>> tvTask = SafeSearchCinemetaAsync("series", query, "TV");
-            Task<List<MediaItem>> animeTask = SafeSearchKitsuAsync(query);
+            Task<ProviderSearchResult> moviesTask = SafeSearchCinemetaAsync("movie", query, "Movie", "Movies", token);
+            Task<ProviderSearchResult> tvTask = SafeSearchCinemetaAsync("series", query, "TV", "TV Shows", token);
+            Task<ProviderSearchResult> animeTask = SafeSearchKitsuAsync(query, token);
 
             await Task.WhenAll(moviesTask, tvTask, animeTask);
 
@@ -283,9 +294,13 @@ namespace StremioVideoCenterControls
                 return;
             }
 
-            List<MediaItem> movies = moviesTask.Result;
-            List<MediaItem> tv = tvTask.Result;
-            List<MediaItem> anime = animeTask.Result;
+            ProviderSearchResult moviesResult = moviesTask.Result;
+            ProviderSearchResult tvResult = tvTask.Result;
+            ProviderSearchResult animeResult = animeTask.Result;
+
+            List<MediaItem> movies = moviesResult.Items;
+            List<MediaItem> tv = tvResult.Items;
+            List<MediaItem> anime = animeResult.Items;
 
             ReplaceCollection(_movieItems, movies);
             ReplaceCollection(_tvItems, tv);
@@ -297,51 +312,130 @@ namespace StremioVideoCenterControls
 
             bool anyResults = movies.Count > 0 || tv.Count > 0 || anime.Count > 0;
 
+            List<string> failedLabels = new List<ProviderSearchResult> { moviesResult, tvResult, animeResult }
+                .Where(result => result.Failed)
+                .Select(result => result.Label)
+                .ToList();
+
             if (anyResults)
             {
+                // Results are shown exactly as before; if some (not all)
+                // providers failed, say so rather than implying the
+                // missing rows simply had no matches.
+                if (failedLabels.Count > 0)
+                {
+                    PartialFailureText.Text =
+                        "Some results could not be loaded (" + string.Join(", ", failedLabels) + "). Try searching again.";
+                    PartialFailureText.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    PartialFailureText.Visibility = Visibility.Collapsed;
+                }
+
                 ShowResultsState();
 
                 Dispatcher.BeginInvoke(new Action(FocusFirstAvailableSection), DispatcherPriority.Input);
             }
+            else if (failedLabels.Count > 0)
+            {
+                // Nothing to show AND at least one request failed: this is
+                // not a confirmed "no matches".
+                PartialFailureText.Visibility = Visibility.Collapsed;
+
+                ErrorText.Text = failedLabels.Count == 3
+                    ? "Search is unavailable right now. Check your connection and try again."
+                    : "Search could not be completed for " + string.Join(", ", failedLabels) +
+                      ". No matches were found in the rest. Try again.";
+
+                ShowErrorState();
+            }
             else
             {
+                PartialFailureText.Visibility = Visibility.Collapsed;
                 ShowEmptyState();
             }
         }
 
-        private async Task<List<MediaItem>> SafeSearchCinemetaAsync(string cinemetaType, string query, string mediaItemType)
+        private async Task<ProviderSearchResult> SafeSearchCinemetaAsync(
+            string cinemetaType,
+            string query,
+            string mediaItemType,
+            string label,
+            int token)
         {
+            var result = new ProviderSearchResult { Label = label };
+            string errorType = null;
+
             try
             {
-                string extraSegment = "search=" + Uri.EscapeDataString(query);
-
+                // Strict variant: a failed request throws (and is reported
+                // as Failed below) instead of looking like zero matches.
                 List<CinemetaCatalogItem> items =
-                    await _cinemetaService.GetCatalogAsync(cinemetaType, "top", extraSegment);
+                    await _cinemetaService.SearchCatalogAsync(cinemetaType, query);
 
-                return MapCinemetaItems(items, mediaItemType);
+                result.Items = MapCinemetaItems(items, mediaItemType);
             }
-            catch
+            catch (Exception ex)
             {
-                return new List<MediaItem>();
+                result.Failed = true;
+                errorType = ex.GetType().Name;
             }
+
+            LogProviderOutcome(token, query, result, errorType);
+            return result;
         }
 
-        private async Task<List<MediaItem>> SafeSearchKitsuAsync(string query)
+        private async Task<ProviderSearchResult> SafeSearchKitsuAsync(string query, int token)
         {
+            var result = new ProviderSearchResult { Label = "Anime" };
+            string errorType = null;
+
             try
             {
-                List<KitsuAnimeResource> items = await _kitsuService.SearchAnimeAsync(query);
+                List<KitsuAnimeResource> items = await _kitsuService.SearchAnimeOrThrowAsync(query);
 
-                return (items ?? new List<KitsuAnimeResource>())
+                result.Items = (items ?? new List<KitsuAnimeResource>())
                     .Select(MapKitsuItem)
                     .Where(item => item != null)
                     .Take(SearchResultTake)
                     .ToList();
             }
-            catch
+            catch (Exception ex)
             {
-                return new List<MediaItem>();
+                result.Failed = true;
+                errorType = ex.GetType().Name;
             }
+
+            LogProviderOutcome(token, query, result, errorType);
+            return result;
+        }
+
+        // Slice 19A diagnostic: one line per provider per search. Logs the
+        // query LENGTH (not the text), the outcome, the result count and the
+        // first few returned titles, so a "why were these results shown"
+        // question can be answered from the log. No URLs, tokens or
+        // exception messages are logged - only the exception type name.
+        private static void LogProviderOutcome(
+            int token,
+            string query,
+            ProviderSearchResult result,
+            string errorType)
+        {
+            string topTitles = string.Join(
+                " | ",
+                result.Items.Take(3).Select(item => item.Title));
+
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "[SEARCH] token={0} provider={1} queryLength={2} outcome={3} count={4} error={5} top=[{6}]",
+                    token,
+                    result.Label,
+                    query != null ? query.Length : 0,
+                    result.Failed ? "Failed" : "Success",
+                    result.Items.Count,
+                    errorType ?? "none",
+                    topTitles));
         }
 
         // Mirrors CatalogueService.BuildMediaItemsFromCinemeta's own
@@ -473,6 +567,7 @@ namespace StremioVideoCenterControls
         {
             PromptText.Visibility = Visibility.Visible;
             EmptyText.Visibility = Visibility.Collapsed;
+            ErrorText.Visibility = Visibility.Collapsed;
             LoadingText.Visibility = Visibility.Collapsed;
             ResultsScrollViewer.Visibility = Visibility.Collapsed;
         }
@@ -481,6 +576,7 @@ namespace StremioVideoCenterControls
         {
             PromptText.Visibility = Visibility.Collapsed;
             EmptyText.Visibility = Visibility.Collapsed;
+            ErrorText.Visibility = Visibility.Collapsed;
             LoadingText.Visibility = Visibility.Visible;
             ResultsScrollViewer.Visibility = Visibility.Collapsed;
         }
@@ -489,6 +585,7 @@ namespace StremioVideoCenterControls
         {
             PromptText.Visibility = Visibility.Collapsed;
             EmptyText.Visibility = Visibility.Collapsed;
+            ErrorText.Visibility = Visibility.Collapsed;
             LoadingText.Visibility = Visibility.Collapsed;
             ResultsScrollViewer.Visibility = Visibility.Visible;
         }
@@ -497,6 +594,18 @@ namespace StremioVideoCenterControls
         {
             PromptText.Visibility = Visibility.Collapsed;
             EmptyText.Visibility = Visibility.Visible;
+            ErrorText.Visibility = Visibility.Collapsed;
+            LoadingText.Visibility = Visibility.Collapsed;
+            ResultsScrollViewer.Visibility = Visibility.Collapsed;
+        }
+
+        // Slice 19A: a request failed and there is nothing to show - distinct
+        // from ShowEmptyState (a successful search with no matches).
+        private void ShowErrorState()
+        {
+            PromptText.Visibility = Visibility.Collapsed;
+            EmptyText.Visibility = Visibility.Collapsed;
+            ErrorText.Visibility = Visibility.Visible;
             LoadingText.Visibility = Visibility.Collapsed;
             ResultsScrollViewer.Visibility = Visibility.Collapsed;
         }

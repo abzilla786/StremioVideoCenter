@@ -90,6 +90,56 @@ namespace StremioVideoCenter.Services
                 return new List<CinemetaCatalogItem>();
             }
 
+            try
+            {
+                return await GetCatalogOrThrowAsync(type, catalogId, extraSegment);
+            }
+            catch
+            {
+                // Unreachable/malformed - honest empty result, same
+                // policy as CatalogueService's own per-title try/catch.
+                return new List<CinemetaCatalogItem>();
+            }
+        }
+
+        // =========================================================
+        // SEARCH CATALOG (Slice 19A - failure is NOT an empty result)
+        // =========================================================
+        //
+        // Same request GetCatalogAsync("<type>", "top", "search=<query>")
+        // would make, but a network/HTTP/parse failure is thrown to the
+        // caller instead of being converted into an empty list, so Search
+        // can tell "the provider answered with no matches" apart from "the
+        // request failed". A successful response with no matches returns
+        // an empty list. Used only by SearchView; every other caller keeps
+        // the fail-soft GetCatalogAsync above.
+        public Task<List<CinemetaCatalogItem>> SearchCatalogAsync(string type, string query)
+        {
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                throw new ArgumentException("A catalog type is required.", nameof(type));
+            }
+
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                throw new ArgumentException("A search query is required.", nameof(query));
+            }
+
+            return GetCatalogOrThrowAsync(
+                type,
+                "top",
+                "search=" + Uri.EscapeDataString(query.Trim()));
+        }
+
+        // Shared by GetCatalogAsync (which swallows) and SearchCatalogAsync
+        // (which does not). Throws on a transport failure, or when the
+        // response body is empty/unparseable. A well-formed response with
+        // no "metas" entries is a legitimate empty result.
+        private async Task<List<CinemetaCatalogItem>> GetCatalogOrThrowAsync(
+            string type,
+            string catalogId,
+            string extraSegment)
+        {
             string url =
                 BaseUrl +
                 "/catalog/" +
@@ -101,21 +151,17 @@ namespace StremioVideoCenter.Services
                     : "/" + extraSegment) +
                 ".json";
 
-            try
-            {
-                string json = await DownloadStringAsync(url);
+            string json = await DownloadStringAsync(url);
 
-                CinemetaCatalogResponse response =
-                    Deserialize<CinemetaCatalogResponse>(json);
+            CinemetaCatalogResponse response =
+                Deserialize<CinemetaCatalogResponse>(json);
 
-                return response?.Metas ?? new List<CinemetaCatalogItem>();
-            }
-            catch
+            if (response == null)
             {
-                // Unreachable/malformed - honest empty result, same
-                // policy as CatalogueService's own per-title try/catch.
-                return new List<CinemetaCatalogItem>();
+                throw new InvalidDataException("Cinemeta returned an empty catalog response.");
             }
+
+            return response.Metas ?? new List<CinemetaCatalogItem>();
         }
 
         // =========================================================
