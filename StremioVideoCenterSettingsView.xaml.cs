@@ -2,7 +2,9 @@
 using StremioVideoCenter.Services;
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -13,6 +15,10 @@ namespace StremioVideoCenter
     {
         private bool isLoadingValues = false;
 
+        // The view model this view is currently listening to (see
+        // ObserveViewModel) - null when not loaded.
+        private StremioVideoCenterSettingsViewModel observedViewModel;
+
         // =========================================================
         // CONSTRUCTOR
         // =========================================================
@@ -22,6 +28,7 @@ namespace StremioVideoCenter
             InitializeComponent();
 
             Loaded += SettingsView_Loaded;
+            Unloaded += SettingsView_Unloaded;
         }
 
         // =========================================================
@@ -32,7 +39,53 @@ namespace StremioVideoCenter
             object sender,
             RoutedEventArgs e)
         {
+            ObserveViewModel();
+
             LoadSettingsIntoPasswordBoxes();
+        }
+
+        private void SettingsView_Unloaded(
+            object sender,
+            RoutedEventArgs e)
+        {
+            StopObservingViewModel();
+        }
+
+        // Slice 20 Stage 1B (settings freshness): Cancel replaces the view
+        // model's whole Settings object with the pre-edit clone
+        // (StremioVideoCenterSettingsViewModel.CancelEdit). Reload the
+        // controls when that happens so edits that were cancelled are not
+        // left on screen as though they had been saved.
+        private void ObserveViewModel()
+        {
+            StopObservingViewModel();
+
+            observedViewModel =
+                DataContext as StremioVideoCenterSettingsViewModel;
+
+            if (observedViewModel != null)
+            {
+                observedViewModel.PropertyChanged += ViewModel_PropertyChanged;
+            }
+        }
+
+        private void StopObservingViewModel()
+        {
+            if (observedViewModel != null)
+            {
+                observedViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+                observedViewModel = null;
+            }
+        }
+
+        private void ViewModel_PropertyChanged(
+            object sender,
+            PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(StremioVideoCenterSettingsViewModel.Settings))
+            {
+                LoadSettingsIntoPasswordBoxes();
+            }
         }
 
         // =========================================================
@@ -68,6 +121,10 @@ namespace StremioVideoCenter
             // fallback (StremioVideoCenterView.xaml.cs) are untouched.
 
             isLoadingValues = false;
+
+            // A message from an earlier refresh no longer applies to
+            // freshly loaded settings.
+            AddonRefreshStatus.Text = string.Empty;
 
             RefreshAddonInstancesList();
         }
@@ -196,6 +253,45 @@ namespace StremioVideoCenter
                 "https://comet.elfhosted.com/configure",
                 CometInstallStatus);
         }
+
+        // AnimeSub+: same recommended-provider pattern. The page below is
+        // its own configurator, which generates the user's personal
+        // manifest URL; Zino never fetches or installs anything until the
+        // user pastes that URL and clicks Install.
+        private void AnimeSubConfigure_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            OpenExternalConfigurePage(
+                "https://animesub.duckdns.org/",
+                AnimeSubInstallStatus);
+        }
+
+        private async void AnimeSubInstall_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            await InstallAddonFromManifestUrlAsync(
+                AnimeSubManifestUrlBox.Text,
+                "Recommended",
+                "animesub",
+                AddonInstallPolicy.ReplaceExisting,
+                "AnimeSub+",
+                AnimeSubInstallStatus,
+                AnimeSubInstallButton);
+        }
+
+        private void AnimeSubRemove_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            RemoveProviderInstance("animesub", AnimeSubAddonId);
+        }
+
+        // AnimeSub+'s manifest id. Used only to recognise an instance that
+        // was installed earlier through "Other Addons" (no ProviderKey), so
+        // it is shown and replaced instead of duplicated.
+        private const string AnimeSubAddonId = "org.soluserv.animesub";
 
         private void OpenExternalConfigurePage(
             string url,
@@ -412,6 +508,10 @@ namespace StremioVideoCenter
                     Roles = roles
                 };
 
+                // Slice 20 Stage 1B: per-resource types/idPrefixes and the
+                // configurable / configurationRequired hints.
+                AddonManifestMapper.ApplyResourceDetails(instance, manifest);
+
                 if (isReplacePolicy)
                 {
                     viewModel.Settings.InstallOrReplaceAddonInstance(instance);
@@ -437,6 +537,10 @@ namespace StremioVideoCenter
                 else if (manifestUrlInput == CometManifestUrlBox.Text)
                 {
                     CometManifestUrlBox.Text = string.Empty;
+                }
+                else if (manifestUrlInput == AnimeSubManifestUrlBox.Text)
+                {
+                    AnimeSubManifestUrlBox.Text = string.Empty;
                 }
                 else if (manifestUrlInput == CustomManifestUrlBox.Text)
                 {
@@ -466,22 +570,57 @@ namespace StremioVideoCenter
         private List<string> ExtractResourceNames(
             List<StremioManifestResource> resources)
         {
-            var names = new List<string>();
+            return AddonManifestMapper.ExtractResourceNames(resources);
+        }
 
-            if (resources == null)
+        // Slice 20 Stage 1B: explicit manifest refresh for one installed
+        // addon. Never runs automatically. On any failure the instance is
+        // left exactly as it was; the message shown is a fixed safe
+        // sentence and the addon is named by its safe display name only
+        // (host name when its name is a URL), never by its address.
+        // Like install/remove, the change is part of the settings being
+        // edited: it is kept when the settings are saved and discarded if
+        // they are cancelled.
+        private async void RefreshAddonManifest_Click(
+            object sender,
+            RoutedEventArgs e)
+        {
+            var button = sender as Button;
+            var instance = button?.Tag as AddonInstance;
+
+            if (instance == null)
             {
-                return names;
+                return;
             }
 
-            foreach (StremioManifestResource resource in resources)
-            {
-                if (resource != null && !string.IsNullOrWhiteSpace(resource.Name))
-                {
-                    names.Add(resource.Name);
-                }
-            }
+            string displayName =
+                StremioAddonService.SafeLogName(instance.FriendlyName);
 
-            return names;
+            button.IsEnabled = false;
+
+            AddonRefreshStatus.Text =
+                "Refreshing " + displayName + "...";
+
+            try
+            {
+                ManifestRefreshResult result =
+                    await AddonManifestRefresh.RefreshAsync(
+                        instance,
+                        CancellationToken.None);
+
+                // Re-bind so the row shows the refreshed details.
+                RefreshAddonInstancesList();
+
+                AddonRefreshStatus.Text =
+                    displayName + ": " + result.Message +
+                    (result.Succeeded
+                        ? " Save settings to keep this change."
+                        : string.Empty);
+            }
+            finally
+            {
+                button.IsEnabled = true;
+            }
         }
 
         private void RemoveAddonInstance_Click(
@@ -505,6 +644,11 @@ namespace StremioVideoCenter
             }
 
             viewModel.Settings.AddonInstances.Remove(instance);
+
+            // Also drop the matching legacy URL line, otherwise
+            // SyncLegacyAddonUrls re-creates the instance on the next
+            // load/Save. Cancel still restores both (BeginEdit clone).
+            viewModel.Settings.RemoveLegacyUrl(instance.ManifestUrl);
 
             RefreshAddonInstancesList();
         }
@@ -552,6 +696,16 @@ namespace StremioVideoCenter
                 "comet",
                 CometConfigureButton,
                 CometRemoveButton);
+
+            AnimeSubCurrentStatus.Text =
+                DescribeProviderStatus(viewModel.Settings.AddonInstances, "animesub", "AnimeSub+", AnimeSubAddonId);
+
+            ApplyProviderButtonState(
+                viewModel.Settings.AddonInstances,
+                "animesub",
+                AnimeSubConfigureButton,
+                AnimeSubRemoveButton,
+                AnimeSubAddonId);
         }
 
         // Describes whether a ReplaceExisting provider (Torrentio/Comet)
@@ -559,14 +713,30 @@ namespace StremioVideoCenter
         // manifest URL - only FriendlyName/Version, the same
         // credential-safe fields the installed-instances list itself
         // displays.
+        // Finds the instance of a recommended provider: by ProviderKey, or
+        // (optional addonId) an instance of the same addon installed earlier
+        // through "Other Addons", which has no ProviderKey. Torrentio and
+        // Comet pass no addonId, so for them this is the original match.
+        private static AddonInstance FindProviderInstance(
+            List<AddonInstance> instances,
+            string providerKey,
+            string addonId = null)
+        {
+            return instances?.Find(instance =>
+                instance != null &&
+                (string.Equals(instance.ProviderKey, providerKey, StringComparison.OrdinalIgnoreCase) ||
+                 (!string.IsNullOrWhiteSpace(addonId) &&
+                  string.IsNullOrWhiteSpace(instance.ProviderKey) &&
+                  string.Equals(instance.AddonId, addonId, StringComparison.OrdinalIgnoreCase))));
+        }
+
         private static string DescribeProviderStatus(
             List<AddonInstance> instances,
             string providerKey,
-            string displayName)
+            string displayName,
+            string addonId = null)
         {
-            AddonInstance existing = instances?.Find(instance =>
-                instance != null &&
-                string.Equals(instance.ProviderKey, providerKey, StringComparison.OrdinalIgnoreCase));
+            AddonInstance existing = FindProviderInstance(instances, providerKey, addonId);
 
             if (existing == null)
             {
@@ -591,11 +761,10 @@ namespace StremioVideoCenter
             List<AddonInstance> instances,
             string providerKey,
             Button configureButton,
-            Button removeButton)
+            Button removeButton,
+            string addonId = null)
         {
-            bool isConfigured = instances != null && instances.Exists(instance =>
-                instance != null &&
-                string.Equals(instance.ProviderKey, providerKey, StringComparison.OrdinalIgnoreCase));
+            bool isConfigured = FindProviderInstance(instances, providerKey, addonId) != null;
 
             configureButton.Content = isConfigured
                 ? "Reconfigure"
@@ -611,7 +780,7 @@ namespace StremioVideoCenter
         // the same AddonInstances.Remove + RefreshAddonInstancesList path
         // as the generic per-row "Remove" button in the installed-
         // instances list below.
-        private void RemoveProviderInstance(string providerKey)
+        private void RemoveProviderInstance(string providerKey, string addonId = null)
         {
             var viewModel =
                 DataContext as StremioVideoCenterSettingsViewModel;
@@ -621,9 +790,8 @@ namespace StremioVideoCenter
                 return;
             }
 
-            AddonInstance existing = viewModel.Settings.AddonInstances.Find(instance =>
-                instance != null &&
-                string.Equals(instance.ProviderKey, providerKey, StringComparison.OrdinalIgnoreCase));
+            AddonInstance existing =
+                FindProviderInstance(viewModel.Settings.AddonInstances, providerKey, addonId);
 
             if (existing == null)
             {
@@ -631,6 +799,11 @@ namespace StremioVideoCenter
             }
 
             viewModel.Settings.AddonInstances.Remove(existing);
+
+            // Drop only this instance's own legacy URL line, otherwise
+            // SyncLegacyAddonUrls re-creates it on the next load/Save.
+            // Cancel still restores both (BeginEdit clone).
+            viewModel.Settings.RemoveLegacyUrl(existing.ManifestUrl);
 
             RefreshAddonInstancesList();
         }

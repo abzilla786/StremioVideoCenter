@@ -15,6 +15,9 @@ namespace StremioVideoCenterControls
         {
             InitializeComponent();
 
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(MediaScrollViewer, DragScrollAxis.Horizontal);
+
             AddHandler(
                 MediaCard.SelectedEvent,
                 new RoutedEventHandler(MediaCard_Selected));

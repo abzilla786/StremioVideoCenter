@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace StremioVideoCenter.Models
@@ -68,5 +69,20 @@ namespace StremioVideoCenter.Models
         // remarks) - it is plumbed through here now so the foundation is
         // in place for Slice 17B rather than left unreachable.
         public Services.MyListService MyListService { get; set; }
+
+        // Slice 20 Stage 1B (settings freshness): optional live readers for
+        // the three values above that the View used to keep only as a
+        // snapshot taken when it was created. The View reads these each
+        // time it builds the addon registry or Real-Debrid service, so a
+        // Real-Debrid key or addon change saved in Settings applies to the
+        // very next playback attempt, and settings edits that were
+        // cancelled stop applying. When a provider is null (any caller
+        // that does not set it) the View falls back to the snapshot value
+        // above, exactly as before.
+        public Func<string> RealDebridApiKeyProvider { get; set; }
+
+        public Func<string> StremioAddonUrlsProvider { get; set; }
+
+        public Func<List<AddonInstance>> AddonInstancesProvider { get; set; }
     }
 }

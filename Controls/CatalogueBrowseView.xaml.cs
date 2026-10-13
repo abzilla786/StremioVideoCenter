@@ -117,6 +117,10 @@ namespace StremioVideoCenterControls
         {
             InitializeComponent();
 
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(DefaultScrollViewer, DragScrollAxis.Vertical);
+            DragScroll.Attach(FilteredScrollViewer, DragScrollAxis.Vertical);
+
             // Catches the bubbling MediaCard.SelectedEvent raised by the
             // raw MediaCards inside FilteredItemsControl (the filtered-
             // view WrapPanel grid isn't wrapped in a MediaSection, so

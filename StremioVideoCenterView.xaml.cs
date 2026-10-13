@@ -260,21 +260,76 @@ namespace StremioVideoCenter
         // REAL-DEBRID CREDENTIAL
         // =========================================================
 
-        private readonly string _realDebridApiToken;
+        // Slice 20 Stage 1B: read through the live provider when one was
+        // supplied (see StremioVideoCenterConfiguration), so the value is
+        // never older than the saved settings; otherwise the snapshot.
+        private readonly string _realDebridApiTokenSnapshot;
+        private readonly Func<string> _realDebridApiTokenProvider;
+
+        private string _realDebridApiToken
+        {
+            get
+            {
+                return _realDebridApiTokenProvider != null
+                    ? _realDebridApiTokenProvider()
+                    : _realDebridApiTokenSnapshot;
+            }
+        }
 
 
         // =========================================================
         // STREMIO ADDON URLS (newline-delimited, legacy)
         // =========================================================
 
-        private readonly string _stremioAddonUrls;
+        private readonly string _stremioAddonUrlsSnapshot;
+        private readonly Func<string> _stremioAddonUrlsProvider;
+
+        private string _stremioAddonUrls
+        {
+            get
+            {
+                return _stremioAddonUrlsProvider != null
+                    ? _stremioAddonUrlsProvider()
+                    : _stremioAddonUrlsSnapshot;
+            }
+        }
 
 
         // =========================================================
         // STREMIO ADDON INSTANCES (structured)
         // =========================================================
 
-        private readonly List<AddonInstance> _addonInstances;
+        private readonly List<AddonInstance> _addonInstancesSnapshot;
+        private readonly Func<List<AddonInstance>> _addonInstancesProvider;
+
+        // Slice 20 Stage 3: external subtitle search for the playing
+        // content. Which addons are asked, and whether one can serve this
+        // content id, is decided by the generic addon query from each
+        // addon's own manifest; this view only supplies the installed addon
+        // list (a snapshot, so a settings change cannot alter a running
+        // search). Nothing here runs until the selector is opened.
+        private Task<SubtitleDiscoveryResult> DiscoverExternalSubtitlesAsync(
+            PlaybackContext context,
+            CancellationToken cancellationToken)
+        {
+            List<AddonInstance> addons = _addonInstances;
+
+            return SubtitleDiscoveryService.DiscoverForContentAsync(
+                addons != null ? addons.ToList() : new List<AddonInstance>(),
+                context.ContentType,
+                context.CanonicalKey,
+                cancellationToken);
+        }
+
+        private List<AddonInstance> _addonInstances
+        {
+            get
+            {
+                return _addonInstancesProvider != null
+                    ? _addonInstancesProvider()
+                    : _addonInstancesSnapshot;
+            }
+        }
 
 
         // =========================================================
@@ -349,6 +404,9 @@ namespace StremioVideoCenter
         {
             InitializeComponent();
 
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(MainScrollViewer, DragScrollAxis.Vertical);
+
             // The Home hero has a design size (1240 x 698); keep it within the
             // space the window actually has (see ApplyResponsiveHeroSize).
             MainScrollViewer.SizeChanged += MainScrollViewer_SizeChanged;
@@ -358,14 +416,23 @@ namespace StremioVideoCenter
             _omdbApiKey =
                 configuration.OmdbApiKey;
 
-            _realDebridApiToken =
+            _realDebridApiTokenSnapshot =
                 configuration.RealDebridApiKey;
 
-            _stremioAddonUrls =
+            _realDebridApiTokenProvider =
+                configuration.RealDebridApiKeyProvider;
+
+            _stremioAddonUrlsSnapshot =
                 configuration.StremioAddonUrls;
 
-            _addonInstances =
+            _stremioAddonUrlsProvider =
+                configuration.StremioAddonUrlsProvider;
+
+            _addonInstancesSnapshot =
                 configuration.AddonInstances;
+
+            _addonInstancesProvider =
+                configuration.AddonInstancesProvider;
 
             _libraryLocations =
                 configuration.LibraryLocations;
@@ -3021,6 +3088,18 @@ namespace StremioVideoCenter
             FeedbackToast?.Show(message);
         }
 
+        // Slice 20 Stage 2: playback errors are shown through the same
+        // single-slot, non-focusable, non-hit-testable toast as other
+        // feedback (never a modal MessageBox). It shows for longer than a
+        // confirmation because it is a sentence to read, and being
+        // single-slot a new notice replaces the old one - they cannot stack.
+        private const double PlaybackNoticeSeconds = 6;
+
+        private void ShowPlaybackNotice(string message)
+        {
+            FeedbackToast?.Show(message, PlaybackNoticeSeconds);
+        }
+
         private const int RecommendationDebounceMilliseconds = 400;
 
         private PersonalisationService _personalisationService;
@@ -3890,8 +3969,8 @@ namespace StremioVideoCenter
                 TeardownEpisodeBrowserOverlay(
                     pendingEpisodeBrowser);
 
-                MessageBox.Show(
-                    "This title does not have a Stremio ID yet.");
+                ShowPlaybackNotice(
+                    "This title can't be played yet because it has no source identifier.");
 
                 return;
             }
@@ -3922,7 +4001,13 @@ namespace StremioVideoCenter
                 // so that is a no-op. It only matters if AddonInstances
                 // is unexpectedly null/empty, in which case legacy
                 // addon discovery still works exactly as before.
-                if (!string.IsNullOrWhiteSpace(_stremioAddonUrls))
+                // Slice 20: restricted to exactly that case, so a legacy
+                // addon the user removed (instance gone, URL line still
+                // present in an older save) is never resurrected here.
+                List<AddonInstance> registeredInstances = _addonInstances;
+
+                if ((registeredInstances == null || registeredInstances.Count == 0) &&
+                    !string.IsNullOrWhiteSpace(_stremioAddonUrls))
                 {
                     foreach (string url in _stremioAddonUrls.Split(
                         new[] { '\r', '\n' },
@@ -4085,8 +4170,9 @@ namespace StremioVideoCenter
                 // plumbing was needed. A genuine unexpected exception
                 // (network failure, malformed response, etc.) is
                 // unaffected - the catch block below still reports that
-                // separately via its own MessageBox, so a real error is
-                // never mistaken for a legitimate zero-result response.
+                // separately via a non-blocking notice (Slice 20 Stage 2),
+                // so a real error is never mistaken for a legitimate
+                // zero-result response.
                 List<NormalizedPlaybackSource> normalizedSources =
                     normalizer.NormalizeAll(
                         set.Sources);
@@ -4150,10 +4236,22 @@ namespace StremioVideoCenter
                     // failure recovery.
                     await ApplyMovieOverviewAsync(mediaItem, movieOverviewTask);
 
+                    // Slice 20 Stage 2: when the list is empty, say why in the
+                    // selector's own empty state (fixed wording only).
+                    string emptyExplanation = null;
+
+                    if (normalizedSources.Count == 0 && set.Sources.Count == 0)
+                    {
+                        emptyExplanation = set.Unresolved.Count == 0
+                            ? UserFacingErrors.ForNoSources()
+                            : UserFacingErrors.ForUnresolvedSources(set.Unresolved);
+                    }
+
                     selected =
                         await ShowSourceSelectorReplacingPlayerAsync(
                             normalizedSources,
-                            mediaItem);
+                            mediaItem,
+                            emptyExplanation);
                 }
 
                 StremioVideoCenterLogger.Info(
@@ -4209,8 +4307,10 @@ namespace StremioVideoCenter
                     {
                         await StartPlaybackAsync(context, diagSeq);
                     }
-                    catch (Exception startEx)
+                    catch (Exception startEx) when (!(startEx is PlayerStartupException))
                     {
+                        // (A player that never started is not a bad source:
+                        // that falls through to the outer handler instead.)
                         // The saved source could not even be handed to mpv:
                         // fall back to the Source Selector once (no retry
                         // loop). The saved source and position are untouched
@@ -4249,12 +4349,13 @@ namespace StremioVideoCenter
                 ClosePlayer();
 
                 // Never ex.Message: player/IPC/HTTP exception text can embed
-                // command JSON or a playback/addon URL.
-                MessageBox.Show(
-                    "Unable to start playback.\n\n" +
-                    "Title: " +
-                    mediaItem.Title +
-                    "\n\n" +
+                // command JSON or a playback/addon URL. Non-blocking: the
+                // player has been closed and the caller carries on exactly
+                // as it did after the old dialog was dismissed.
+                ShowPlaybackNotice(
+                    "Unable to start " +
+                    (string.IsNullOrWhiteSpace(mediaItem.Title) ? "playback" : "\u201C" + mediaItem.Title + "\u201D") +
+                    ". " +
                     UserFacingErrors.ForPlayback(ex));
             }
         }
@@ -4266,6 +4367,10 @@ namespace StremioVideoCenter
             PlaybackContext context,
             int diagSeq)
         {
+            // A previous attempt's error notice must not linger over (or
+            // under) a new attempt.
+            FeedbackToast?.Hide();
+
             // Reusing the running player for another episode: persist the
             // episode being left (its recorder is bound to ITS context), then
             // drop that recorder so nothing from it can reach the new episode.
@@ -4285,6 +4390,11 @@ namespace StremioVideoCenter
 
                 _stremioPlayer.CloseRequested +=
                     StremioPlayer_CloseRequested;
+
+                // Slice 20 Stage 3: the subtitle selector asks this view for
+                // the external subtitle search when (and only when) it opens.
+                _stremioPlayer.ExternalSubtitleProvider =
+                    DiscoverExternalSubtitlesAsync;
 
                 // Slice 16B: same subscribe-on-create/unsubscribe-in-
                 // ClosePlayer lifecycle as CloseRequested above - see
@@ -4447,8 +4557,13 @@ namespace StremioVideoCenter
                 // An empty list shows the selector's existing "No playable
                 // sources found." state. The player is closed under the
                 // selector (no Home frame), flushing any recorded progress.
+                // Slice 20 Stage 2: the selector now says the previous source
+                // could not be played (it used to reappear with no explanation).
                 NormalizedPlaybackSource next =
-                    await ShowSourceSelectorReplacingPlayerAsync(remaining, mediaItem);
+                    await ShowSourceSelectorReplacingPlayerAsync(
+                        remaining,
+                        mediaItem,
+                        UserFacingErrors.ForPlaybackFailedAfterStart());
 
                 if (next == null)
                 {
@@ -4473,7 +4588,7 @@ namespace StremioVideoCenter
                     "Source recovery failed: " + UserFacingErrors.ForLog(ex));
 
                 ClosePlayer();
-                MessageBox.Show("Unable to start playback.\n\n" + UserFacingErrors.ForPlayback(ex));
+                ShowPlaybackNotice("Unable to start playback. " + UserFacingErrors.ForPlayback(ex));
             }
             finally
             {
@@ -4840,7 +4955,8 @@ namespace StremioVideoCenter
 
         private async Task<NormalizedPlaybackSource> ShowSourceSelectorAsync(
             List<NormalizedPlaybackSource> sources,
-            MediaItem mediaItem)
+            MediaItem mediaItem,
+            string failureNotice = null)
         {
             int diagSeq = Interlocked.Increment(ref _diagSrcSelSeq);
 
@@ -4901,6 +5017,24 @@ namespace StremioVideoCenter
             selector.Populate(sources, mediaItem, preferredProviderKey);
             selector.SetMyListState(IsMediaItemInMyList(mediaItem));
 
+            // Slice 20 Stage 2: optional explanation of why the user is
+            // looking at this selector. With nothing to list it becomes part
+            // of the empty state; otherwise it is a transient notice.
+            bool failureNoticeToasted = false;
+
+            if (!string.IsNullOrWhiteSpace(failureNotice))
+            {
+                if (sources == null || sources.Count == 0)
+                {
+                    selector.SetEmptyStateDetail(failureNotice);
+                }
+                else
+                {
+                    ShowPlaybackNotice(failureNotice);
+                    failureNoticeToasted = true;
+                }
+            }
+
             // Diagnostic only: no provider key/URL is logged.
             StremioVideoCenterLogger.Info(
                 string.Format(
@@ -4924,6 +5058,13 @@ namespace StremioVideoCenter
 
             NormalizedPlaybackSource result =
                 await completionSource.Task;
+
+            // Leaving the selector (a source chosen, or Back) ends the
+            // notice that explained it.
+            if (failureNoticeToasted)
+            {
+                FeedbackToast?.Hide();
+            }
 
             // Slice 19B: remember the provider filter for this content. The
             // key is kept in memory only (it derives from a configured
@@ -5533,10 +5674,11 @@ namespace StremioVideoCenter
         // progress flushed exactly as before; only the order changed.
         private async Task<NormalizedPlaybackSource> ShowSourceSelectorReplacingPlayerAsync(
             List<NormalizedPlaybackSource> sources,
-            MediaItem mediaItem)
+            MediaItem mediaItem,
+            string failureNotice = null)
         {
             Task<NormalizedPlaybackSource> selection =
-                ShowSourceSelectorAsync(sources, mediaItem);
+                ShowSourceSelectorAsync(sources, mediaItem, failureNotice);
 
             if (_stremioPlayer != null)
             {

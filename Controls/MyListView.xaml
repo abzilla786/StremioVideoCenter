@@ -191,7 +191,8 @@
         <!-- CONTENT                                                    -->
         <!-- ========================================================= -->
 
-        <ScrollViewer Grid.Row="1"
+        <ScrollViewer x:Name="PageScrollViewer"
+                      Grid.Row="1"
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled">
             <StackPanel x:Name="FiltersAndResultsPanel" Margin="32,0,32,40">

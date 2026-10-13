@@ -372,7 +372,8 @@
         <!-- CONTENT (single scroll - Kitsu Browse only)                -->
         <!-- ========================================================= -->
 
-        <ScrollViewer Grid.Row="1"
+        <ScrollViewer x:Name="PageScrollViewer"
+                      Grid.Row="1"
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled">
             <StackPanel Margin="32,0,32,40">

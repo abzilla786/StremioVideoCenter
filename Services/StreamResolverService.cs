@@ -61,7 +61,11 @@ namespace StremioVideoCenter.Services
             {
                 if (_realDebrid == null)
                 {
-                    throw new InvalidOperationException(
+                    // RealDebridException derives from InvalidOperationException,
+                    // so this is still the same exception family as before;
+                    // the typed reason lets the caller word it precisely.
+                    throw new RealDebridException(
+                        RealDebridFailureReason.NotConfigured,
                         "This stream requires Real-Debrid, but no Real-Debrid credential has been configured.");
                 }
 
@@ -70,10 +74,9 @@ namespace StremioVideoCenter.Services
 
                 StremioVideoCenterLogger.Info(
                     string.Format(
-                        "[CTRL-DIAG] Resolve#{0} time={1:HH:mm:ss.fff} awaiting _realDebrid.ResolveMagnetAsync infoHash={2} fileIdx={3}",
+                        "[CTRL-DIAG] Resolve#{0} time={1:HH:mm:ss.fff} awaiting _realDebrid.ResolveMagnetAsync fileIdx={2}",
                         diagSeq,
                         diagCallStart,
-                        stream.InfoHash,
                         stream.FileIdx.HasValue ? stream.FileIdx.Value.ToString() : "null"));
 
                 string directUrl = await _realDebrid.ResolveMagnetAsync(stream.InfoHash, stream.FileIdx);

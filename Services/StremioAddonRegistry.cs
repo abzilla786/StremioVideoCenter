@@ -49,6 +49,12 @@ namespace StremioVideoCenter.Services
             // to prior behaviour (query it, subject to the ResourceNames
             // check) rather than excluding it.
             public List<string> Roles;
+
+            // The addon's stored manifest declarations (resources, types,
+            // idPrefixes), when it was built from an AddonInstance. Null for
+            // legacy URL-only entries. Used only to avoid asking an addon
+            // for content ids it declared it does not serve.
+            public AddonInstance Declaration;
         }
 
         private readonly List<AddonEntry> _entries = new List<AddonEntry>();
@@ -132,7 +138,7 @@ namespace StremioVideoCenter.Services
                         ? instance.FriendlyName
                         : instance.AddonId;
 
-                registry.AddAddon(instance.ManifestUrl, displayName, instance.ResourceNames, instance.Roles);
+                registry.AddAddon(instance.ManifestUrl, displayName, instance.ResourceNames, instance.Roles, instance);
             }
 
             return registry;
@@ -176,7 +182,7 @@ namespace StremioVideoCenter.Services
         // "unknown, fall back to the ResourceNames check", exactly
         // preserving "queried for every request it's capable of" prior
         // behaviour.
-        public void AddAddon(string addonUrl, string friendlyName = null, List<string> resourceNames = null, List<string> roles = null)
+        public void AddAddon(string addonUrl, string friendlyName = null, List<string> resourceNames = null, List<string> roles = null, AddonInstance declaration = null)
         {
             if (string.IsNullOrWhiteSpace(addonUrl))
             {
@@ -200,7 +206,8 @@ namespace StremioVideoCenter.Services
                 FriendlyName = friendlyName,
                 Service = new StremioAddonService(trimmed),
                 ResourceNames = resourceNames,
-                Roles = roles
+                Roles = roles,
+                Declaration = declaration
             });
         }
 
@@ -224,7 +231,10 @@ namespace StremioVideoCenter.Services
         // StreamProvider check below) - no content-type input is needed
         // at all, and none of this method's logic branches on the
         // request's content type.
-        public async Task<List<StremioStream>> GetAllStreamsAsync(string type, string id)
+        public async Task<List<StremioStream>> GetAllStreamsAsync(
+            string type,
+            string id,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
             int diagOuterSeq = Interlocked.Increment(ref _diagAddonCallSeq);
 
@@ -257,7 +267,7 @@ namespace StremioVideoCenter.Services
                             "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (known capabilities do not include \"stream\")",
                             diagOuterSeq,
                             DateTime.UtcNow,
-                            entry.FriendlyName ?? "(unnamed)"));
+                            AddonLogName(entry)));
 
                     continue;
                 }
@@ -288,7 +298,39 @@ namespace StremioVideoCenter.Services
                             "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (known Roles do not include StreamProvider)",
                             diagOuterSeq,
                             DateTime.UtcNow,
-                            entry.FriendlyName ?? "(unnamed)"));
+                            AddonLogName(entry)));
+
+                    continue;
+                }
+
+                // Declared-id skip (Slice 20 Stage 3 registration audit): an
+                // addon whose manifest declares the id prefixes it serves for
+                // "stream" (per-resource, else manifest-level) is not asked
+                // for an id that matches none of them - e.g. an anime-only
+                // provider is not sent a movie "tt..." id. Only the id prefix
+                // is checked here: the type is deliberately not (passed as
+                // null), because Zino sends anime as "series" and manifests
+                // differ in how they list anime types. A manifest that
+                // declares no prefixes, and every legacy entry, is unknown
+                // and is still queried, exactly as before. Core addons are
+                // exempt: their declarations are seeded by Zino rather than
+                // read from a live manifest (Local Files, for one, is seeded
+                // with only its own local:/bt: prefixes), so they are never
+                // excluded by them.
+                if (entry.Declaration != null &&
+                    !entry.Declaration.IsCore &&
+                    !AddonResourceCompatibility.AllowsContent(
+                        entry.Declaration,
+                        AddonCapabilities.Streams,
+                        null,
+                        id))
+                {
+                    StremioVideoCenterLogger.Info(
+                        string.Format(
+                            "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (content id not within its declared id prefixes)",
+                            diagOuterSeq,
+                            DateTime.UtcNow,
+                            AddonLogName(entry)));
 
                     continue;
                 }
@@ -303,7 +345,7 @@ namespace StremioVideoCenter.Services
                 // from before this slice and still performed inside
                 // QueryAddonAsync below - only WHEN the requests are
                 // issued changes, not any per-addon behaviour.
-                tasks.Add(QueryAddonAsync(entry, type, id, diagOuterSeq));
+                tasks.Add(QueryAddonAsync(entry, type, id, diagOuterSeq, cancellationToken));
             }
 
             List<StremioStream>[] perAddonResults = await Task.WhenAll(tasks);
@@ -328,6 +370,16 @@ namespace StremioVideoCenter.Services
             return combined;
         }
 
+        // Name used in diagnostics. Normally the addon's friendly name. A
+        // friendly name that is itself an http(s) URL (an addon added by
+        // URL and never renamed) is reduced to its host name only: such a
+        // URL can carry the user's key or addon configuration in its path
+        // or query, none of which may reach the log.
+        private static string AddonLogName(AddonEntry entry)
+        {
+            return StremioAddonService.SafeLogName(entry.FriendlyName);
+        }
+
         // Extracted from GetAllStreamsAsync's old inline sequential loop
         // body so each eligible addon's request can be launched
         // concurrently via Task.WhenAll above. The try/catch, logging,
@@ -342,7 +394,8 @@ namespace StremioVideoCenter.Services
             AddonEntry entry,
             string type,
             string id,
-            int diagOuterSeq)
+            int diagOuterSeq,
+            CancellationToken cancellationToken)
         {
             DateTime diagAddonCallStart = DateTime.UtcNow;
 
@@ -351,18 +404,18 @@ namespace StremioVideoCenter.Services
                     "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} awaiting entry.Service.GetStreamsAsync addon={2}",
                     diagOuterSeq,
                     diagAddonCallStart,
-                    entry.FriendlyName ?? "(unnamed)"));
+                    AddonLogName(entry)));
 
             try
             {
-                List<StremioStream> streams = await entry.Service.GetStreamsAsync(type, id);
+                List<StremioStream> streams = await entry.Service.GetStreamsAsync(type, id, cancellationToken);
 
                 StremioVideoCenterLogger.Info(
                     string.Format(
                         "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} entry.Service.GetStreamsAsync returned addon={2} streamCount={3} elapsedMs={4}",
                         diagOuterSeq,
                         DateTime.UtcNow,
-                        entry.FriendlyName ?? "(unnamed)",
+                        AddonLogName(entry),
                         streams != null ? streams.Count : 0,
                         (DateTime.UtcNow - diagAddonCallStart).TotalMilliseconds));
 
@@ -384,16 +437,28 @@ namespace StremioVideoCenter.Services
 
                 return tagged;
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Only the CALLER's cancellation is rethrown - it is not an
+                // addon failure and must not be swallowed as one. Any other
+                // cancellation-type exception (not caused by this token)
+                // falls through to the general handler below and is treated
+                // as that addon failing, exactly as before.
+                throw;
+            }
             catch (Exception ex)
             {
+                // Slice 20 Stage 1A: ForLog (exception type + message with
+                // URLs and local paths removed) instead of the raw message,
+                // which can carry the addon URL and its embedded key.
                 StremioVideoCenterLogger.Info(
                     string.Format(
                         "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} entry.Service.GetStreamsAsync threw addon={2} elapsedMs={3} ex={4}",
                         diagOuterSeq,
                         DateTime.UtcNow,
-                        entry.FriendlyName ?? "(unnamed)",
+                        AddonLogName(entry),
                         (DateTime.UtcNow - diagAddonCallStart).TotalMilliseconds,
-                        ex.Message));
+                        UserFacingErrors.ForLog(ex)));
 
                 // Skip this addon; others may still succeed - same
                 // fail-soft contract as before this slice, just returning
@@ -439,7 +504,7 @@ namespace StremioVideoCenter.Services
                 catch (Exception ex)
                 {
                     result.Success = false;
-                    result.Message = ex.Message;
+                    result.Message = UserFacingErrors.ForLog(ex);
                 }
 
                 results.Add(result);

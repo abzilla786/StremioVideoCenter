@@ -140,7 +140,8 @@ namespace StremioVideoCenter.Services
                     result.Unresolved.Add(new UnresolvedSource
                     {
                         Stream = stream,
-                        Reason = "No direct URL or torrent source - external-only streams are not supported for in-app playback."
+                        Reason = "No direct URL or torrent source - external-only streams are not supported for in-app playback.",
+                        Cause = UnresolvedCause.Unsupported
                     });
 
                     continue;
@@ -190,7 +191,8 @@ namespace StremioVideoCenter.Services
                             Stream = stream,
                             Reason = "Real-Debrid resolution limit reached (" +
                                 _maxRealDebridAttempts +
-                                " per request) - not attempted, retained for future selection."
+                                " per request) - not attempted, retained for future selection.",
+                            Cause = UnresolvedCause.NotAttempted
                         });
 
                         continue;
@@ -209,7 +211,7 @@ namespace StremioVideoCenter.Services
                     !string.IsNullOrWhiteSpace(stream.Url)
                         ? "Url"
                         : (!string.IsNullOrWhiteSpace(stream.InfoHash)
-                            ? "InfoHash=" + stream.InfoHash + " fileIdx=" +
+                            ? "Torrent fileIdx=" +
                               (stream.FileIdx.HasValue ? stream.FileIdx.Value.ToString() : "null")
                             : "(neither)");
 
@@ -245,19 +247,34 @@ namespace StremioVideoCenter.Services
                 {
                     StremioVideoCenterLogger.Info(
                         string.Format(
-                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync threw stream=[{2}] ex={3}",
+                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync threw stream=[{2}] debridReason={3} ex={4}",
                             diagSeq,
                             DateTime.UtcNow,
                             diagStreamIdentity,
-                            ex.Message));
+                            ex is RealDebridException
+                                ? ((RealDebridException)ex).Reason.ToString()
+                                : "(n/a)",
+                            UserFacingErrors.ForLog(ex)));
 
                     // One stream failing (Real-Debrid not configured, a
                     // specific torrent failing to resolve, a timeout, etc.)
                     // never fails the whole batch - recorded and skipped.
+                    // Slice 20 Stage 2: the typed Real-Debrid reason (set
+                    // only where the evidence established it) is kept so
+                    // the caller can explain WHY nothing resolved. Reason
+                    // stays the log-safe text and is never displayed.
+                    RealDebridException debridFailure = ex as RealDebridException;
+
                     result.Unresolved.Add(new UnresolvedSource
                     {
                         Stream = stream,
-                        Reason = ex.Message
+                        Reason = UserFacingErrors.ForLog(ex),
+                        Cause = ex is NotSupportedException
+                            ? UnresolvedCause.Unsupported
+                            : UnresolvedCause.ResolutionFailed,
+                        DebridReason = debridFailure != null
+                            ? (RealDebridFailureReason?)debridFailure.Reason
+                            : null
                     });
 
                     continue;
@@ -268,7 +285,8 @@ namespace StremioVideoCenter.Services
                     result.Unresolved.Add(new UnresolvedSource
                     {
                         Stream = stream,
-                        Reason = "Resolved to an empty playback URL."
+                        Reason = "Resolved to an empty playback URL.",
+                        Cause = UnresolvedCause.ResolutionFailed
                     });
 
                     continue;
@@ -345,6 +363,26 @@ namespace StremioVideoCenter.Services
     {
         public StremioStream Stream { get; set; }
 
+        // Log-safe diagnostic text. Not for display.
         public string Reason { get; set; }
+
+        // Slice 20 Stage 2: why this stream is unresolved, as a category
+        // (internal; user wording is UserFacingErrors').
+        public UnresolvedCause Cause { get; set; }
+
+        // Set only when resolution threw a classified Real-Debrid failure.
+        public RealDebridFailureReason? DebridReason { get; set; }
+    }
+
+    public enum UnresolvedCause
+    {
+        // Resolution was attempted and failed (or produced nothing).
+        ResolutionFailed,
+
+        // Not resolvable in-app by design (e.g. external-only stream).
+        Unsupported,
+
+        // Skipped because the Real-Debrid attempt budget was used up.
+        NotAttempted
     }
 }

@@ -88,6 +88,9 @@ namespace StremioVideoCenterControls
         {
             InitializeComponent();
 
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(ResultsScrollViewer, DragScrollAxis.Vertical);
+
             MoviesSection.MediaSelected += Section_MediaSelected;
             TvSection.MediaSelected += Section_MediaSelected;
             AnimeSection.MediaSelected += Section_MediaSelected;

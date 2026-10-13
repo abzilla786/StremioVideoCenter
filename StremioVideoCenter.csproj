@@ -106,6 +106,8 @@
     <Compile Include="Controls\ProfileSelectionView.xaml.cs">
       <DependentUpon>ProfileSelectionView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\DragScroll.cs" />
+    <Compile Include="Controls\Player\Menus\SubtitlePage.cs" />
     <Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
       <DependentUpon>SettingsMenu.xaml</DependentUpon>
     </Compile>
@@ -120,6 +122,7 @@
     <Compile Include="Controls\Player\StartupTrace.cs" />
     <Compile Include="Models\MpvTrackInfo.cs" />
     <Compile Include="Models\TrackLabels.cs" />
+    <Compile Include="Models\SubtitleOption.cs" />
     <Compile Include="Models\TrackMenuLayout.cs" />
     <Compile Include="Models\PlaybackTracks.cs" />
     <Compile Include="Services\MpvTrackParser.cs" />
@@ -180,6 +183,11 @@
     <Compile Include="Models\EpisodeNavigation.cs" />
     <Compile Include="Services\ResumePlanner.cs" />
     <Compile Include="Services\UserFacingErrors.cs" />
+    <Compile Include="Services\AddonManifestRefreshService.cs" />
+    <Compile Include="Services\AddonResourceQueryService.cs" />
+    <Compile Include="Services\BoundedHttp.cs" />
+    <Compile Include="Services\LogFileRedactor.cs" />
+    <Compile Include="Services\SubtitleDiscoveryService.cs" />
     <Compile Include="Models\PlaybackContext.cs" />
     <Compile Include="Models\SavedSourceReference.cs" />
     <Compile Include="Models\WatchHistoryEntry.cs" />

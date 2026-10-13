@@ -32,6 +32,18 @@ namespace StremioVideoCenterControls
         private bool _pendingTrackMenuIsAudio;
         private bool _disposed;
 
+        // Slice 20 Stage 3: the full-page subtitle selector. It lives in the
+        // same MenuHost as the other menus (PlayerMenu.Subtitles), so Back,
+        // focus return and the pause/restore guard are shared with them.
+        private readonly SubtitlePage _subtitlePage = new SubtitlePage();
+        private CancellationTokenSource _subtitleDiscoveryCts;
+        private int _subtitleDiscoverySerial;
+
+        // Supplies the external subtitle search for the playing content
+        // (set by the Video Center view, which owns the addon list). Called
+        // only when the selector opens; null means "no external source".
+        public Func<PlaybackContext, CancellationToken, Task<SubtitleDiscoveryResult>> ExternalSubtitleProvider { get; set; }
+
         // Loaded and PlayVideoAsync can both request startup at the same time.
         // Serialize startup so PlayerSession.StartAsync cannot tear down a
         // process/IPC connection that another startup call is still using.
@@ -160,6 +172,12 @@ namespace StremioVideoCenterControls
             _trackMenu.SubtitleDelayStepRequested += TrackMenu_SubtitleDelayStepRequested;
             _trackMenu.SubtitleDelayResetRequested += TrackMenu_SubtitleDelayResetRequested;
 
+            _subtitlePage.OptionChosen += SubtitlePage_OptionChosen;
+            _subtitlePage.OffChosen += SubtitlePage_OffChosen;
+            _subtitlePage.BackRequested += SubtitlePage_BackRequested;
+            _subtitlePage.DelayStepRequested += TrackMenu_SubtitleDelayStepRequested;
+            _subtitlePage.DelayResetRequested += TrackMenu_SubtitleDelayResetRequested;
+
             _progressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             _progressTimer.Tick += ProgressTimer_Tick;
 
@@ -210,13 +228,16 @@ namespace StremioVideoCenterControls
             }
             catch (Exception ex)
             {
-                // Details go to the log (URL-stripped); the dialog stays generic
-                // so no command text or URL can reach the user's screen.
+                // Details go to the log (URL-stripped). No dialog: this
+                // attempt runs concurrently with PlayVideoAsync's own
+                // EnsureStartedAsync (they share the startup gate, and the
+                // second one retries), so the outcome that matters is
+                // PlayVideoAsync's - if that also fails its caller closes
+                // the player and shows a non-blocking notice; if it
+                // succeeds there is nothing to report. A modal here used to
+                // appear on top of (and in addition to) that handling.
                 StremioVideoCenterLogger.Info(
                     "MpvPlayer_Loaded: startup failed - " + UserFacingErrors.ForLog(ex));
-                MessageBox.Show(
-                    UserFacingErrors.ForPlayerStartup(ex),
-                    "MPV Playback Error");
                 // Controls (and Close) remain visible/open regardless.
             }
         }
@@ -257,6 +278,13 @@ namespace StremioVideoCenterControls
             SeekSlider.RequiresEngagement = false;
             SeekSlider.OnStepLeft = amount => { var ignored = SeekRelativeAsync(-amount); };
             SeekSlider.OnStepRight = amount => { var ignored = SeekRelativeAsync(amount); };
+
+            // Click-to-seek: see SeekSlider_TrackPress. handledEventsToo is
+            // required - the Slider itself marks a track press as handled.
+            SeekSlider.AddHandler(
+                UIElement.PreviewMouseLeftButtonDownEvent,
+                new MouseButtonEventHandler(SeekSlider_TrackPress),
+                true);
 
             // Volume slider sits in the middle of the button row: it only
             // consumes Left/Right once engaged with A/Enter, so it can never
@@ -323,7 +351,16 @@ namespace StremioVideoCenterControls
                 catch (Exception ex)
                 {
                     StartupTrace.Log("EnsureStartedAsync: attempt " + attemptId + " StartAsync threw: " + UserFacingErrors.ForLog(ex));
-                    throw;
+
+                    // Cancellation passes through untouched. Anything else
+                    // means the player process/IPC could not be brought
+                    // up: tag it so callers can tell that apart from a
+                    // file mpv refused to play. The original is kept as
+                    // the inner exception for the log.
+                    if (ex is OperationCanceledException)
+                        throw;
+
+                    throw new PlayerStartupException(ex);
                 }
             }
             finally
@@ -375,6 +412,9 @@ namespace StremioVideoCenterControls
             // A menu left open over a closing player resumes nothing.
             _menuGuard.Discard();
 
+            // No subtitle search outlives the player.
+            CancelSubtitleDiscovery();
+
             if (_hostWindow != null)
             {
                 _hostWindow.LocationChanged -= HostWindow_GeometryChanged;
@@ -398,6 +438,11 @@ namespace StremioVideoCenterControls
             try { _trackMenu.TrackSelected -= TrackMenu_TrackSelected; } catch { }
             try { _trackMenu.SubtitleDelayStepRequested -= TrackMenu_SubtitleDelayStepRequested; } catch { }
             try { _trackMenu.SubtitleDelayResetRequested -= TrackMenu_SubtitleDelayResetRequested; } catch { }
+            try { _subtitlePage.OptionChosen -= SubtitlePage_OptionChosen; } catch { }
+            try { _subtitlePage.OffChosen -= SubtitlePage_OffChosen; } catch { }
+            try { _subtitlePage.BackRequested -= SubtitlePage_BackRequested; } catch { }
+            try { _subtitlePage.DelayStepRequested -= TrackMenu_SubtitleDelayStepRequested; } catch { }
+            try { _subtitlePage.DelayResetRequested -= TrackMenu_SubtitleDelayResetRequested; } catch { }
             try { _startupGate.Dispose(); } catch { }
 
             if (_session != null)
@@ -1415,7 +1460,7 @@ namespace StremioVideoCenterControls
             EnforceMenuPlaybackHold(state);
 
             if (_uiState.OpenMenu == PlayerMenu.Subtitles)
-                _trackMenu.UpdateSubtitleDelay(state.SubtitleDelaySeconds);
+                _subtitlePage.UpdateDelay(state.SubtitleDelaySeconds);
         }
 
         // The ONE place play/pause visuals are derived from playback state,
@@ -1673,6 +1718,38 @@ namespace StremioVideoCenterControls
             RestartHideTimer();
         }
 
+        // A plain click on the bar (not on the thumb). With IsMoveToPointEnabled
+        // the Slider jumps its Value to the click point inside its own
+        // PreviewMouseLeftButtonDown handling and marks the event handled.
+        // WPF shares one event-args object between PreviewMouseDown and
+        // PreviewMouseLeftButtonDown, so the PreviewMouseDown handler above
+        // is then never invoked: the "dragging" state was never entered and
+        // the mouse-up commit returned immediately - the thumb jumped, but no
+        // seek was sent and the next position update moved it back. Pressing
+        // the thumb itself is not handled by the Slider, so that path (and
+        // drag-to-seek) is unchanged. Here the already-updated Value is
+        // committed through the same CommitSeekAsync used by a drag, which
+        // also clears the state in its finally block, so a click can never
+        // leave the seek bar stuck in "seeking".
+        private void SeekSlider_TrackPress(object sender, MouseButtonEventArgs e)
+        {
+            if (!e.Handled ||
+                e.ChangedButton != MouseButton.Left ||
+                _uiState.IsSeekBarBeingDragged ||
+                _disposed ||
+                _session == null ||
+                _session.State.DurationSeconds <= 0)
+            {
+                return;
+            }
+
+            _uiState.IsSeekBarBeingDragged = true;
+            ShowControls();
+            RestartHideTimer();
+
+            var ignored = CommitSeekAsync();
+        }
+
         private void SeekSlider_PreviewMouseUp(object sender, MouseButtonEventArgs e)
         {
             var ignored = CommitSeekAsync();
@@ -1761,7 +1838,7 @@ namespace StremioVideoCenterControls
 
         private void SubtitleButton_Click(object sender, RoutedEventArgs e)
         {
-            OpenTrackMenu(isAudio: false);
+            OpenSubtitlePage();
         }
 
         private int _trackMenuVersion;
@@ -1902,8 +1979,18 @@ namespace StremioVideoCenterControls
         private void RefreshOpenTrackMenuIfStale()
         {
             if (_session == null || _focus == null) return;
-            if (_uiState.OpenMenu != PlayerMenu.Audio && _uiState.OpenMenu != PlayerMenu.Subtitles) return;
             if (_session.State.TracksVersion == _trackMenuVersion) return;
+
+            // The subtitle page redraws itself in place (focus stays on the
+            // same item when it still exists).
+            if (_uiState.OpenMenu == PlayerMenu.Subtitles)
+            {
+                FeedSubtitlePage();
+                _subtitlePage.Refresh();
+                return;
+            }
+
+            if (_uiState.OpenMenu != PlayerMenu.Audio) return;
 
             _focus.ReplaceActiveMenuGroup(BuildTrackMenuGroup(_pendingTrackMenuIsAudio));
         }
@@ -1970,6 +2057,265 @@ namespace StremioVideoCenterControls
             ShowControls();
         }
 
+        // =====================================================================
+        // SUBTITLE SELECTOR (Slice 20 Stage 3)
+        //
+        // Opens exactly like the Audio menu did - same guard captures whether
+        // mpv was playing and pauses only then, same close path resumes only
+        // then - but shows the full-page, language-first SubtitlePage. The
+        // embedded tracks are shown at once from mpv's track list; the addon
+        // search runs in the background and fills in the external side. A
+        // failing or slow search never blocks the embedded options.
+        // =====================================================================
+
+        private void OpenSubtitlePage()
+        {
+            if (_session == null || _focus == null) return;
+
+            // Already open: a second request must not start a second
+            // session (it would re-capture the already-paused state as the
+            // "before" state and the video would never resume).
+            if (_uiState.OpenMenu == PlayerMenu.Subtitles) return;
+
+            if (!_focus.IsAtRootScope)
+                CloseActiveMenuAndRestoreFocus(restorePlayback: false);
+
+            PlaybackState state = _session.State;
+            if (_menuGuard.Open(
+                    state.IsPlaybackEstablished && state.IsPlaying,
+                    _session.Context,
+                    _session.PlayGeneration))
+            {
+                var pauseTask = HoldPlaybackForMenuAsync();
+            }
+
+            _subtitlePage.Reset();
+            FeedSubtitlePage();
+            _subtitlePage.SetExternalLoading();
+            _subtitlePage.Refresh();
+
+            _menuSerial++;
+
+            MenuHost.Content = _subtitlePage;
+            MenuHost.Visibility = Visibility.Visible;
+            _uiState.OpenMenu = PlayerMenu.Subtitles;
+
+            _focus.PushMenuScope(_subtitlePage.CreateFocusGroup(), SubtitleButton);
+            ShowControls();
+            RestartHideTimer();
+
+            StartSubtitleDiscovery();
+        }
+
+        // mpv's current subtitle state into the page.
+        private void FeedSubtitlePage()
+        {
+            PlaybackState state = _session.State;
+
+            _trackMenuVersion = state.TracksVersion;
+
+            _subtitlePage.SetTracks(state.SubtitleTracks, state.SelectedSubtitleTrackId, state.TracksLoaded);
+            _subtitlePage.SetLoadedExternal(_session.LoadedExternalSubtitles);
+            _subtitlePage.UpdateDelay(state.SubtitleDelaySeconds);
+        }
+
+        private void CancelSubtitleDiscovery()
+        {
+            CancellationTokenSource cts = _subtitleDiscoveryCts;
+            _subtitleDiscoveryCts = null;
+            _subtitleDiscoverySerial++;
+
+            if (cts == null) return;
+
+            // Cancel only: the token has no timers or handles to release,
+            // and a request still holding it must not see it disposed.
+            try { cts.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+
+        private async void StartSubtitleDiscovery()
+        {
+            CancelSubtitleDiscovery();
+
+            PlayerSession session = _session;
+            Func<PlaybackContext, CancellationToken, Task<SubtitleDiscoveryResult>> provider = ExternalSubtitleProvider;
+            PlaybackContext context = session != null ? session.Context : null;
+
+            if (session == null || provider == null || context == null)
+            {
+                _subtitlePage.SetExternalResult(new SubtitleDiscoveryResult { ContentUnidentified = true });
+                _subtitlePage.Refresh();
+                return;
+            }
+
+            CancellationTokenSource cts = new CancellationTokenSource();
+            _subtitleDiscoveryCts = cts;
+            int serial = _subtitleDiscoverySerial;
+            int generation = session.PlayGeneration;
+
+            SubtitleDiscoveryResult result = null;
+            bool failed = false;
+
+            try
+            {
+                result = await provider(context, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                failed = true;
+                StremioVideoCenterLogger.Info("Subtitle discovery failed: " + UserFacingErrors.ForLog(ex));
+            }
+
+            // Stale-result protection: only the search started by THIS open
+            // of the selector, for THIS playback, may touch the page.
+            if (_disposed ||
+                cts.IsCancellationRequested ||
+                serial != _subtitleDiscoverySerial ||
+                _uiState.OpenMenu != PlayerMenu.Subtitles ||
+                _session == null ||
+                !ReferenceEquals(_session.Context, context) ||
+                _session.PlayGeneration != generation)
+            {
+                return;
+            }
+
+            if (failed || result == null)
+            {
+                _subtitlePage.SetExternalFailed();
+            }
+            else
+            {
+                _subtitlePage.SetExternalResult(result);
+
+                // Counts only: never addon addresses, subtitle links or
+                // provider responses.
+                StremioVideoCenterLogger.Info(string.Format(
+                    "Subtitle discovery: {0} addon(s) answered, {1} subtitle(s).",
+                    result.PerAddon != null ? result.PerAddon.Count : 0,
+                    result.Subtitles != null ? result.Subtitles.Count : 0));
+            }
+
+            FeedSubtitlePage();
+            _subtitlePage.Refresh();
+        }
+
+        private void SubtitlePage_BackRequested(object sender, EventArgs e)
+        {
+            if (_uiState.OpenMenu == PlayerMenu.Subtitles)
+                CloseActiveMenuAndRestoreFocus();
+        }
+
+        private async void SubtitlePage_OffChosen(object sender, EventArgs e)
+        {
+            await ApplyEmbeddedSubtitleSelectionAsync(null);
+        }
+
+        private async void SubtitlePage_OptionChosen(object sender, SubtitleOptionChosenEventArgs e)
+        {
+            SubtitleOption option = e.Option;
+            if (option == null || _session == null || _uiState.OpenMenu != PlayerMenu.Subtitles) return;
+
+            // Embedded, or an external subtitle mpv already holds: just a
+            // track switch.
+            if (!option.NeedsLoading)
+            {
+                await ApplyEmbeddedSubtitleSelectionAsync(option.TrackId);
+                return;
+            }
+
+            if (_subtitlePage.IsBusy) return;
+
+            int menuSerial = _menuSerial;
+            ExternalSubtitleOutcome outcome = ExternalSubtitleOutcome.Failed;
+
+            _subtitlePage.SetBusy("Adding subtitle…");
+
+            try
+            {
+                outcome = await _session.ActivateExternalSubtitleAsync(
+                    option.ExternalKey,
+                    option.ExternalUrl,
+                    option.SourceLabel,
+                    option.RawLanguageCode);
+            }
+            catch (Exception ex)
+            {
+                // Fixed wording below; the exception text is not shown, and
+                // is logged redacted.
+                StremioVideoCenterLogger.Info("External subtitle activation failed: " + UserFacingErrors.ForLog(ex));
+            }
+
+            if (_disposed) return;
+
+            bool pageStillOurs = menuSerial == _menuSerial && _uiState.OpenMenu == PlayerMenu.Subtitles;
+
+            if (outcome == ExternalSubtitleOutcome.Superseded)
+            {
+                // A different file loaded meanwhile; the guard has already
+                // dismissed the page.
+                return;
+            }
+
+            if (!pageStillOurs)
+            {
+                // The user went Back while mpv was fetching it: nothing to
+                // update, but a failure is still worth one quiet notice.
+                if (outcome == ExternalSubtitleOutcome.Failed)
+                    ShowNotice("Couldn\u2019t load that subtitle");
+                return;
+            }
+
+            if (outcome == ExternalSubtitleOutcome.Activated)
+            {
+                CloseActiveMenuAndRestoreFocus();
+                return;
+            }
+
+            // Failed (or busy): playback carries on untouched and the page
+            // stays open so another option, or an embedded one, can be tried.
+            FeedSubtitlePage();
+            _subtitlePage.ClearBusy(outcome == ExternalSubtitleOutcome.Busy
+                ? "Another subtitle is still being added."
+                : "Couldn\u2019t load that subtitle. Playback is unaffected \u2014 try another option.");
+            _subtitlePage.Refresh();
+        }
+
+        // Track switch within the running file (no reload, no seek): the
+        // same mpv call the Audio/Subtitles menu always made, with the real
+        // selection read back by PlayerSession.
+        private async Task ApplyEmbeddedSubtitleSelectionAsync(int? trackId)
+        {
+            if (_session == null || _uiState.OpenMenu != PlayerMenu.Subtitles) return;
+
+            int menuSerial = _menuSerial;
+            bool applied = false;
+
+            try
+            {
+                applied = await _session.SelectSubtitleTrackAsync(trackId);
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("Track selection failed: " + UserFacingErrors.ForLog(ex));
+            }
+
+            if (_disposed || menuSerial != _menuSerial || _uiState.OpenMenu != PlayerMenu.Subtitles) return;
+
+            if (applied)
+            {
+                CloseActiveMenuAndRestoreFocus();
+                return;
+            }
+
+            FeedSubtitlePage();
+            _subtitlePage.ClearBusy("Couldn\u2019t change the subtitles.");
+            _subtitlePage.Refresh();
+        }
+
         private void SettingsButton_Click(object sender, RoutedEventArgs e)
         {
             if (_focus == null) return;
@@ -1995,6 +2341,14 @@ namespace StremioVideoCenterControls
         {
             bool wasTrackMenu =
                 _uiState.OpenMenu == PlayerMenu.Audio || _uiState.OpenMenu == PlayerMenu.Subtitles;
+
+            if (_uiState.OpenMenu == PlayerMenu.Subtitles)
+            {
+                // Leaving the selector ends its search; a late answer can
+                // no longer reach it (see StartSubtitleDiscovery).
+                CancelSubtitleDiscovery();
+                _subtitlePage.Reset();
+            }
 
             if (_focus != null)
                 _focus.PopScope();

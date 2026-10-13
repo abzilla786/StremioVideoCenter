@@ -49,6 +49,9 @@ namespace StremioVideoCenterControls
         public MovieDetailsView()
         {
             InitializeComponent();
+
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(ContentScrollViewer, DragScrollAxis.Vertical);
             Unloaded += (s, e) => { _isUnloaded = true; };
             Loaded += (s, e) => { _isUnloaded = false; };
         }

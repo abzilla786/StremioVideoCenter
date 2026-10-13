@@ -40,6 +40,9 @@ namespace StremioVideoCenter.Models
         private bool isCore = false;
         private string installPolicy = AddonInstallPolicy.AllowMultiple;
         private List<string> roles = new List<string>();
+        private List<AddonResourceDeclaration> resources = new List<AddonResourceDeclaration>();
+        private bool configurable = false;
+        private bool configurationRequired = false;
 
         // Display name shown in the Settings UI. Falls back to the
         // manifest's own "name" field (copied in on import) when the
@@ -133,6 +136,71 @@ namespace StremioVideoCenter.Models
         }
 
         // =========================================================
+        // PER-RESOURCE DECLARATIONS (Slice 20 Stage 1B)
+        // =========================================================
+        //
+        // ResourceNames above is the flattened list of resource names
+        // and is kept exactly as it was (stream discovery reads it).
+        // This list additionally keeps, per resource, the manifest's own
+        // "types" and "idPrefixes" for that resource when it declared
+        // them (the object form of a "resources" entry). Empty for an
+        // instance saved before this slice or never refreshed: callers
+        // treat that as "no per-resource restriction known" and fall
+        // back to the manifest-level Types/IdPrefixes above (see
+        // AddonResourceCompatibility).
+        public List<AddonResourceDeclaration> Resources
+        {
+            get => resources;
+            set => SetValue(ref resources, value);
+        }
+
+        // Manifest behaviorHints.configurable / configurationRequired,
+        // captured on install and on manifest refresh. False means "not
+        // declared or not known" - never an assertion that the addon is
+        // ready. See ConfigurationStatusText.
+        public bool Configurable
+        {
+            get => configurable;
+            set => SetValue(ref configurable, value);
+        }
+
+        public bool ConfigurationRequired
+        {
+            get => configurationRequired;
+            set => SetValue(ref configurationRequired, value);
+        }
+
+        // Display-only summary for the addon settings list. Computed,
+        // never persisted. Contains no URL or configuration data.
+        [DontSerialize]
+        public string ConfigurationStatusText
+        {
+            get
+            {
+                if (configurationRequired)
+                {
+                    return "Configuration required";
+                }
+
+                // Built-in registration (Local Files): no address and no
+                // resources by design, so "use Refresh" would mislead.
+                if (string.IsNullOrWhiteSpace(manifestUrl) &&
+                    roles != null &&
+                    roles.Contains(AddonRole.LocalMedia))
+                {
+                    return "Built in - uses your local media library";
+                }
+
+                if (resourceNames == null || resourceNames.Count == 0)
+                {
+                    return "Manifest details not loaded - use Refresh";
+                }
+
+                return configurable ? "Ready (configurable)" : "Ready";
+            }
+        }
+
+        // =========================================================
         // PROVIDER KEY / INSTALL POLICY / CORE FLAG
         // =========================================================
         //
@@ -202,6 +270,108 @@ namespace StremioVideoCenter.Models
         {
             get => roles;
             set => SetValue(ref roles, value);
+        }
+    }
+
+    // =============================================================
+    // ADDON RESOURCE DECLARATION (Slice 20 Stage 1B)
+    // =============================================================
+    //
+    // One entry of a manifest's "resources" array, as stored on an
+    // AddonInstance: the resource name plus the types/idPrefixes that
+    // entry declared for itself. Types/IdPrefixes are null/empty when
+    // the manifest listed the resource as a bare string (or omitted
+    // them), meaning "inherit the manifest-level values".
+    public class AddonResourceDeclaration
+    {
+        public string Name { get; set; }
+
+        public List<string> Types { get; set; }
+
+        public List<string> IdPrefixes { get; set; }
+    }
+
+    // =============================================================
+    // ADDON RESOURCE COMPATIBILITY (Slice 20 Stage 1B)
+    // =============================================================
+    //
+    // Answers "may this addon be asked for this resource for this type
+    // and content id?" using only what the manifest declared. Per the
+    // Stremio protocol a resource's own types/idPrefixes override the
+    // manifest-level ones. A restriction that is missing or empty is
+    // UNKNOWN, not "nothing allowed": it never excludes the addon.
+    // Used by the generic resource query (AddonResourceQuery) and, for
+    // the id prefix only, by stream discovery
+    // (StremioAddonRegistry.GetAllStreamsAsync).
+    public static class AddonResourceCompatibility
+    {
+        // True when the instance's known resource list names the
+        // resource. An unknown (empty) resource list is "not declared"
+        // here - callers that want the unknown-capability fallback must
+        // check AddonCapabilities.HasKnownCapabilities themselves.
+        public static bool Declares(AddonInstance instance, string resource)
+        {
+            if (instance == null ||
+                instance.ResourceNames == null ||
+                string.IsNullOrWhiteSpace(resource))
+            {
+                return false;
+            }
+
+            return instance.ResourceNames.Exists(name =>
+                string.Equals(name, resource, System.StringComparison.OrdinalIgnoreCase));
+        }
+
+        public static bool AllowsContent(
+            AddonInstance instance,
+            string resource,
+            string type,
+            string id)
+        {
+            if (instance == null)
+            {
+                return false;
+            }
+
+            AddonResourceDeclaration declaration = null;
+
+            if (instance.Resources != null)
+            {
+                declaration = instance.Resources.Find(entry =>
+                    entry != null &&
+                    string.Equals(entry.Name, resource, System.StringComparison.OrdinalIgnoreCase));
+            }
+
+            List<string> types =
+                declaration != null && declaration.Types != null && declaration.Types.Count > 0
+                    ? declaration.Types
+                    : instance.Types;
+
+            List<string> prefixes =
+                declaration != null && declaration.IdPrefixes != null && declaration.IdPrefixes.Count > 0
+                    ? declaration.IdPrefixes
+                    : instance.IdPrefixes;
+
+            if (types != null &&
+                types.Count > 0 &&
+                !string.IsNullOrWhiteSpace(type) &&
+                !types.Exists(candidate =>
+                    string.Equals(candidate, type, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            if (prefixes != null &&
+                prefixes.Count > 0 &&
+                !string.IsNullOrWhiteSpace(id) &&
+                !prefixes.Exists(prefix =>
+                    !string.IsNullOrEmpty(prefix) &&
+                    id.StartsWith(prefix, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            return true;
         }
     }
 

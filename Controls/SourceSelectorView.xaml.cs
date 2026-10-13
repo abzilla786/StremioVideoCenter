@@ -96,6 +96,9 @@ namespace StremioVideoCenterControls
         public SourceSelectorView()
         {
             InitializeComponent();
+
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(SourceListScrollViewer, DragScrollAxis.Vertical);
         }
 
         // =========================================================
@@ -559,6 +562,19 @@ namespace StremioVideoCenterControls
             {
                 handler(this, EventArgs.Empty);
             }
+        }
+
+        // Slice 20 Stage 2: a short explanation shown under the empty-state
+        // line when there are no sources to list (e.g. why nothing could be
+        // prepared). Plain, pre-sanitised text from UserFacingErrors only.
+        // It is part of the empty state itself, so it can never outlive the
+        // selector or overlap another notice, and it takes no focus.
+        public void SetEmptyStateDetail(string detail)
+        {
+            bool has = !string.IsNullOrWhiteSpace(detail);
+
+            EmptyStateDetailText.Text = has ? detail : string.Empty;
+            EmptyStateDetailText.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
         }
 
         private void ShowEmptyState()

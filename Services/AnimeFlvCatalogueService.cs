@@ -5,6 +5,7 @@ using System.Net;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
@@ -145,10 +146,11 @@ namespace StremioVideoCenter.Services
         // Never throws - an unreachable or slow (this addon is a live
         // scraper - see class remarks) response yields an honest empty
         // list, exactly like CinemetaService's own fail-soft contract.
-        // No explicit WebClient timeout override, same as every other
-        // HTTP client in this codebase (WebClient's ~100s default) -
-        // deliberately generous given this addon's observed latency,
-        // rather than failing fast on a source that may still succeed.
+        // Slice 20 Stage 1A: the request is now bounded (RequestTimeoutMs)
+        // instead of relying on WebClient's ~100s default. The bound is
+        // still deliberately generous given this addon's observed latency
+        // (it is a live scraper) - it only stops a hung request from
+        // waiting indefinitely.
         private async Task<List<AnimeFlvCatalogItem>> GetCatalogAsync(string catalogId, string extraSegment)
         {
             string url =
@@ -175,19 +177,11 @@ namespace StremioVideoCenter.Services
             }
         }
 
-        private async Task<string> DownloadStringAsync(string url)
+        private const int RequestTimeoutMs = 45000;
+
+        private Task<string> DownloadStringAsync(string url)
         {
-            return await Task.Run(() =>
-            {
-                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-
-                using (var client = new WebClient())
-                {
-                    client.Headers[HttpRequestHeader.UserAgent] = "StremioVideoCenter/1.0";
-
-                    return client.DownloadString(url);
-                }
-            });
+            return BoundedHttp.DownloadStringAsync(url, RequestTimeoutMs, CancellationToken.None);
         }
 
         private T Deserialize<T>(string json)

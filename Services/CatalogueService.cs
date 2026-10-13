@@ -487,7 +487,8 @@ namespace StremioVideoCenter.Services
         // =========================================================
         //
         // One Cinemeta catalog request mapped to MediaItems and cached for
-        // CacheTtl. An empty Cinemeta result is an honest empty row.
+        // CacheTtl when it returned items. An empty Cinemeta result is an
+        // honest empty row, but is not cached (see SetCached).
         private async Task<List<MediaItem>> GetCatalogueRowAsync(
             string cacheKey,
             string cinemetaType,
@@ -526,8 +527,18 @@ namespace StremioVideoCenter.Services
             return null;
         }
 
+        // Only a successful, non-empty result is cached. The Cinemeta and
+        // Kitsu clients are fail-soft (a timeout or error comes back as an
+        // empty list), so caching an empty list would hide a row for the
+        // whole CacheTtl after one transient failure. An empty result is
+        // still returned to the caller - it just is not remembered.
         private static void SetCached(string cacheKey, List<MediaItem> items)
         {
+            if (items == null || items.Count == 0)
+            {
+                return;
+            }
+
             _cache[cacheKey] = new CacheEntry
             {
                 FetchedAtUtc = DateTime.UtcNow,

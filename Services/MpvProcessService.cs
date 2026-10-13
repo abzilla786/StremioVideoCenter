@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
@@ -52,7 +53,74 @@ namespace StremioVideoCenter.Services
         // stay unique per instance, but the log filename need not be.
         public string LogFilePath
         {
+            get { return DefaultLogFilePath; }
+        }
+
+        private static string DefaultLogFilePath
+        {
             get { return Path.Combine(Path.GetTempPath(), "StremioVideoCenter_Mpv.log"); }
+        }
+
+        // Slice 20 Stage 1A: called once when the plugin starts. A log left
+        // by an earlier run that never reached the exit-time redaction
+        // (crash, Playnite killed) is redacted on a background thread so
+        // plugin startup is never delayed. A missing or locked log is
+        // simply skipped; the diagnostics written here are fixed text plus
+        // an exception type name and never include log contents or paths.
+        public static void RedactStaleLogBestEffort()
+        {
+            try
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        if (!LogFileRedactor.RedactInPlace(DefaultLogFilePath, true))
+                        {
+                            StremioVideoCenterLogger.Warn(
+                                "Stale MPV log could not be redacted at startup (file in use or not accessible); it will be retried at the next player start.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        StremioVideoCenterLogger.Warn(
+                            "Stale MPV log redaction at startup failed: " + ex.GetType().Name);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "Stale MPV log redaction could not be scheduled: " + ex.GetType().Name);
+            }
+        }
+
+        // Slice 20 Stage 1A: mpv writes its own log, and that log contains
+        // the stream URL (which can embed a Real-Debrid key or signed
+        // token), subtitle URLs and full local paths.
+        //
+        // The URLs and paths cannot be prevented: mpv's curl and
+        // stream_callback modules log every URL they open, its player core
+        // logs the loadfile command and "Opening done" line, and option
+        // values such as the log path appear too (--msg-level does not
+        // filter the --log-file output - verified at runtime). So the log
+        // is rewritten with URLs and paths removed once mpv has exited,
+        // at the next player start, and at plugin start, for a log left by
+        // a crash. Everything else in the log
+        // (timestamps, levels, modules, codec, track, renderer, audio and
+        // error lines) is kept as written.
+        //
+        // Never throws. If mpv still has the file open the rewrite is
+        // skipped and retried at the next start.
+        private void RedactLog()
+        {
+            bool clean = LogFileRedactor.RedactInPlace(LogFilePath, true);
+
+            if (!clean)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "The MPV log could not be redacted yet (file in use); it will be redacted at the next player start.");
+            }
         }
 
         // Launches mpv.exe embedded into hostHandle and connects the JSON IPC
@@ -71,6 +139,11 @@ namespace StremioVideoCenter.Services
             }
 
             string workingDirectory = Path.GetDirectoryName(executablePath);
+
+            // A log left behind by an earlier run (for example after a
+            // crash, when the exit-time redaction below never ran) is
+            // cleaned before anything else touches it.
+            RedactLog();
 
             _process = new Process
             {
@@ -199,6 +272,10 @@ namespace StremioVideoCenter.Services
 
             try { _process?.Dispose(); } catch { }
             _process = null;
+
+            // mpv has exited (or the wait above timed out, in which case
+            // RedactLog leaves the still-open file for the next start).
+            RedactLog();
         }
 
         // Best-effort, bounded confirmation that a killed process has actually

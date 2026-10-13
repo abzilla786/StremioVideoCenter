@@ -119,6 +119,10 @@ namespace StremioVideoCenterControls
         public EpisodeBrowserView()
         {
             InitializeComponent();
+
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(SeasonListScrollViewer, DragScrollAxis.Vertical);
+            DragScroll.Attach(EpisodeListScrollViewer, DragScrollAxis.Vertical);
         }
 
         // =========================================================

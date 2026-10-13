@@ -54,6 +54,11 @@ namespace StremioVideoCenter
                 logger.Warn(ex, "Failed to initialize StremioVideoCenterLogger.");
             }
 
+            // Slice 20 Stage 1A: redact a stale MPV log (left by a crashed
+            // or killed earlier run) in the background. Best-effort; never
+            // affects plugin startup.
+            MpvProcessService.RedactStaleLogBestEffort();
+
             AddCustomElementSupport(new AddCustomElementSupportArgs
             {
                 ElementList = new List<string>
@@ -130,6 +135,9 @@ namespace StremioVideoCenter
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
+                    RealDebridApiKeyProvider = () => settings?.Settings?.RealDebridApiKey,
+                    StremioAddonUrlsProvider = () => settings?.Settings?.StremioAddonUrls,
+                    AddonInstancesProvider = () => settings?.Settings?.AddonInstances,
                     LibraryLocations = settings?.Settings?.LibraryLocations,
                     ProfileService = profileService,
                     WatchStateService = CreateWatchStateService(profileService),
@@ -536,6 +544,9 @@ namespace StremioVideoCenter
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
+                    RealDebridApiKeyProvider = () => settings?.Settings?.RealDebridApiKey,
+                    StremioAddonUrlsProvider = () => settings?.Settings?.StremioAddonUrls,
+                    AddonInstancesProvider = () => settings?.Settings?.AddonInstances,
                     LibraryLocations = settings?.Settings?.LibraryLocations,
                     ProfileService = profileService,
                     WatchStateService = CreateWatchStateService(profileService),

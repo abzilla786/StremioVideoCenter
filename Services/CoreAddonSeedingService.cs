@@ -9,12 +9,12 @@ namespace StremioVideoCenter.Services
     // CORE ADDON SEEDING SERVICE
     // =============================================================
     //
-    // Cinemeta-First Addon Settings Architecture slice (extended in a
-    // later correction pass to add OpenSubtitles as its own, separate
-    // core addon - see the OPENSUBTITLES definition below).
+    // Cinemeta-First Addon Settings Architecture slice. (A legacy
+    // OpenSubtitles v1 core addon was once seeded as well; it is no
+    // longer seeded - see CoreProviderRoles below.)
     //
-    // Installs Zino's five CORE / DEFAULT addons (Cinemeta, AnimeFLV,
-    // OpenSubtitles, OpenSubtitles v3, Local Files) into AddonInstances
+    // Installs Zino's four CORE / DEFAULT addons (Cinemeta, AnimeFLV,
+    // OpenSubtitles v3, Local Files) into AddonInstances
     // on first run, through the exact same AddonInstance/
     // StremioAddonRegistry architecture every other addon uses - there
     // is no separate, parallel "core addon" system.
@@ -36,15 +36,9 @@ namespace StremioVideoCenter.Services
     //     fetch of that addon's own public manifest.json, performed
     //     during the original Cinemeta-First Addon Settings Architecture
     //     slice (see claude/Cinemeta_First_Addon_Settings_Architecture.md).
-    //   - OpenSubtitles (below): a later correction pass found that its
-    //     manifest.json consistently returns an HTML landing page rather
-    //     than raw JSON to a non-Stremio client (confirmed again this
-    //     pass), so its identity instead comes from Stremio's own
-    //     official addons registry (github.com/Stremio/
-    //     stremio-official-addons index.json, entry id
-    //     "org.stremio.opensubtitles", flags.official: true) - the
-    //     authoritative source for an official addon's identity when its
-    //     own manifest endpoint cannot be fetched directly.
+    //   - Local Files (Slice 20 correction): NOT fetched from any addon;
+    //     a built-in registration with no address - see
+    //     CreateLocalFilesDefinition.
     // Each configured instance's actual reachability is naturally
     // exercised whenever streams/subtitles are queried during real use;
     // StremioAddonRegistry's per-addon try/catch already handles an
@@ -173,21 +167,29 @@ namespace StremioVideoCenter.Services
                 // content type - see AddonRole's own remarks.
                 { "animeflv", new List<string> { AddonRole.Metadata, AddonRole.Catalogue } },
 
-                { "opensubtitles", new List<string> { AddonRole.SubtitleProvider } },
+                // OpenSubtitles (legacy v1): no longer seeded (Slice 20
+                // corrective pass), and NO role (Slice 20 Stage 1B). This
+                // entry only protects a v1 instance that an older saved
+                // configuration may still hold.
+                // Its manifest endpoint serves an HTML landing page to a
+                // non-Stremio client, so its subtitle route and response
+                // contract have not been verified - it must not be queried
+                // for subtitles until they are. The instance, its manifest
+                // URL and its enabled state are untouched; only the role
+                // is withheld. Subtitle queries require the explicit
+                // SubtitleProvider role, so an empty list means "not
+                // queried". An already-saved instance that still carries
+                // SubtitleProvider is corrected by SyncCoreAddonRoles.
+                { "opensubtitles", new List<string>() },
                 { "opensubtitlesv3", new List<string> { AddonRole.SubtitleProvider } },
 
-                // Local Files: carries the generic LocalMedia category
-                // per this slice's own desired-architecture mapping, but
-                // ALSO keeps StreamProvider - it is today seeded as a
-                // real Stremio-protocol addon (org.stremio.local) whose
-                // "stream" resource is how local playback is actually
-                // discovered (see its definition below). Dropping
-                // StreamProvider here would silently stop local files
-                // from ever being queried for streams again - a
-                // regression this slice's own "preserve completed
-                // functionality" instruction forbids, and nothing in
-                // this task asked for that removal.
-                { "localfiles", new List<string> { AddonRole.LocalMedia, AddonRole.StreamProvider } }
+                // Local Files: LocalMedia only. It is a built-in
+                // registration with no addon address (see
+                // CreateLocalFilesDefinition), so it is never a stream
+                // provider. (Slice 20: previously also StreamProvider,
+                // while it was seeded against the obsolete port 11470
+                // Stremio local endpoint.)
+                { "localfiles", new List<string> { AddonRole.LocalMedia } }
             };
 
         private static bool SyncCoreAddonRoles(StremioVideoCenterSettings settings)
@@ -313,43 +315,6 @@ namespace StremioVideoCenter.Services
                 },
 
                 // -----------------------------------------------------
-                // OPENSUBTITLES (legacy / v1)
-                // -----------------------------------------------------
-                // A separate, distinct core addon from OpenSubtitles v3
-                // below - different id, different transport URL, added in
-                // a correction pass after review found the original four-
-                // core-addon set was missing it.
-                //
-                // Its manifest.json returns an HTML landing page rather
-                // than raw JSON to a non-Stremio client (confirmed again
-                // this pass, via multiple path variations, same result as
-                // the original architecture audit), so its identity here
-                // is sourced from Stremio's OWN official addons registry
-                // rather than a live JSON fetch: github.com/Stremio/
-                // stremio-official-addons, index.json, the entry with id
-                // "org.stremio.opensubtitles" and flags.official: true.
-                // That entry's full manifest object (reproduced exactly
-                // below) does not declare idPrefixes at all, unlike v3 -
-                // left empty here rather than assumed to be ["tt"].
-                new AddonInstance
-                {
-                    ProviderKey = "opensubtitles",
-                    IsCore = true,
-                    InstallPolicy = AddonInstallPolicy.ReplaceExisting,
-                    Category = "Core",
-                    FriendlyName = "OpenSubtitles",
-                    AddonId = "org.stremio.opensubtitles",
-                    ManifestUrl = "https://opensubtitles.strem.io/stremio/v1",
-                    Enabled = true,
-                    Version = "0.24.0",
-                    Description = "The official add-on for subtitles from OpenSubtitles",
-                    Types = new List<string> { "series", "movie", "other" },
-                    IdPrefixes = new List<string>(),
-                    ResourceNames = new List<string> { "subtitles" },
-                    Roles = new List<string> { AddonRole.SubtitleProvider }
-                },
-
-                // -----------------------------------------------------
                 // OPENSUBTITLES V3
                 // -----------------------------------------------------
                 // Live-confirmed in the original slice: GET
@@ -380,40 +345,52 @@ namespace StremioVideoCenter.Services
                 // -----------------------------------------------------
                 // LOCAL FILES
                 // -----------------------------------------------------
-                // NOT a normal remote Stremio addon - per the official
-                // Stremio protocol, the local-files addon is served by
-                // Stremio's OWN desktop runtime from the machine's
-                // loopback address (org.stremio.local), not by a
-                // Zino-controlled or third-party remote server. This is
-                // the real, documented local endpoint (already recorded
-                // in claude/Slice14A_Addon_Metadata_Architecture_Audit.md,
-                // itself unreachable from this sandbox by definition since
-                // it is loopback-only) - not an invented URL. It is
-                // registered through the same AddonInstance/registry
-                // architecture as every other addon; if nothing is
-                // listening on that port (Stremio's local component isn't
-                // running), StremioAddonRegistry's existing per-addon
-                // try/catch already skips it gracefully, exactly like any
-                // other unreachable addon - no special-casing required.
-                new AddonInstance
-                {
-                    ProviderKey = "localfiles",
-                    IsCore = true,
-                    InstallPolicy = AddonInstallPolicy.ReplaceExisting,
-                    Category = "Core",
-                    FriendlyName = "Local Files",
-                    AddonId = "org.stremio.local",
-                    ManifestUrl = "http://127.0.0.1:11470/local-addon",
-                    Enabled = true,
-                    Version = string.Empty,
-                    Description =
-                        "Plays local video files scanned by Stremio's own local " +
-                        "component, when it is running on this machine.",
-                    Types = new List<string> { "movie", "series", "other" },
-                    IdPrefixes = new List<string> { "local:", "bt:" },
-                    ResourceNames = new List<string> { "stream" },
-                    Roles = new List<string> { AddonRole.LocalMedia, AddonRole.StreamProvider }
-                }
+                // Built in: no addon address (Slice 20 correction). It was
+                // previously seeded against Stremio's own loopback
+                // component, which is obsolete. See
+                // CreateLocalFilesDefinition below.
+                CreateLocalFilesDefinition()
+            };
+        }
+
+        // =========================================================
+        // LOCAL FILES (built-in registration)
+        // =========================================================
+        //
+        // Slice 20 correction. Local Files is NOT a remote Stremio addon.
+        // Local media is meant to come from Zino's library locations
+        // (LocalLibraryService / LibraryLocations) and direct filesystem
+        // playback. This definition keeps the stable identity the rest of
+        // the app already uses - ProviderKey "localfiles", Core, LocalMedia
+        // role (LocalMediaView reads it to report whether Local Files is
+        // installed and enabled) - but has NO manifest URL, resources,
+        // types or id prefixes. An empty ManifestUrl is ignored by
+        // StremioAddonRegistry.AddAddon and skipped by the resource query
+        // and manifest refresh services, so this entry is never queried
+        // over HTTP. Public so the settings migration can build the same
+        // definition (StremioVideoCenterSettings.
+        // NormaliseLocalFilesRegistration).
+        public static AddonInstance CreateLocalFilesDefinition()
+        {
+            return new AddonInstance
+            {
+                ProviderKey = "localfiles",
+                IsCore = true,
+                InstallPolicy = AddonInstallPolicy.ReplaceExisting,
+                Category = "Core",
+                FriendlyName = "Local Files",
+                AddonId = "zino.localfiles",
+                ManifestUrl = string.Empty,
+                Enabled = true,
+                Version = string.Empty,
+                Description =
+                    "Built in. Plays local video files from Zino's own " +
+                    "local media library locations. It has no addon address " +
+                    "and is never queried over the network.",
+                Types = new List<string>(),
+                IdPrefixes = new List<string>(),
+                ResourceNames = new List<string>(),
+                Roles = new List<string> { AddonRole.LocalMedia }
             };
         }
     }
