@@ -58,6 +58,14 @@
 
                 </Trigger>
 
+                <!--
+                    Slice 21 Stage 1 (F7): keyboard/controller focus gets an
+                    explicit accent-pink border (the same #E91E63 the other
+                    button styles use for focus) on top of the existing
+                    tinted background, so it can no longer be mistaken for
+                    hover (background only). Padding shrinks by exactly the
+                    2px border so the button's size does not change.
+                -->
                 <Trigger Property="IsKeyboardFocused"
                          Value="True">
 
@@ -66,6 +74,15 @@
 
                     <Setter Property="Background"
                             Value="#2A1825"/>
+
+                    <Setter Property="BorderBrush"
+                            Value="#E91E63"/>
+
+                    <Setter Property="BorderThickness"
+                            Value="2"/>
+
+                    <Setter Property="Padding"
+                            Value="16,8"/>
 
                 </Trigger>
 
@@ -341,12 +358,12 @@
                         <StackPanel Grid.Column="0"
                                     VerticalAlignment="Center">
 
-                            <TextBlock Text="STREMIO"
+                            <TextBlock Text="ZINO'S"
                                        FontSize="26"
                                        FontWeight="Bold"
                                        Foreground="White"/>
 
-                            <TextBlock Text="VIDEO CENTER"
+                            <TextBlock Text="MEDIA CENTER"
                                        FontSize="11"
                                        FontWeight="SemiBold"
                                        Foreground="#AAAAAA"
@@ -359,10 +376,16 @@
                         <!-- NAVIGATION                                          -->
                         <!-- ================================================= -->
 
-                        <StackPanel Grid.Column="1"
-                                    Orientation="Horizontal"
-                                    HorizontalAlignment="Right"
-                                    VerticalAlignment="Center">
+                        <!-- Slice 21 (F2): a WrapPanel, not a StackPanel, so at
+                             narrower window widths the nine buttons wrap onto a
+                             second row instead of the right-hand ones (Search,
+                             Switch Profile) running off-screen. Focus movement
+                             uses the code-behind button list, not row geometry,
+                             so wrapping does not change navigation order. -->
+                        <WrapPanel Grid.Column="1"
+                                   Orientation="Horizontal"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center">
 
                             <Button x:Name="HomeButton"
                                     Content="HOME"
@@ -437,7 +460,7 @@
                                     IsTabStop="True"
                                     Click="SwitchProfileButton_Click"/>
 
-                        </StackPanel>
+                        </WrapPanel>
 
                     </Grid>
 

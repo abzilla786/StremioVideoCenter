@@ -216,11 +216,6 @@ namespace StremioVideoCenter.Services
         // addon that fails (unreachable, bad manifest, malformed response,
         // etc.) is skipped rather than failing the whole request - one
         // broken addon should never block streams from the others.
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the Addon# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagAddonCallSeq;
-
         // Slice 15 (Anime Architecture Audit + Kitsu Migration + Provider
         // Role Correction): no longer takes an isAnimeRequest flag. The
         // earlier Workstream B design scoped AnimeFLV's stream
@@ -236,14 +231,7 @@ namespace StremioVideoCenter.Services
             string id,
             CancellationToken cancellationToken = default(CancellationToken))
         {
-            int diagOuterSeq = Interlocked.Increment(ref _diagAddonCallSeq);
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} begin (concurrent fan-out over {2} registered addon(s))",
-                    diagOuterSeq,
-                    DateTime.UtcNow,
-                    _entries.Count));
 
             List<Task<List<StremioStream>>> tasks = new List<Task<List<StremioStream>>>();
 
@@ -262,12 +250,6 @@ namespace StremioVideoCenter.Services
                     entry.ResourceNames.Count > 0 &&
                     !entry.ResourceNames.Contains("stream"))
                 {
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (known capabilities do not include \"stream\")",
-                            diagOuterSeq,
-                            DateTime.UtcNow,
-                            AddonLogName(entry)));
 
                     continue;
                 }
@@ -293,12 +275,6 @@ namespace StremioVideoCenter.Services
                     entry.Roles.Count > 0 &&
                     !entry.Roles.Contains(AddonRole.StreamProvider))
                 {
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (known Roles do not include StreamProvider)",
-                            diagOuterSeq,
-                            DateTime.UtcNow,
-                            AddonLogName(entry)));
 
                     continue;
                 }
@@ -325,12 +301,6 @@ namespace StremioVideoCenter.Services
                         null,
                         id))
                 {
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} skipped addon={2} (content id not within its declared id prefixes)",
-                            diagOuterSeq,
-                            DateTime.UtcNow,
-                            AddonLogName(entry)));
 
                     continue;
                 }
@@ -345,7 +315,7 @@ namespace StremioVideoCenter.Services
                 // from before this slice and still performed inside
                 // QueryAddonAsync below - only WHEN the requests are
                 // issued changes, not any per-addon behaviour.
-                tasks.Add(QueryAddonAsync(entry, type, id, diagOuterSeq, cancellationToken));
+                tasks.Add(QueryAddonAsync(entry, type, id, cancellationToken));
             }
 
             List<StremioStream>[] perAddonResults = await Task.WhenAll(tasks);
@@ -360,12 +330,6 @@ namespace StremioVideoCenter.Services
                 }
             }
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} end combinedStreamCount={2}",
-                    diagOuterSeq,
-                    DateTime.UtcNow,
-                    combined.Count));
 
             return combined;
         }
@@ -394,30 +358,15 @@ namespace StremioVideoCenter.Services
             AddonEntry entry,
             string type,
             string id,
-            int diagOuterSeq,
             CancellationToken cancellationToken)
         {
             DateTime diagAddonCallStart = DateTime.UtcNow;
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} awaiting entry.Service.GetStreamsAsync addon={2}",
-                    diagOuterSeq,
-                    diagAddonCallStart,
-                    AddonLogName(entry)));
 
             try
             {
                 List<StremioStream> streams = await entry.Service.GetStreamsAsync(type, id, cancellationToken);
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} entry.Service.GetStreamsAsync returned addon={2} streamCount={3} elapsedMs={4}",
-                        diagOuterSeq,
-                        DateTime.UtcNow,
-                        AddonLogName(entry),
-                        streams != null ? streams.Count : 0,
-                        (DateTime.UtcNow - diagAddonCallStart).TotalMilliseconds));
 
                 List<StremioStream> tagged = new List<StremioStream>();
 
@@ -453,9 +402,7 @@ namespace StremioVideoCenter.Services
                 // which can carry the addon URL and its embedded key.
                 StremioVideoCenterLogger.Info(
                     string.Format(
-                        "[CTRL-DIAG] Addon#{0} time={1:HH:mm:ss.fff} entry.Service.GetStreamsAsync threw addon={2} elapsedMs={3} ex={4}",
-                        diagOuterSeq,
-                        DateTime.UtcNow,
+                        "Addon stream query failed addon={0} elapsedMs={1} ex={2}",
                         AddonLogName(entry),
                         (DateTime.UtcNow - diagAddonCallStart).TotalMilliseconds,
                         UserFacingErrors.ForLog(ex)));

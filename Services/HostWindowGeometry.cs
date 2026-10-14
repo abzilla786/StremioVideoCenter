@@ -65,6 +65,36 @@ namespace StremioVideoCenter.Services
             return rect.IsEmpty ? (PixelRect?)null : rect;
         }
 
+        // Slice 21 (Playnite desktop-mode fix): a MAXIMISED Playnite desktop
+        // window reports a client rectangle that extends past its monitor
+        // (measured: about 8 px on every side, because the custom-chrome
+        // window's invisible resize border is part of the client area; the
+        // visible Playnite content is limited to the monitor's work area).
+        // When the host is maximised AND its client rectangle is not fully
+        // inside its monitor, the target is limited to that monitor's work
+        // area (physical pixels, absolute virtual-screen coordinates - so
+        // monitors that do not start at (0,0) are handled). In every other
+        // case the client rectangle is returned unchanged: a windowed host,
+        // or Playnite fullscreen mode, whose client rectangle is exactly the
+        // monitor bounds and therefore already contained in them.
+        public static PixelRect ClampMaximisedClientToMonitor(
+            IntPtr hostHwnd, PixelRect client, bool hostIsMaximised)
+        {
+            if (!hostIsMaximised)
+                return client;
+
+            PixelRect monitor, work;
+            if (!TryGetMonitorRects(hostHwnd, out monitor, out work))
+                return client;
+
+            if (monitor.Contains(client))
+                return client;
+
+            PixelRect clamped = PixelRect.Intersect(client, work.IsEmpty ? monitor : work);
+
+            return clamped.IsEmpty ? client : clamped;
+        }
+
         public static PixelRect? GetWindowRectOnScreen(IntPtr hwnd)
         {
             Rect rect;
@@ -82,6 +112,121 @@ namespace StremioVideoCenter.Services
                        (int)Math.Round(rect.Left), (int)Math.Round(rect.Top),
                        (int)Math.Round(rect.Width), (int)Math.Round(rect.Height),
                        SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+
+        // =====================================================================
+        // TEMPORARY DIAGNOSTICS (Slice 21 - desktop-mode geometry)
+        // =====================================================================
+        //
+        // Read-only helpers used only by the [HOST-GEOMETRY] log record. They
+        // never move, resize or restyle any window. All rectangles are
+        // physical screen pixels.
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MonitorInfo
+        {
+            public int Size;
+            public Rect Monitor;
+            public Rect Work;
+            public uint Flags;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+        [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
+        private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        private static extern int GetWindowLong(IntPtr hWnd, int index);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+        private const uint MONITOR_DEFAULTTONEAREST = 2;
+        private const int GWL_STYLE = -16;
+        private const int GWL_EXSTYLE = -20;
+
+        // Monitor bounds and work area (physical pixels) of the monitor
+        // nearest the window.
+        public static bool TryGetMonitorRects(IntPtr hwnd, out PixelRect monitor, out PixelRect work)
+        {
+            monitor = new PixelRect(0, 0, 0, 0);
+            work = new PixelRect(0, 0, 0, 0);
+
+            if (hwnd == IntPtr.Zero)
+                return false;
+
+            IntPtr handle = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if (handle == IntPtr.Zero)
+                return false;
+
+            MonitorInfo info = new MonitorInfo();
+            info.Size = Marshal.SizeOf(typeof(MonitorInfo));
+
+            if (!GetMonitorInfo(handle, ref info))
+                return false;
+
+            monitor = new PixelRect(info.Monitor.Left, info.Monitor.Top, info.Monitor.Right, info.Monitor.Bottom);
+            work = new PixelRect(info.Work.Left, info.Work.Top, info.Work.Right, info.Work.Bottom);
+            return true;
+        }
+
+        // Window DPI (96 = 100%); 0 if unavailable (older Windows or bad handle).
+        public static uint TryGetWindowDpi(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero)
+                return 0;
+
+            try
+            {
+                return GetDpiForWindow(hwnd);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return 0;
+            }
+        }
+
+        // Border/chrome-related style flags as "0xSTYLE/0xEXSTYLE [names]".
+        public static string DescribeStyle(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero)
+                return "n/a";
+
+            uint style = unchecked((uint)GetWindowLong(hwnd, GWL_STYLE));
+            uint exStyle = unchecked((uint)GetWindowLong(hwnd, GWL_EXSTYLE));
+
+            var names = new System.Collections.Generic.List<string>();
+
+            if ((style & 0x00C00000) == 0x00C00000) names.Add("CAPTION");
+            else if ((style & 0x00800000) != 0) names.Add("BORDER");
+            if ((style & 0x00400000) != 0 && (style & 0x00C00000) != 0x00C00000) names.Add("DLGFRAME");
+            if ((style & 0x00040000) != 0) names.Add("THICKFRAME");
+            if ((style & 0x00080000) != 0) names.Add("SYSMENU");
+            if ((style & 0x01000000) != 0) names.Add("MAXIMIZE");
+            if ((style & 0x80000000) != 0) names.Add("POPUP");
+            if ((exStyle & 0x00000001) != 0) names.Add("EX_DLGMODALFRAME");
+            if ((exStyle & 0x00000100) != 0) names.Add("EX_WINDOWEDGE");
+            if ((exStyle & 0x00000200) != 0) names.Add("EX_CLIENTEDGE");
+            if ((exStyle & 0x00020000) != 0) names.Add("EX_STATICEDGE");
+            if ((exStyle & 0x00000080) != 0) names.Add("EX_TOOLWINDOW");
+
+            return string.Format(
+                "0x{0:X8}/0x{1:X8} [{2}]",
+                style, exStyle, names.Count == 0 ? "none" : string.Join(",", names));
+        }
+
+        // "(L,T,R,B) WxH" in the stated unit label; "n/a" when unavailable.
+        public static string FormatRect(PixelRect? rect)
+        {
+            if (!rect.HasValue)
+                return "n/a";
+
+            PixelRect r = rect.Value;
+            return string.Format(
+                "({0:0},{1:0},{2:0},{3:0}) {4:0}x{5:0}",
+                r.Left, r.Top, r.Right, r.Bottom, r.Width, r.Height);
         }
 
         // True when the window is not already at the target rectangle (so a

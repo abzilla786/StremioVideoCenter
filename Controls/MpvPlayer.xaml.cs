@@ -2423,6 +2423,9 @@ namespace StremioVideoCenterControls
         {
             if (_disposed || _focus == null) return;
 
+            // Slice 21 (F4): captured before ShowControls() reveals the bar.
+            bool controlsWereHidden = !_overlayVisible;
+
             // Any key is activity: reveal the overlay and restart the idle timer.
             ShowControls();
 
@@ -2450,7 +2453,10 @@ namespace StremioVideoCenterControls
                     break;
 
                 case Key.Enter:
-                    HandleActivate();
+                    // Slice 21 (F4): Enter on a faded-out bar only reveals it,
+                    // so an invisible focused control is never activated.
+                    if (!ShouldOnlyRevealControls(controlsWereHidden))
+                        HandleActivate();
                     e.Handled = true;
                     break;
 
@@ -2532,8 +2538,24 @@ namespace StremioVideoCenterControls
         {
             if (_disposed || _focus == null) return false;
 
+            // Slice 21 (F4): captured before ShowControls() reveals the bar.
+            bool controlsWereHidden = !_overlayVisible;
+
             // Any controller button is activity.
             ShowControls();
+
+            // Slice 21 (F4): while the bar is faded out, A and the D-pad only
+            // wake it. Otherwise A would activate (and the D-pad would move
+            // focus across) controls the user cannot see.
+            if (controlsWereHidden &&
+                (button == ControllerInput.DPadLeft ||
+                 button == ControllerInput.DPadRight ||
+                 button == ControllerInput.DPadUp ||
+                 button == ControllerInput.DPadDown ||
+                 (button == ControllerInput.A && ShouldOnlyRevealControls(true))))
+            {
+                return true;
+            }
 
             switch (button)
             {
@@ -2573,6 +2595,19 @@ namespace StremioVideoCenterControls
             }
 
             return false;
+        }
+
+        // Slice 21 (F4): true when an activation (A / Enter) arrived while the
+        // bar was faded out and should only reveal it. The default
+        // Play/Pause control is exempt: activating it unseen is the expected
+        // "pause" gesture and is harmless, whereas Exit, seek-step, track
+        // menus and the rest must be seen before they can be pressed.
+        private bool ShouldOnlyRevealControls(bool controlsWereHidden)
+        {
+            if (!controlsWereHidden)
+                return false;
+
+            return !ReferenceEquals(Keyboard.FocusedElement, BottomPlayPauseButton);
         }
 
         // B / Escape is context-sensitive:

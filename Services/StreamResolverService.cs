@@ -19,11 +19,6 @@ namespace StremioVideoCenter.Services
     {
         private readonly RealDebridService _realDebrid;
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the Resolve# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagResolveSeq;
-
         // realDebrid may be null - that's valid and expected when the user
         // hasn't configured a Real-Debrid token. Direct-URL streams still
         // resolve fine with no Real-Debrid at all; only InfoHash-based
@@ -69,24 +64,10 @@ namespace StremioVideoCenter.Services
                         "This stream requires Real-Debrid, but no Real-Debrid credential has been configured.");
                 }
 
-                int diagSeq = Interlocked.Increment(ref _diagResolveSeq);
-                DateTime diagCallStart = DateTime.UtcNow;
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Resolve#{0} time={1:HH:mm:ss.fff} awaiting _realDebrid.ResolveMagnetAsync fileIdx={2}",
-                        diagSeq,
-                        diagCallStart,
-                        stream.FileIdx.HasValue ? stream.FileIdx.Value.ToString() : "null"));
 
                 string directUrl = await _realDebrid.ResolveMagnetAsync(stream.InfoHash, stream.FileIdx);
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Resolve#{0} time={1:HH:mm:ss.fff} _realDebrid.ResolveMagnetAsync returned elapsedMs={2}",
-                        diagSeq,
-                        DateTime.UtcNow,
-                        (DateTime.UtcNow - diagCallStart).TotalMilliseconds));
 
                 return new PlaybackSource
                 {

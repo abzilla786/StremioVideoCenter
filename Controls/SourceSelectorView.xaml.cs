@@ -647,12 +647,15 @@ namespace StremioVideoCenterControls
             titleRow.Children.Add(primaryText);
 
             bool isRealDebrid = source.Kind == PlaybackSourceKind.RealDebrid;
+            bool isLocal = source.Kind == PlaybackSourceKind.Local;
 
             Border kindBadge = new Border
             {
                 Background = new SolidColorBrush(isRealDebrid
                     ? Color.FromArgb(0xAA, 0x8E, 0x24, 0xAA)
-                    : Color.FromArgb(0xAA, 0x2E, 0x7D, 0x32)),
+                    : (isLocal
+                        ? Color.FromArgb(0xAA, 0x0D, 0x6E, 0xA8)
+                        : Color.FromArgb(0xAA, 0x2E, 0x7D, 0x32))),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(9, 3, 9, 3),
                 Margin = new Thickness(10, 0, 0, 0),
@@ -661,7 +664,7 @@ namespace StremioVideoCenterControls
 
             kindBadge.Child = new TextBlock
             {
-                Text = isRealDebrid ? "REAL-DEBRID" : "DIRECT",
+                Text = isRealDebrid ? "REAL-DEBRID" : (isLocal ? "LOCAL" : "DIRECT"),
                 Foreground = Brushes.White,
                 FontSize = 10,
                 FontWeight = FontWeights.Bold

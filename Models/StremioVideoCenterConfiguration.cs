@@ -37,6 +37,12 @@ namespace StremioVideoCenter.Models
         // LocalMediaView/LocalLibraryService remarks.
         public List<LibraryLocation> LibraryLocations { get; set; }
 
+        // Local Files: the plugin-owned library manager (folders, scan,
+        // index, matching, local playback sources). One instance per
+        // plugin, handed over fully constructed like the services below.
+        // Null when Local Files cannot be provided (e.g. no settings).
+        public Services.LocalLibraryManager LocalLibrary { get; set; }
+
         // Slice 16A (Profile Foundation): unlike every value above (which
         // are read-only snapshots the View only ever displays), profile
         // creation/rename/switching must persist live, from inside the

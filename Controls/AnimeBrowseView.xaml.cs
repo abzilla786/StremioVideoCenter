@@ -331,7 +331,7 @@ namespace StremioVideoCenterControls
             }
             catch
             {
-                result = new KitsuBrowseResult { Items = new List<KitsuAnimeResource>(), TotalCount = 0 };
+                result = new KitsuBrowseResult { Items = new List<KitsuAnimeResource>(), TotalCount = 0, Failed = true };
             }
 
             if (loadToken != _kitsuBrowseLoadToken)
@@ -359,9 +359,22 @@ namespace StremioVideoCenterControls
             }
 
             _kitsuBrowseOffset = requestOffset + page.Count;
-            _kitsuBrowseTotalCount = result?.TotalCount ?? _kitsuBrowseItems.Count;
+
+            // Slice 21 (F9): a failed request keeps the known total (it used
+            // to be overwritten with 0, which hid Load More and left no way
+            // to retry), and is reported as a failure rather than as "no
+            // anime found".
+            bool failed = result != null && result.Failed;
+
+            if (!failed)
+            {
+                _kitsuBrowseTotalCount = result?.TotalCount ?? _kitsuBrowseItems.Count;
+            }
 
             bool hasAny = _kitsuBrowseItems.Count > 0;
+            KitsuBrowseEmptyText.Text = failed
+                ? "Couldn't load anime right now. Check your connection, then choose Apply Filters to try again."
+                : "No anime found for these filters.";
             KitsuBrowseEmptyText.Visibility = hasAny ? Visibility.Collapsed : Visibility.Visible;
 
             // Real pagination against Kitsu's own meta.count total (see
@@ -369,8 +382,9 @@ namespace StremioVideoCenterControls
             // heuristic (that addon exposes no total-count field), Kitsu
             // does, so this only offers another page when one actually
             // exists.
+            KitsuBrowseLoadMoreButton.Content = failed ? "Try Again" : "Load More";
             KitsuBrowseLoadMoreButton.Visibility =
-                (hasAny && _kitsuBrowseOffset < _kitsuBrowseTotalCount) ? Visibility.Visible : Visibility.Collapsed;
+                (hasAny && (failed || _kitsuBrowseOffset < _kitsuBrowseTotalCount)) ? Visibility.Visible : Visibility.Collapsed;
             KitsuBrowseLoadMoreButton.IsEnabled = true;
 
             _isLoadingKitsuBrowse = false;

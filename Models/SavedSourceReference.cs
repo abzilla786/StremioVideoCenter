@@ -85,6 +85,13 @@ namespace StremioVideoCenter.Models
             if (candidate == null || !IsUsable)
                 return 0;
 
+            // Local Files: a saved local source only ever matches a local
+            // candidate and a saved streaming source never matches a local
+            // one, so automatic selection can never confuse the two. (The
+            // file name and size below then identify which local copy.)
+            if ((Kind == PlaybackSourceKind.Local) != (candidate.Kind == PlaybackSourceKind.Local))
+                return 0;
+
             StremioStream stream = candidate.Source != null ? candidate.Source.OriginatingStream : null;
 
             if (!string.IsNullOrEmpty(InfoHash) && stream != null && !string.IsNullOrEmpty(stream.InfoHash))

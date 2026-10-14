@@ -94,6 +94,17 @@ namespace StremioVideoCenter.Models
         public string ResumeCanonicalKey { get; set; }
 
         // =========================================================
+        // LOCAL FILES
+        // =========================================================
+        //
+        // Set only for a MediaItem that was built from a Local Files
+        // library item (LocalLibraryManager.BuildMediaItem): the library
+        // item's path-free id. Its presence is the "play this local file"
+        // intent marker for PlaySelectedMediaAsync; null for everything
+        // else, so no existing flow changes. Never a filesystem path.
+        public string LocalKey { get; set; }
+
+        // =========================================================
         // HERO MEDIA
         // =========================================================
 

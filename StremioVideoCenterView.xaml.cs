@@ -236,11 +236,23 @@ namespace StremioVideoCenter
         // shared field is enough.
         private string _pendingPageNavigationDestination;
 
+        // Slice 21 Stage 1 (F6): the top-navigation button the current
+        // Movies/TV/Anime page chain was opened from, so focus can return
+        // to it when the chain ends (see RestoreFocusToNavigationButton).
+        // Null when the page was opened from a Home row ("See more"),
+        // which keeps the usual return-to-Home focus.
+        private Button _catalogueReturnFocusButton;
+
         // =========================================================
         // LOCAL MEDIA LIBRARY LOCATIONS (Slice 15 - architecture only)
         // =========================================================
 
         private readonly List<LibraryLocation> _libraryLocations;
+
+        // Local Files: the plugin-owned library (folders, scan, index,
+        // matching, local playback sources). Null when unavailable - every
+        // use below degrades to "no local sources".
+        private readonly LocalLibraryManager _localLibrary;
 
         // =========================================================
         // STARTUP STATE
@@ -312,6 +324,13 @@ namespace StremioVideoCenter
             PlaybackContext context,
             CancellationToken cancellationToken)
         {
+            // A local file's own id means nothing to a subtitle addon (and is
+            // not sent to one): nothing to search for.
+            if (LocalLibraryManager.IsLocalItemKey(context.CanonicalKey))
+            {
+                return Task.FromResult(new SubtitleDiscoveryResult { ContentUnidentified = true });
+            }
+
             List<AddonInstance> addons = _addonInstances;
 
             return SubtitleDiscoveryService.DiscoverForContentAsync(
@@ -436,6 +455,9 @@ namespace StremioVideoCenter
 
             _libraryLocations =
                 configuration.LibraryLocations;
+
+            _localLibrary =
+                configuration.LocalLibrary;
 
             _profileService =
                 configuration.ProfileService;
@@ -679,9 +701,13 @@ namespace StremioVideoCenter
                 await vm.LoadHeroRecommendationsAsync(
                     recommendationService);
             }
-            catch
+            catch (Exception ex)
             {
-                // HomeViewModel retains its fallback Hero data.
+                // HomeViewModel retains its fallback Hero data. Slice 21: the
+                // reason is now recorded (type + path/URL-stripped message).
+                StremioVideoCenterLogger.Info(
+                    "Home hero recommendations failed to load: " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
 
@@ -710,10 +736,14 @@ namespace StremioVideoCenter
                 await vm.LoadCatalogueAsync(
                     catalogueService);
             }
-            catch
+            catch (Exception ex)
             {
                 // HomeViewModel retains its fallback/test catalogue
-                // data for any row that didn't load.
+                // data for any row that didn't load. Slice 21: the reason
+                // is now recorded (type + path/URL-stripped message).
+                StremioVideoCenterLogger.Info(
+                    "Home catalogue failed to load: " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
 
@@ -1211,6 +1241,84 @@ namespace StremioVideoCenter
             }
         }
 
+        // Slice 21 Stage 1 (F6): when a page opened from a top-navigation
+        // button closes, focus returns to that button. Falls back to the
+        // usual Home target when the button is unavailable, and keeps the
+        // Movie Details guard FocusFirstAvailableSection already has.
+        private void RestoreFocusToNavigationButton(Button navigationButton)
+        {
+            if (_activeMovieDetails != null)
+            {
+                _activeMovieDetails.FocusPrimary();
+                return;
+            }
+
+            if (navigationButton != null &&
+                navigationButton.IsVisible &&
+                navigationButton.IsEnabled &&
+                navigationButton.Focusable &&
+                navigationButton.Focus())
+            {
+                MainScrollViewer.ScrollToVerticalOffset(0);
+                return;
+            }
+
+            FocusDefaultHomeTarget();
+        }
+
+        // Slice 21 Stage 1 (F3 guard): true when any page/overlay host - a
+        // visible direct child of the root Grid other than MainScrollViewer
+        // and the toast - is currently shown above Home. Same root-Grid
+        // structure IsWheelOverOverlay relies on.
+        private bool IsAnyOverlayHostVisible()
+        {
+            DependencyObject container = VisualTreeHelper.GetParent(MainScrollViewer);
+
+            if (container == null)
+            {
+                return false;
+            }
+
+            int count = VisualTreeHelper.GetChildrenCount(container);
+
+            for (int i = 0; i < count; i++)
+            {
+                UIElement child = VisualTreeHelper.GetChild(container, i) as UIElement;
+
+                if (child == null ||
+                    ReferenceEquals(child, MainScrollViewer) ||
+                    child is ToastHost)
+                {
+                    continue;
+                }
+
+                if (child.Visibility == Visibility.Visible)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // Slice 21 Stage 1 (F3): true when keyboard focus is not on anything
+        // inside this view (nothing focused, the view root itself, or an
+        // element outside it), e.g. after an overlay was removed from the
+        // tree while it held focus.
+        private bool IsHomeFocusLost()
+        {
+            DependencyObject focused = Keyboard.FocusedElement as DependencyObject;
+
+            if (focused == null || ReferenceEquals(focused, this))
+            {
+                return true;
+            }
+
+            Visual focusedVisual = focused as Visual;
+
+            return focusedVisual != null && !IsAncestorOf(focusedVisual);
+        }
+
 
         // =========================================================
         // FOCUS FIRST AVAILABLE SECTION
@@ -1243,6 +1351,19 @@ namespace StremioVideoCenter
 
             if (populatedSections.Count == 0)
             {
+                // Slice 21 Stage 1 (F3): empty or offline Home has no card to
+                // focus; HOME is always present, so keyboard/controller input
+                // still has a visible target instead of no focus at all.
+                // Not while a page or overlay is still on screen above Home
+                // (e.g. Details/Source Selector/Episode Browser closing over
+                // a page): HOME is hidden then and must not take focus.
+                if (!IsAnyOverlayHostVisible() &&
+                    HomeButton != null &&
+                    HomeButton.Focus())
+                {
+                    MainScrollViewer.ScrollToVerticalOffset(0);
+                }
+
                 return;
             }
 
@@ -1299,33 +1420,10 @@ namespace StremioVideoCenter
         // controller path already used, so there is exactly one place
         // that defines Home's directional navigation.
 
-        // TEMPORARY DIAGNOSTIC (controller double-input investigation,
-        // phase 2 - downstream trace) - logs every PreviewKeyDown this
-        // view receives, whatever the source. The point of this one is to
-        // catch a case the phase-1 diagnostic could not see: if a single
-        // physical controller press produces a synthesized keyboard
-        // KeyDown in addition to the direct OnControllerButtonStateChanged
-        // callback already proven 1:1, that synthesized key would arrive
-        // here and independently re-enter HandleHomeDirectionalNavigation
-        // - a second logical move from what looks like one physical
-        // press, without either of the phase-1 counters ever seeing two
-        // events. Remove once the root cause is confirmed.
-        private static int _diagKeyCallSeq;
-        private static int _diagNavCallSeq;
-
         private void StremioVideoCenterView_PreviewKeyDown(
             object sender,
             KeyEventArgs e)
         {
-            int diagKeySeq =
-                Interlocked.Increment(ref _diagKeyCallSeq);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Key#{0} key={1} alreadyHandled={2}",
-                    diagKeySeq,
-                    e.Key,
-                    e.Handled));
 
             // Runtime regression fix: SelectFocusedMediaCard() already
             // existed and was already wired to the controller's A button,
@@ -1573,44 +1671,10 @@ namespace StremioVideoCenter
         // navigation step. It also preserves the focused column position
         // across rows where practical, falling back to the first card
         // when the target row has fewer items.
-        // TEMPORARY DIAGNOSTIC (controller double-input investigation,
-        // phase 2) - describes whatever currently has keyboard focus, for
-        // the Nav#/MoveH#/MoveV# before/after log lines. Remove once the
-        // root cause is confirmed.
-        private string DescribeCurrentFocusForDiagnostics()
-        {
-            MediaSection section = GetFocusedSection();
-
-            if (section != null)
-            {
-                return string.Format(
-                    "MediaCard[section={0},index={1}]",
-                    section.Title,
-                    section.GetFocusedIndex());
-            }
-
-            FrameworkElement element =
-                Keyboard.FocusedElement as FrameworkElement;
-
-            if (element != null)
-            {
-                return string.Format(
-                    "{0}[{1}]",
-                    element.GetType().Name,
-                    element.Name);
-            }
-
-            return "none";
-        }
-
-        private static int _diagMoveVCallSeq;
-
         private void MoveVertical(
             MediaSection currentSection,
             Key key)
         {
-            int diagMoveVSeq =
-                Interlocked.Increment(ref _diagMoveVCallSeq);
 
             List<MediaSection> populatedSections =
                 GetPopulatedSections();
@@ -1618,14 +1682,6 @@ namespace StremioVideoCenter
             int currentIndex =
                 populatedSections.IndexOf(
                     currentSection);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] MoveV#{0} key={1} fromSection={2} fromIndex={3}",
-                    diagMoveVSeq,
-                    key,
-                    currentSection != null ? currentSection.Title : "null",
-                    currentIndex));
 
             if (currentIndex < 0)
             {
@@ -1664,14 +1720,6 @@ namespace StremioVideoCenter
             {
                 columnIndex = 0;
             }
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] MoveV#{0} result toSection={1} toIndex={2} column={3}",
-                    diagMoveVSeq,
-                    targetSection.Title,
-                    targetIndex,
-                    columnIndex));
 
             targetSection.FocusCardAt(columnIndex);
 
@@ -1728,6 +1776,18 @@ namespace StremioVideoCenter
                 return;
             }
 
+            // Slice 21 Stage 1 (F1): the same applies to every other page or
+            // overlay (Movies/TV/Anime, Search, My List, History, Local Media,
+            // Profile Selection, the player host). They are siblings of
+            // MainScrollViewer in the root Grid, so if the pointer is over
+            // one of them it owns the wheel: leave the event unhandled so its
+            // own ScrollViewer (if any) receives it, and never scroll the
+            // hidden Home page underneath.
+            if (IsWheelOverOverlay(e.OriginalSource))
+            {
+                return;
+            }
+
             double amount =
                 e.Delta * 0.8;
 
@@ -1754,6 +1814,39 @@ namespace StremioVideoCenter
             e.Handled = true;
         }
 
+
+        // True when the wheel's original source sits under a direct child of
+        // MainScrollViewer's container other than MainScrollViewer itself,
+        // i.e. under an overlay/page host. A source outside every child (e.g.
+        // a gap on Home itself) is not an overlay, so Home keeps scrolling.
+        private bool IsWheelOverOverlay(object originalSource)
+        {
+            DependencyObject container = VisualTreeHelper.GetParent(MainScrollViewer);
+
+            if (container == null)
+            {
+                return false;
+            }
+
+            DependencyObject current = originalSource as DependencyObject;
+
+            while (current != null)
+            {
+                DependencyObject parent =
+                    (current is Visual || current is System.Windows.Media.Media3D.Visual3D)
+                        ? VisualTreeHelper.GetParent(current)
+                        : LogicalTreeHelper.GetParent(current);
+
+                if (ReferenceEquals(parent, container))
+                {
+                    return !ReferenceEquals(current, MainScrollViewer);
+                }
+
+                current = parent;
+            }
+
+            return false;
+        }
 
         // =========================================================
         // SECTION SCROLL POSITION
@@ -1799,35 +1892,8 @@ namespace StremioVideoCenter
         // CONTROLLER INPUT
         // =========================================================
 
-        // TEMPORARY DIAGNOSTIC (controller double-input investigation) -
-        // logs every call this method receives from
-        // StremioVideoCenter.OnControllerButtonStateChanged, and which
-        // overlay (if any) is currently active, to confirm whether one
-        // Playnite callback ever results in this method itself being
-        // entered more than once for the same button. Remove once the
-        // root cause is confirmed.
-        private static int _diagViewCallSeq;
-
         public bool HandleControllerInput(ControllerInput button)
         {
-            int seq = Interlocked.Increment(ref _diagViewCallSeq);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] View#{0} button={1} activeEpisodeBrowser={2} activeSourceSelector={3} activeLocalMedia={4} activeMovies={5} activeTv={6} activeAnime={7} activeSearch={8} activeHistory={9} activeMyList={10} activePlayer={11} activeMovieDetails={12}",
-                    seq,
-                    button,
-                    _activeEpisodeBrowser != null,
-                    _activeSourceSelector != null,
-                    _activeLocalMediaView != null,
-                    _activeMoviesPage != null,
-                    _activeTvPage != null,
-                    _activeAnimePage != null,
-                    _activeSearchPage != null,
-                    _activeHistoryView != null,
-                    _activeMyListView != null,
-                    _stremioPlayer != null,
-                    _activeMovieDetails != null));
 
             // Controller navigation stabilisation fix: record the exact
             // D-pad direction this call is about to handle, before any
@@ -1926,7 +1992,10 @@ namespace StremioVideoCenter
             // Local Media owns input while its overlay is open - same
             // "most specific overlay wins" ordering as the other three
             // above.
-            if (_activeLocalMediaView != null)
+            // A player started from the Local Files page sits above it: input
+            // belongs to the player then (like Movie Details above), and
+            // returns to the page once the player is gone.
+            if (_activeLocalMediaView != null && _stremioPlayer == null)
             {
                 return _activeLocalMediaView.HandleControllerInput(button);
             }
@@ -2062,35 +2131,14 @@ namespace StremioVideoCenter
         // Click event here reuses the existing click/selection path
         // (every Click="..." handler already wired in XAML) instead of
         // introducing a second activation system.
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the SelCard# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagSelCardSeq;
-
         private bool SelectFocusedMediaCard()
         {
-            int diagSeq = Interlocked.Increment(ref _diagSelCardSeq);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} begin focusedElement={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    Keyboard.FocusedElement != null
-                        ? Keyboard.FocusedElement.GetType().Name
-                        : "(null)"));
 
             if (Keyboard.FocusedElement is ButtonBase focusedButton)
             {
                 focusedButton.RaiseEvent(
                     new RoutedEventArgs(
                         ButtonBase.ClickEvent));
-
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=Button (Click raised synchronously)",
-                        diagSeq,
-                        DateTime.UtcNow));
 
                 return true;
             }
@@ -2099,11 +2147,6 @@ namespace StremioVideoCenter
 
             if (currentSection == null)
             {
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=NoFocusedSection result=false",
-                        diagSeq,
-                        DateTime.UtcNow));
 
                 return false;
             }
@@ -2115,30 +2158,12 @@ namespace StremioVideoCenter
             {
                 currentSection.FocusFirstCard();
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=NoFocusedCard->FocusFirstCard",
-                        diagSeq,
-                        DateTime.UtcNow));
-
                 return true;
             }
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} raising MediaCard.SelectedEvent (synchronous - MediaSection_MediaSelected fires from inside this call)",
-                    diagSeq,
-                    DateTime.UtcNow));
 
             focusedCard.RaiseEvent(
                 new RoutedEventArgs(
                     MediaCard.SelectedEvent));
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] SelCard#{0} time={1:HH:mm:ss.fff} end path=MediaCard result=true (note: MediaSelected handler is async void - this end may log before that handler's own work finishes)",
-                    diagSeq,
-                    DateTime.UtcNow));
 
             return true;
         }
@@ -2188,24 +2213,6 @@ namespace StremioVideoCenter
         private bool HandleHomeDirectionalNavigation(
             Key key)
         {
-            // TEMPORARY DIAGNOSTIC (controller double-input investigation,
-            // phase 2) - this is the single shared method both the
-            // controller path (HandleControllerInput) and the keyboard
-            // path (StremioVideoCenterView_PreviewKeyDown) call. Logging
-            // every entry here, correlated by timestamp against the
-            // View#/Key# sequence numbers already logged by its two
-            // callers, shows whether a single physical press results in
-            // this method running once or twice. Remove once the root
-            // cause is confirmed.
-            int diagNavSeq =
-                Interlocked.Increment(ref _diagNavCallSeq);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Nav#{0} HandleHomeDirectionalNavigation key={1} focusBefore={2}",
-                    diagNavSeq,
-                    key,
-                    DescribeCurrentFocusForDiagnostics()));
 
             if (HeroPreviousButton.IsKeyboardFocusWithin ||
                 HeroNextButton.IsKeyboardFocusWithin)
@@ -2355,7 +2362,7 @@ namespace StremioVideoCenter
             {
                 if (currentSection == null)
                 {
-                    return false;
+                    return RecoverLostHomeFocus();
                 }
 
                 currentSection.MoveHorizontal(
@@ -2369,7 +2376,7 @@ namespace StremioVideoCenter
             {
                 if (currentSection == null)
                 {
-                    return false;
+                    return RecoverLostHomeFocus();
                 }
 
                 MoveVertical(
@@ -2411,6 +2418,27 @@ namespace StremioVideoCenter
         // in place) rather than allowed to escape into WPF's default
         // traversal. Down reuses the existing "go to Watch Now" target
         // for every nav button.
+
+        // Slice 21 Stage 1 (F3): a directional press with no section focused
+        // used to be ignored, which left an empty/offline Home with no way
+        // back onto the page once focus was lost. If focus really is lost
+        // (not merely on an element this handler does not manage), put it on
+        // HOME and consume the press; otherwise behave exactly as before.
+        private bool RecoverLostHomeFocus()
+        {
+            if (!IsHomeFocusLost())
+            {
+                return false;
+            }
+
+            if (HomeButton != null && HomeButton.Focus())
+            {
+                MainScrollViewer.ScrollToVerticalOffset(0);
+                return true;
+            }
+
+            return false;
+        }
 
         private bool HandleTopNavDirectional(Key key)
         {
@@ -2483,24 +2511,10 @@ namespace StremioVideoCenter
         // MEDIA CARD SELECTION
         // =========================================================
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counters for the MediaSel#/HandleSel# log lines
-        // below. Purely observational - no behaviour here is changed.
-        private static int _diagMediaSelSeq;
-        private static int _diagHandleSelSeq;
-
         private async void MediaSection_MediaSelected(
             object sender,
             MediaItemSelectedEventArgs e)
         {
-            int diagSeq = Interlocked.Increment(ref _diagMediaSelSeq);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] MediaSel#{0} time={1:HH:mm:ss.fff} fired item={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (e != null && e.Item != null) ? e.Item.Title : "(null)"));
 
             if (e == null || e.Item == null)
             {
@@ -2509,11 +2523,6 @@ namespace StremioVideoCenter
 
             await HandleMediaSelectedAsync(e.Item);
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] MediaSel#{0} time={1:HH:mm:ss.fff} HandleMediaSelectedAsync returned",
-                    diagSeq,
-                    DateTime.UtcNow));
         }
 
         // =========================================================
@@ -2529,15 +2538,6 @@ namespace StremioVideoCenter
         // no duplicated selection-handling logic per page.
         private async Task HandleMediaSelectedAsync(MediaItem selectedItem)
         {
-            int diagSeq = Interlocked.Increment(ref _diagHandleSelSeq);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} begin item={2} isResolvingMediaSelection={3}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    selectedItem != null ? selectedItem.Title : "(null)",
-                    _isResolvingMediaSelection));
 
             if (selectedItem == null)
             {
@@ -2549,11 +2549,6 @@ namespace StremioVideoCenter
             // Selection's remarks for why.
             if (_isResolvingMediaSelection)
             {
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} end reason=AlreadyResolving (re-entrant call ignored)",
-                        diagSeq,
-                        DateTime.UtcNow));
 
                 return;
             }
@@ -2601,12 +2596,6 @@ namespace StremioVideoCenter
 
                 if (resumePlan != null)
                 {
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} resuming key={2}",
-                            diagSeq,
-                            DateTime.UtcNow,
-                            resumePlan.CanonicalKey));
 
                     await PlaySelectedMediaAsync(
                         BuildResumeMediaItem(resumePlan),
@@ -2632,21 +2621,9 @@ namespace StremioVideoCenter
                 if ((selectedContentType == ContentType.TvShow || selectedContentType == ContentType.Anime) &&
                     !(selectedItem.Season.HasValue && selectedItem.Episode.HasValue))
                 {
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} awaiting ShowEpisodeBrowserAsync",
-                            diagSeq,
-                            DateTime.UtcNow));
 
                     MediaItem episode =
                         await ShowEpisodeBrowserAsync(selectedItem);
-
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} ShowEpisodeBrowserAsync returned episode={2}",
-                            diagSeq,
-                            DateTime.UtcNow,
-                            episode != null ? episode.Title : "(null - cancelled)"));
 
                     if (episode == null)
                     {
@@ -2659,20 +2636,8 @@ namespace StremioVideoCenter
                     selectedItem = episode;
                 }
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} awaiting PlaySelectedMediaAsync",
-                        diagSeq,
-                        DateTime.UtcNow));
-
                 await PlaySelectedMediaAsync(
                     selectedItem);
-
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} PlaySelectedMediaAsync returned",
-                        diagSeq,
-                        DateTime.UtcNow));
 
                 // Back on an episode's Source Selector returns to the Episode
                 // Selector (a movie's returns Home, which is where it already is).
@@ -2685,11 +2650,6 @@ namespace StremioVideoCenter
             {
                 _isResolvingMediaSelection = false;
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] HandleSel#{0} time={1:HH:mm:ss.fff} end",
-                        diagSeq,
-                        DateTime.UtcNow));
             }
         }
 
@@ -3293,16 +3253,7 @@ namespace StremioVideoCenter
         {
             var localMediaView = new LocalMediaView();
 
-            bool localFilesConfigured =
-                _addonInstances != null &&
-                _addonInstances.Exists(instance =>
-                    instance != null &&
-                    instance.Enabled &&
-                    string.Equals(instance.ProviderKey, "localfiles", StringComparison.OrdinalIgnoreCase));
-
-            localMediaView.Initialize(
-                localFilesConfigured,
-                _libraryLocations?.Count ?? 0);
+            localMediaView.Initialize(_localLibrary);
 
             var completionSource =
                 new TaskCompletionSource<bool>();
@@ -3314,7 +3265,18 @@ namespace StremioVideoCenter
                 completionSource.TrySetResult(true);
             };
 
+            // Local Files hands playback and details back to this view so
+            // they run through the existing pipeline (nothing in the page
+            // plays media itself).
+            EventHandler<MediaItemSelectedEventArgs> onPlay =
+                async (sender, args) => await HandleLocalPlayAsync(args.Item);
+
+            EventHandler<MediaItemSelectedEventArgs> onDetails =
+                async (sender, args) => await HandleLocalDetailsAsync(args.Item);
+
             localMediaView.Closed += onClosed;
+            localMediaView.PlayRequested += onPlay;
+            localMediaView.DetailsRequested += onDetails;
 
             _activeLocalMediaView = localMediaView;
 
@@ -3326,13 +3288,82 @@ namespace StremioVideoCenter
             await completionSource.Task;
 
             localMediaView.Closed -= onClosed;
+            localMediaView.PlayRequested -= onPlay;
+            localMediaView.DetailsRequested -= onDetails;
 
             LocalMediaHost.Children.Remove(localMediaView);
             LocalMediaHost.Visibility = Visibility.Collapsed;
 
             _activeLocalMediaView = null;
 
-            FocusFirstAvailableSection();
+            RestoreFocusToNavigationButton(LocalMediaButton);
+        }
+
+        // =========================================================
+        // LOCAL FILES: PLAY / DETAILS HAND-OFF
+        // =========================================================
+        //
+        // "Play" on a Local Files card: an explicit user action that plays
+        // THAT local file through the normal pipeline (PlaySelectedMediaAsync),
+        // resuming from Watch State when the item has an unfinished entry.
+        // The item carries LocalKey, which tells PlaySelectedMediaAsync to
+        // play the local file directly instead of discovering streams.
+        private async Task HandleLocalPlayAsync(MediaItem localItem)
+        {
+            if (localItem == null || _isResolvingMediaSelection)
+            {
+                return;
+            }
+
+            _isResolvingMediaSelection = true;
+
+            try
+            {
+                _providerFilterContentKey = null;
+                _providerFilterKey = null;
+
+                // The same canonical key Watch State uses (catalogue key for
+                // a matched file, the path-free local id for an unmatched
+                // one), so progress is shared with a streaming copy.
+                LocalLibraryItem indexed = _localLibrary != null && !string.IsNullOrEmpty(localItem.LocalKey)
+                    ? _localLibrary.GetItem(localItem.LocalKey)
+                    : null;
+
+                if (indexed != null)
+                {
+                    localItem.ResumeCanonicalKey = indexed.CanonicalKey;
+                }
+
+                ResumePlan resumePlan = TryCreateResumePlan(localItem);
+
+                if (resumePlan != null)
+                {
+                    MediaItem resumeItem = BuildResumeMediaItem(resumePlan);
+                    resumeItem.LocalKey = localItem.LocalKey;
+
+                    await PlaySelectedMediaAsync(resumeItem, resumePlan);
+                    return;
+                }
+
+                await PlaySelectedMediaAsync(localItem);
+            }
+            finally
+            {
+                _isResolvingMediaSelection = false;
+            }
+        }
+
+        // "Open details" for a matched Local Files card: the existing Movie
+        // Details / Episode Browser for the catalogue title, through the same
+        // selection funnel as every other card.
+        private async Task HandleLocalDetailsAsync(MediaItem catalogueItem)
+        {
+            if (catalogueItem == null)
+            {
+                return;
+            }
+
+            await HandleMediaSelectedAsync(catalogueItem);
         }
 
         private async void LocalMediaButton_Click(
@@ -3409,7 +3440,7 @@ namespace StremioVideoCenter
 
             _activeHistoryView = null;
 
-            FocusFirstAvailableSection();
+            RestoreFocusToNavigationButton(HistoryButton);
         }
 
         // Builds the display MediaItems HistoryView shows, from
@@ -3573,7 +3604,7 @@ namespace StremioVideoCenter
 
             _activeMyListView = null;
 
-            FocusFirstAvailableSection();
+            RestoreFocusToNavigationButton(NavigationMyListButton);
         }
 
         // Builds the display MediaItems MyListView shows, from
@@ -3637,11 +3668,6 @@ namespace StremioVideoCenter
         // =========================================================
         // PLAY SELECTED MEDIA
         // =========================================================
-
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the Play# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagPlaySeq;
 
         // Slice 18B: reads Watch State for the ACTIVE profile and returns a
         // resume plan, or null when the selected card is not a resumable
@@ -3738,7 +3764,11 @@ namespace StremioVideoCenter
                 return;
             }
 
-            EpisodeList list = GetEpisodeListService().TryGetCached(context.MediaItem.StremioId);
+            // An unmatched local series has no online episode list; its order
+            // comes from the library itself.
+            EpisodeList list = LocalLibraryManager.IsLocalShowKey(context.MediaItem.StremioId)
+                ? (_localLibrary != null ? _localLibrary.BuildLocalEpisodeList(context.MediaItem.StremioId) : null)
+                : GetEpisodeListService().TryGetCached(context.MediaItem.StremioId);
 
             if (list != null)
             {
@@ -3757,10 +3787,33 @@ namespace StremioVideoCenter
                 return;
             }
 
+            EpisodeList list = null;
+
             try
             {
-                EpisodeList list = await GetEpisodeListService().GetAsync(context.MediaItem.StremioId);
+                list = LocalLibraryManager.IsLocalShowKey(context.MediaItem.StremioId)
+                    ? (_localLibrary != null ? _localLibrary.BuildLocalEpisodeList(context.MediaItem.StremioId) : null)
+                    : await GetEpisodeListService().GetAsync(context.MediaItem.StremioId);
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info(
+                    "Episode list unavailable: " + UserFacingErrors.ForLog(ex));
+            }
 
+            // Offline fallback, local playback only: when the online list
+            // could not be loaded, a locally played episode still gets
+            // Previous / Next from the files in the library.
+            if (list == null &&
+                _localLibrary != null &&
+                context.Source != null &&
+                context.Source.Kind == PlaybackSourceKind.Local)
+            {
+                list = _localLibrary.BuildLocalEpisodeList(context.MediaItem.StremioId);
+            }
+
+            try
+            {
                 if (list == null || _playbackContext != context || _stremioPlayer == null)
                 {
                     return;
@@ -3935,18 +3988,9 @@ namespace StremioVideoCenter
             ResumePlan resumePlan = null,
             EpisodeTransition transition = null)
         {
-            int diagSeq = Interlocked.Increment(ref _diagPlaySeq);
 
             // Set again below only if the user backs out of the Source Selector.
             _sourceSelectionCancelled = false;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} begin item={2} stremioId={3}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    mediaItem != null ? mediaItem.Title : "(null)",
-                    mediaItem != null ? mediaItem.StremioId : "(null)"));
 
             if (mediaItem == null)
             {
@@ -3988,57 +4032,11 @@ namespace StremioVideoCenter
 
             try
             {
-                var addonRegistry =
-                    StremioAddonRegistry.FromAddonInstances(
-                        _addonInstances);
-
-                // Defensive fallback, not the primary path: settings
-                // migrates every legacy StremioAddonUrls entry into an
-                // AddonInstance as soon as the Settings view model loads
-                // (see StremioVideoCenterSettings.SyncLegacyAddonUrls),
-                // so in normal operation this loop only re-registers
-                // URLs already covered above - AddAddon dedupes by URL,
-                // so that is a no-op. It only matters if AddonInstances
-                // is unexpectedly null/empty, in which case legacy
-                // addon discovery still works exactly as before.
-                // Slice 20: restricted to exactly that case, so a legacy
-                // addon the user removed (instance gone, URL line still
-                // present in an older save) is never resurrected here.
-                List<AddonInstance> registeredInstances = _addonInstances;
-
-                if ((registeredInstances == null || registeredInstances.Count == 0) &&
-                    !string.IsNullOrWhiteSpace(_stremioAddonUrls))
-                {
-                    foreach (string url in _stremioAddonUrls.Split(
-                        new[] { '\r', '\n' },
-                        StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        addonRegistry.AddAddon(url);
-                    }
-                }
-
-                var discovery =
-                    new StremioContentDiscoveryService(
-                        addonRegistry);
-
-                RealDebridService realDebrid =
-                    string.IsNullOrWhiteSpace(
-                        _realDebridApiToken)
-                        ? null
-                        : new RealDebridService(
-                              _realDebridApiToken);
-
-                var resolver =
-                    new StreamResolverService(
-                        realDebrid);
-
-                var aggregator =
-                    new PlaybackSourceAggregationService(
-                        discovery,
-                        resolver);
-
-                var normalizer =
-                    new PlaybackSourceNormalizationService();
+                // (Built by CreateStreamingServices so source-failure recovery
+                // can reuse exactly the same registry / Real-Debrid wiring.)
+                PlaybackSourceAggregationService aggregator;
+                PlaybackSourceNormalizationService normalizer;
+                CreateStreamingServices(out aggregator, out normalizer);
 
                 var request = new ContentRequest
                 {
@@ -4107,6 +4105,27 @@ namespace StremioVideoCenter
                     request.ExplicitStremioId = mediaItem.StremioId;
                 }
 
+                // Local Files: a card played from the Local Files page names
+                // its library item (LocalKey). Its identity is the item's own
+                // canonical key - the shared catalogue key for a matched file
+                // (so progress is shared with a streaming copy), or the
+                // path-free local id for an unmatched one - used verbatim.
+                // Streaming items (no LocalKey) never reach this.
+                if (resumePlan == null && transition == null && !string.IsNullOrEmpty(mediaItem.LocalKey))
+                {
+                    LocalLibraryItem localIndexed = _localLibrary != null
+                        ? _localLibrary.GetItem(mediaItem.LocalKey)
+                        : null;
+
+                    if (localIndexed != null)
+                    {
+                        request.ImdbId = null;
+                        request.Season = null;
+                        request.Episode = null;
+                        request.ExplicitStremioId = localIndexed.CanonicalKey;
+                    }
+                }
+
                 // Slice 16B (Persistent Profile-Owned Watch State): the
                 // Watch State CanonicalKey is always exactly what
                 // BuildStremioId() produces for this same request - the
@@ -4122,12 +4141,6 @@ namespace StremioVideoCenter
                 string canonicalKey = request.BuildStremioId();
                 ContentType contentType = request.Type;
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting aggregator.AggregateAsync (discovery + per-stream resolution)",
-                        diagSeq,
-                        DateTime.UtcNow));
-
                 // Slice 19A: a movie opened from a source that carries no
                 // synopsis (e.g. Search's Cinemeta catalog results) has its
                 // overview fetched once, in parallel with source discovery,
@@ -4136,17 +4149,61 @@ namespace StremioVideoCenter
                 Task<string> movieOverviewTask =
                     BeginMovieOverviewHydration(mediaItem, resumePlan, transition);
 
-                PlaybackSourceSet set =
-                    await aggregator.AggregateAsync(
-                        request);
+                // Local Files: the library's playable files for this exact
+                // identity, resolved from the persisted index (no network).
+                // Empty when Local Files is off / has no match - then nothing
+                // below differs from the streaming-only flow.
+                bool localIntent =
+                    !string.IsNullOrEmpty(mediaItem.LocalKey) ||
+                    LocalLibraryManager.IsLocalItemKey(canonicalKey);
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} aggregator.AggregateAsync returned sources={2} unresolved={3}",
-                        diagSeq,
-                        DateTime.UtcNow,
-                        set.Sources.Count,
-                        set.Unresolved.Count));
+                LocalSourceLookup localLookup = await FindLocalSourcesAsync(canonicalKey, mediaItem);
+
+                NormalizedPlaybackSource preselectedLocal =
+                    ChoosePreselectedLocalSource(localLookup, mediaItem, canonicalKey, resumePlan, transition);
+
+                if (localIntent && LocalLibraryManager.IsLocalItemKey(canonicalKey) && localLookup.Sources.Count == 0)
+                {
+                    // An unmatched local file has no streaming equivalent to
+                    // fall back to.
+                    TeardownEpisodeBrowserOverlay(pendingEpisodeBrowser);
+                    ShowPlaybackNotice(DescribeLocalUnavailable(localLookup));
+                    return;
+                }
+
+                if (localIntent && localLookup.Sources.Count == 0)
+                {
+                    // A matched file that cannot be played right now: say so
+                    // and carry on with the normal streaming flow below.
+                    ShowPlaybackNotice(DescribeLocalUnavailable(localLookup));
+                }
+
+                PlaybackSourceSet set;
+
+                if (preselectedLocal != null || LocalLibraryManager.IsLocalItemKey(canonicalKey))
+                {
+                    // Playing a local file directly needs no stream discovery
+                    // (and must work offline).
+                    set = new PlaybackSourceSet();
+                }
+                else
+                {
+                    try
+                    {
+                        set = await aggregator.AggregateAsync(
+                            request);
+                    }
+                    catch (Exception aggregateEx) when (localLookup.Sources.Count > 0)
+                    {
+                        // Streaming discovery failed, but the user still has
+                        // local copies to choose from.
+                        StremioVideoCenterLogger.Info(
+                            "Stream discovery failed; offering local sources only. " +
+                            UserFacingErrors.ForLog(aggregateEx));
+
+                        set = new PlaybackSourceSet();
+                    }
+                }
 
                 // Slice 15 Workstream B (no-stream UX correction): "no
                 // playable streams" is a valid, expected result - not an
@@ -4177,6 +4234,15 @@ namespace StremioVideoCenter
                     normalizer.NormalizeAll(
                         set.Sources);
 
+                // Local copies are offered first. They are a distinct source
+                // kind (PlaybackSourceKind.Local), so saved-source matching
+                // and "similar source" hints can never confuse them with a
+                // streaming source.
+                if (localLookup.Sources.Count > 0)
+                {
+                    normalizedSources.InsertRange(0, localLookup.Sources);
+                }
+
                 if (transition != null && transition.Generation != _playbackGeneration)
                 {
                     // The player was closed (or replaced) while this episode's
@@ -4192,19 +4258,12 @@ namespace StremioVideoCenter
                 TeardownEpisodeBrowserOverlay(
                     pendingEpisodeBrowser);
 
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting ShowSourceSelectorAsync with {2} normalized source(s)",
-                        diagSeq,
-                        DateTime.UtcNow,
-                        normalizedSources.Count));
-
                 // Slice 18B: resume tries the last successfully played source
                 // first, matched by stable identity against the sources
                 // available NOW (never an old URL). No match -> the normal
                 // Source Selector.
                 NormalizedPlaybackSource selected =
-                    ResumePlanner.FindSavedSource(resumePlan, normalizedSources);
+                    preselectedLocal ?? ResumePlanner.FindSavedSource(resumePlan, normalizedSources);
 
                 // Slice 18D: an episode with no saved source of its own may reuse
                 // the source KIND the user was just watching (same addon, same
@@ -4215,18 +4274,6 @@ namespace StremioVideoCenter
                 }
 
                 bool autoSelectedSavedSource = selected != null;
-
-                if (resumePlan != null)
-                {
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} resume savedSource={2} matched={3} sources={4}",
-                            diagSeq,
-                            DateTime.UtcNow,
-                            resumePlan.SavedSource != null ? "yes" : "none",
-                            autoSelectedSavedSource,
-                            normalizedSources.Count));
-                }
 
                 if (selected == null)
                 {
@@ -4253,13 +4300,6 @@ namespace StremioVideoCenter
                             mediaItem,
                             emptyExplanation);
                 }
-
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} source selection returned selected={2}",
-                        diagSeq,
-                        DateTime.UtcNow,
-                        selected != null ? "true" : "(null - cancelled)"));
 
                 if (selected == null)
                 {
@@ -4299,13 +4339,13 @@ namespace StremioVideoCenter
 
                 if (!autoSelectedSavedSource)
                 {
-                    await StartPlaybackAsync(context, diagSeq);
+                    await StartPlaybackAsync(context);
                 }
                 else
                 {
                     try
                     {
-                        await StartPlaybackAsync(context, diagSeq);
+                        await StartPlaybackAsync(context);
                     }
                     catch (Exception startEx) when (!(startEx is PlayerStartupException))
                     {
@@ -4321,6 +4361,19 @@ namespace StremioVideoCenter
 
                         context.Candidates.Remove(selected);
 
+                        if (selected.Kind == PlaybackSourceKind.Local)
+                        {
+                            // A local file that cannot be handed to mpv is
+                            // left out of this session's local sources, and
+                            // streaming sources are offered in its place.
+                            if (_localLibrary != null)
+                            {
+                                _localLibrary.NotePlaybackFailed(selected);
+                            }
+
+                            await AddStreamingFallbackAsync(context);
+                        }
+
                         NormalizedPlaybackSource alternative =
                             await ShowSourceSelectorReplacingPlayerAsync(context.Candidates, mediaItem);
 
@@ -4330,7 +4383,7 @@ namespace StremioVideoCenter
                             return;
                         }
 
-                        await StartPlaybackAsync(context.WithSource(alternative), diagSeq);
+                        await StartPlaybackAsync(context.WithSource(alternative));
                     }
                 }
             }
@@ -4338,9 +4391,7 @@ namespace StremioVideoCenter
             {
                 StremioVideoCenterLogger.Info(
                     string.Format(
-                        "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (exception: {2})",
-                        diagSeq,
-                        DateTime.UtcNow,
+                        "Playback start failed ex={0}",
                         UserFacingErrors.ForLog(ex)));
 
                 TeardownEpisodeBrowserOverlay(
@@ -4360,12 +4411,191 @@ namespace StremioVideoCenter
             }
         }
 
+        // The streaming-addon source pipeline (registry from the configured
+        // addon instances, optional Real-Debrid, aggregator, normalizer).
+        // Extracted unchanged from PlaySelectedMediaAsync so the streaming
+        // fallback after a local-file failure uses the very same wiring.
+        private void CreateStreamingServices(
+            out PlaybackSourceAggregationService aggregator,
+            out PlaybackSourceNormalizationService normalizer)
+        {
+            var addonRegistry =
+                StremioAddonRegistry.FromAddonInstances(
+                    _addonInstances);
+
+            // Defensive fallback, not the primary path: settings
+            // migrates every legacy StremioAddonUrls entry into an
+            // AddonInstance as soon as the Settings view model loads
+            // (see StremioVideoCenterSettings.SyncLegacyAddonUrls),
+            // so in normal operation this loop only re-registers
+            // URLs already covered above - AddAddon dedupes by URL,
+            // so that is a no-op. It only matters if AddonInstances
+            // is unexpectedly null/empty, in which case legacy
+            // addon discovery still works exactly as before.
+            // Slice 20: restricted to exactly that case, so a legacy
+            // addon the user removed (instance gone, URL line still
+            // present in an older save) is never resurrected here.
+            List<AddonInstance> registeredInstances = _addonInstances;
+
+            if ((registeredInstances == null || registeredInstances.Count == 0) &&
+                !string.IsNullOrWhiteSpace(_stremioAddonUrls))
+            {
+                foreach (string url in _stremioAddonUrls.Split(
+                    new[] { '\r', '\n' },
+                    StringSplitOptions.RemoveEmptyEntries))
+                {
+                    addonRegistry.AddAddon(url);
+                }
+            }
+
+            var discovery =
+                new StremioContentDiscoveryService(
+                    addonRegistry);
+
+            RealDebridService realDebrid =
+                string.IsNullOrWhiteSpace(
+                    _realDebridApiToken)
+                    ? null
+                    : new RealDebridService(
+                          _realDebridApiToken);
+
+            var resolver =
+                new StreamResolverService(
+                    realDebrid);
+
+            aggregator =
+                new PlaybackSourceAggregationService(
+                    discovery,
+                    resolver);
+
+            normalizer =
+                new PlaybackSourceNormalizationService();
+        }
+
+        // =========================================================
+        // LOCAL FILES: SOURCE LOOKUP / FALLBACK
+        // =========================================================
+
+        // The library's playable local sources for this identity. Never
+        // throws: any failure means "no local sources", so a local problem
+        // can never stop streaming playback.
+        private async Task<LocalSourceLookup> FindLocalSourcesAsync(string canonicalKey, MediaItem mediaItem)
+        {
+            if (_localLibrary == null || string.IsNullOrWhiteSpace(canonicalKey))
+            {
+                return new LocalSourceLookup();
+            }
+
+            try
+            {
+                return await _localLibrary.FindSourcesAsync(
+                    canonicalKey,
+                    mediaItem != null ? mediaItem.LocalKey : null);
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn("Local Files: sources could not be looked up. " + UserFacingErrors.ForLog(ex));
+                return new LocalSourceLookup();
+            }
+        }
+
+        // When playback should go straight to a local file (no selector, no
+        // stream discovery): the user picked a local file, the identity is
+        // an unmatched file's own id, the saved source of a resume was a
+        // local file, or the episode just watched was local. Otherwise null
+        // and the normal flow runs with local copies listed first.
+        private static NormalizedPlaybackSource ChoosePreselectedLocalSource(
+            LocalSourceLookup lookup,
+            MediaItem mediaItem,
+            string canonicalKey,
+            ResumePlan resumePlan,
+            EpisodeTransition transition)
+        {
+            if (lookup == null || lookup.Sources.Count == 0)
+            {
+                return null;
+            }
+
+            if (!string.IsNullOrEmpty(mediaItem.LocalKey) || LocalLibraryManager.IsLocalItemKey(canonicalKey))
+            {
+                return lookup.Sources[0];
+            }
+
+            if (resumePlan != null &&
+                resumePlan.SavedSource != null &&
+                resumePlan.SavedSource.Kind == PlaybackSourceKind.Local)
+            {
+                return ResumePlanner.FindSavedSource(resumePlan, lookup.Sources);
+            }
+
+            if (transition != null &&
+                transition.PreferredSource != null &&
+                transition.PreferredSource.Kind == PlaybackSourceKind.Local)
+            {
+                return lookup.Sources[0];
+            }
+
+            return null;
+        }
+
+        // Fixed wording only: never a file name or path.
+        private string DescribeLocalUnavailable(LocalSourceLookup lookup)
+        {
+            if (_localLibrary == null || !_localLibrary.IsEnabled)
+            {
+                return "Local Files is turned off, so this local copy can\u2019t be played.";
+            }
+
+            return lookup != null && lookup.UnavailableCount > 0
+                ? "This local file is no longer available. Check that its drive or folder is connected."
+                : "This local file is not in your library any more. Rescan Local Files to refresh it.";
+        }
+
+        // After a local file failed: if the candidate list holds no
+        // streaming source, discover them now (the normal streaming
+        // pipeline) so the Source Selector still offers real alternatives.
+        // Nothing to add for an unmatched file (it has no streaming
+        // identity). Never throws.
+        private async Task AddStreamingFallbackAsync(PlaybackContext context)
+        {
+            if (context == null ||
+                context.Candidates == null ||
+                string.IsNullOrWhiteSpace(context.CanonicalKey) ||
+                LocalLibraryManager.IsLocalItemKey(context.CanonicalKey) ||
+                context.Candidates.Any(c => c.Kind != PlaybackSourceKind.Local))
+            {
+                return;
+            }
+
+            try
+            {
+                PlaybackSourceAggregationService aggregator;
+                PlaybackSourceNormalizationService normalizer;
+                CreateStreamingServices(out aggregator, out normalizer);
+
+                var request = new ContentRequest
+                {
+                    Type = context.ContentType,
+                    Title = context.MediaItem != null ? context.MediaItem.Title : null,
+                    ExplicitStremioId = context.CanonicalKey
+                };
+
+                PlaybackSourceSet set = await aggregator.AggregateAsync(request);
+
+                context.Candidates.AddRange(normalizer.NormalizeAll(set.Sources));
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info(
+                    "Stream discovery after a local failure did not complete. " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
         // Creates the player if needed and starts playback of the given
         // (already user-selected) source. Shared by the normal selection
         // path and the post-failure re-selection path.
         private async Task StartPlaybackAsync(
-            PlaybackContext context,
-            int diagSeq)
+            PlaybackContext context)
         {
             // A previous attempt's error notice must not linger over (or
             // under) a new attempt.
@@ -4385,6 +4615,13 @@ namespace StremioVideoCenter
 
             if (_stremioPlayer == null)
             {
+                // Local Files page underneath: hand focus and input to the
+                // player (no-op when that page is not open).
+                if (_activeLocalMediaView != null)
+                {
+                    _activeLocalMediaView.SetPlayerActive(true);
+                }
+
                 _stremioPlayer =
                     new MpvPlayer();
 
@@ -4443,19 +4680,7 @@ namespace StremioVideoCenter
                 var ignoredNavigation = AttachEpisodeNavigationAsync(context);
             }
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} awaiting PlayVideoAsync",
-                    diagSeq,
-                    DateTime.UtcNow));
-
             await _stremioPlayer.PlayVideoAsync(context);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Play#{0} time={1:HH:mm:ss.fff} end (PlayVideoAsync returned)",
-                    diagSeq,
-                    DateTime.UtcNow));
 
             // Slice 18A: Watch State/History are deliberately NOT created
             // here. loadfile succeeding only means mpv accepted the
@@ -4541,6 +4766,19 @@ namespace StremioVideoCenter
                 int failedIndex = remaining.IndexOf(failed);
                 remaining.Remove(failed);
 
+                if (failed.Kind == PlaybackSourceKind.Local)
+                {
+                    // mpv could not play this local file: leave it out of the
+                    // session's local sources and make sure the streaming
+                    // sources are still on offer.
+                    if (_localLibrary != null)
+                    {
+                        _localLibrary.NotePlaybackFailed(failed);
+                    }
+
+                    await AddStreamingFallbackAsync(failedContext);
+                }
+
                 StremioVideoCenterLogger.Info(
                     string.Format(
                         "Source failed to play (mpv error); removed from this selection. addon={0} index={1} remaining={2}",
@@ -4578,7 +4816,7 @@ namespace StremioVideoCenter
                 // arrive while PlayVideoAsync is still awaiting.
                 _isRecoveringFromFailure = false;
 
-                await StartPlaybackAsync(failedContext.WithSource(next), 0);
+                await StartPlaybackAsync(failedContext.WithSource(next));
             }
             catch (Exception ex)
             {
@@ -4602,16 +4840,21 @@ namespace StremioVideoCenter
 
         private async void MoreMovies_Clicked(object sender, EventArgs e)
         {
+            // Opened from a Home row, not a navigation button: the usual
+            // "return to Home" focus applies when the page closes.
+            _catalogueReturnFocusButton = null;
             await ShowMoviesPageAsync();
         }
 
         private async void MoreTvShows_Clicked(object sender, EventArgs e)
         {
+            _catalogueReturnFocusButton = null;
             await ShowTvPageAsync();
         }
 
         private async void MoreAnime_Clicked(object sender, EventArgs e)
         {
+            _catalogueReturnFocusButton = null;
             await ShowAnimePageAsync();
         }
 
@@ -4621,16 +4864,19 @@ namespace StremioVideoCenter
 
         private async void MoviesButton_Click(object sender, RoutedEventArgs e)
         {
+            _catalogueReturnFocusButton = MoviesButton;
             await ShowMoviesPageAsync();
         }
 
         private async void TvShowsButton_Click(object sender, RoutedEventArgs e)
         {
+            _catalogueReturnFocusButton = TvShowsButton;
             await ShowTvPageAsync();
         }
 
         private async void AnimeButton_Click(object sender, RoutedEventArgs e)
         {
+            _catalogueReturnFocusButton = AnimeButton;
             await ShowAnimePageAsync();
         }
 
@@ -4740,19 +4986,38 @@ namespace StremioVideoCenter
             switch (destination)
             {
                 case "Movies":
+                    _catalogueReturnFocusButton = MoviesButton;
                     await ShowMoviesPageAsync();
                     return;
 
                 case "TvShows":
+                    _catalogueReturnFocusButton = TvShowsButton;
                     await ShowTvPageAsync();
                     return;
 
                 case "Anime":
+                    _catalogueReturnFocusButton = AnimeButton;
                     await ShowAnimePageAsync();
                     return;
 
                 default:
-                    FocusFirstAvailableSection();
+                    // The chain of pages has ended: return focus to the
+                    // navigation button the last page was opened from (null
+                    // when it was opened from a Home row).
+                    Button returnButton = _catalogueReturnFocusButton;
+                    _catalogueReturnFocusButton = null;
+
+                    if (returnButton != null)
+                    {
+                        RestoreFocusToNavigationButton(returnButton);
+                    }
+                    else
+                    {
+                        // Opened from a Home row ("See more"): the original
+                        // return-to-Home behaviour.
+                        FocusFirstAvailableSection();
+                    }
+
                     return;
             }
         }
@@ -4876,7 +5141,7 @@ namespace StremioVideoCenter
 
             _activeSearchPage = null;
 
-            FocusFirstAvailableSection();
+            RestoreFocusToNavigationButton(SearchButton);
         }
 
         // =========================================================
@@ -4930,11 +5195,6 @@ namespace StremioVideoCenter
         // SHOW SOURCE SELECTOR
         // =========================================================
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the SrcSel# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagSrcSelSeq;
-
         // Slice 19B: the Source Selector provider filter last chosen, scoped
         // to the content (title + season + episode) it was chosen for.
         // _providerFilterKey null = All Sources. In-memory only.
@@ -4958,14 +5218,6 @@ namespace StremioVideoCenter
             MediaItem mediaItem,
             string failureNotice = null)
         {
-            int diagSeq = Interlocked.Increment(ref _diagSrcSelSeq);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] SrcSel#{0} time={1:HH:mm:ss.fff} begin sourceCount={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    sources != null ? sources.Count : 0));
 
             var selector = new SourceSelectorView();
 
@@ -5038,8 +5290,7 @@ namespace StremioVideoCenter
             // Diagnostic only: no provider key/URL is logged.
             StremioVideoCenterLogger.Info(
                 string.Format(
-                    "[ProviderFilter] SrcSel#{0} contentKeyAvailable={1} restoreRequested={2} restored={3}",
-                    diagSeq,
+                    "[ProviderFilter] contentKeyAvailable={0} restoreRequested={1} restored={2}",
                     providerFilterContentKey != null,
                     preferredProviderKey != null,
                     selector.SelectedProviderKey != null));
@@ -5050,11 +5301,6 @@ namespace StremioVideoCenter
             // populated with data - i.e. actually displayed - and
             // control is about to yield on completionSource.Task waiting
             // for the user to pick a source (or cancel).
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] SrcSel#{0} time={1:HH:mm:ss.fff} Source Selector created/populated/visible - now awaiting user selection",
-                    diagSeq,
-                    DateTime.UtcNow));
 
             NormalizedPlaybackSource result =
                 await completionSource.Task;
@@ -5071,13 +5317,6 @@ namespace StremioVideoCenter
             // manifest URL) - never logged, displayed or persisted.
             _providerFilterContentKey = providerFilterContentKey;
             _providerFilterKey = selector.SelectedProviderKey;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] SrcSel#{0} time={1:HH:mm:ss.fff} end user chose={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    result != null ? "a source" : "(null - cancelled)"));
 
             selector.SourceSelected -= onSelected;
             selector.SelectionCancelled -= onCancelled;
@@ -5367,6 +5606,15 @@ namespace StremioVideoCenter
                 return;
             }
 
+            // An unmatched local file has no catalogue title to open from
+            // History (its id is a path-free local id, not a title id), so it
+            // is tracked by Watch State / Continue Watching only.
+            if (LocalLibraryManager.IsLocalItemKey(mediaItem.StremioId) ||
+                LocalLibraryManager.IsLocalShowKey(mediaItem.StremioId))
+            {
+                return;
+            }
+
             bool isKitsuSourced =
                 mediaItem.StremioId.StartsWith("kitsu:", StringComparison.OrdinalIgnoreCase);
 
@@ -5493,8 +5741,7 @@ namespace StremioVideoCenter
                     context.CanonicalKey);
 
                 await StartPlaybackAsync(
-                    context.WithSource(next, plan != null ? plan.StartPositionSeconds : null),
-                    0);
+                    context.WithSource(next, plan != null ? plan.StartPositionSeconds : null));
 
                 return;
             }
@@ -5643,6 +5890,21 @@ namespace StremioVideoCenter
 
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;
+
+            // Local Files page underneath: it takes focus back, instead of
+            // the Home focus restoration below.
+            LocalMediaView localPageUnderPlayer = _activeLocalMediaView;
+
+            if (localPageUnderPlayer != null)
+            {
+                localPageUnderPlayer.SetPlayerActive(false);
+
+                if (restoreHomeFocus)
+                {
+                    localPageUnderPlayer.FocusAfterPlayback();
+                    return;
+                }
+            }
 
             // Focus-restoration timing fix: unlike every other overlay
             // teardown that calls FocusFirstAvailableSection() (Episode

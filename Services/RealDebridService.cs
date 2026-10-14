@@ -28,12 +28,6 @@ namespace StremioVideoCenter.Services
 
         private readonly string accessToken;
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the RD# log lines below. Purely
-        // observational - no behaviour here is changed. Never used to
-        // log accessToken or any URL that could carry it.
-        private static int _diagResolveMagnetSeq;
-
         public RealDebridService(string accessToken)
         {
             this.accessToken = accessToken;
@@ -75,15 +69,6 @@ namespace StremioVideoCenter.Services
 
         public async Task<string> ResolveMagnetAsync(string infoHash, int? fileIdx)
         {
-            int diagSeq = Interlocked.Increment(ref _diagResolveMagnetSeq);
-            DateTime diagMethodStart = DateTime.UtcNow;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} begin fileIdx={2}",
-                    diagSeq,
-                    diagMethodStart,
-                    fileIdx.HasValue ? fileIdx.Value.ToString() : "null"));
 
             if (string.IsNullOrWhiteSpace(accessToken))
             {
@@ -99,25 +84,9 @@ namespace StremioVideoCenter.Services
 
             string magnet = "magnet:?xt=urn:btih:" + infoHash;
 
-            DateTime diagStepStart = DateTime.UtcNow;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} awaiting POST torrents/addMagnet",
-                    diagSeq,
-                    diagStepStart));
-
             RealDebridAddMagnetResponse added = await PostFormAsync<RealDebridAddMagnetResponse>(
                 "torrents/addMagnet",
                 new Dictionary<string, string> { { "magnet", magnet } });
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} addMagnet returned elapsedMs={2} hasTorrentId={3}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagStepStart).TotalMilliseconds,
-                    added != null && !string.IsNullOrWhiteSpace(added.Id)));
 
             if (added == null || string.IsNullOrWhiteSpace(added.Id))
             {
@@ -127,73 +96,25 @@ namespace StremioVideoCenter.Services
                     "Real-Debrid did not return a torrent id for this magnet.");
             }
 
-            diagStepStart = DateTime.UtcNow;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} awaiting WaitForStatusAsync #1 (maxAttempts=15, delayMs=1000, waiting_files_selection|downloaded)",
-                    diagSeq,
-                    diagStepStart));
-
             await WaitForStatusAsync(
                 added.Id,
                 maxAttempts: 15,
                 delayMilliseconds: 1000,
-                acceptableStatuses: new[] { "waiting_files_selection", "downloaded" },
-                diagLabel: "RD#" + diagSeq + " poll1");
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} WaitForStatusAsync #1 returned elapsedMs={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagStepStart).TotalMilliseconds));
+                acceptableStatuses: new[] { "waiting_files_selection", "downloaded" });
 
             string fileSelection = fileIdx.HasValue
                 ? (fileIdx.Value + 1).ToString()
                 : "all";
 
-            diagStepStart = DateTime.UtcNow;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} awaiting POST torrents/selectFiles fileSelection={2}",
-                    diagSeq,
-                    diagStepStart,
-                    fileSelection));
-
             await PostFormAsync<object>(
                 "torrents/selectFiles/" + added.Id,
                 new Dictionary<string, string> { { "files", fileSelection } });
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} selectFiles returned elapsedMs={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagStepStart).TotalMilliseconds));
-
-            diagStepStart = DateTime.UtcNow;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} awaiting WaitForStatusAsync #2 (maxAttempts=30, delayMs=2000, downloaded)",
-                    diagSeq,
-                    diagStepStart));
 
             RealDebridTorrentInfo info = await WaitForStatusAsync(
                 added.Id,
                 maxAttempts: 30,
                 delayMilliseconds: 2000,
-                acceptableStatuses: new[] { "downloaded" },
-                diagLabel: "RD#" + diagSeq + " poll2");
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} WaitForStatusAsync #2 returned elapsedMs={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagStepStart).TotalMilliseconds));
+                acceptableStatuses: new[] { "downloaded" });
 
             if (info.Links == null || info.Links.Count == 0)
             {
@@ -206,24 +127,9 @@ namespace StremioVideoCenter.Services
 
             string hostLink = info.Links[0];
 
-            diagStepStart = DateTime.UtcNow;
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} awaiting POST unrestrict/link",
-                    diagSeq,
-                    diagStepStart));
-
             RealDebridUnrestrictResponse unrestricted = await PostFormAsync<RealDebridUnrestrictResponse>(
                 "unrestrict/link",
                 new Dictionary<string, string> { { "link", hostLink } });
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} unrestrict/link returned elapsedMs={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagStepStart).TotalMilliseconds));
 
             if (unrestricted == null || string.IsNullOrWhiteSpace(unrestricted.Download))
             {
@@ -232,13 +138,6 @@ namespace StremioVideoCenter.Services
                     RealDebridFailureReason.NoPlayableResult,
                     "Real-Debrid was unable to unrestrict this link.");
             }
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] RD#{0} time={1:HH:mm:ss.fff} end totalElapsedMs={2}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagMethodStart).TotalMilliseconds));
 
             return unrestricted.Download;
         }
@@ -256,33 +155,13 @@ namespace StremioVideoCenter.Services
             string torrentId,
             int maxAttempts,
             int delayMilliseconds,
-            string[] acceptableStatuses,
-            string diagLabel = null)
+            string[] acceptableStatuses)
         {
-            DateTime diagPollStart = DateTime.UtcNow;
 
             for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
-                DateTime diagAttemptStart = DateTime.UtcNow;
 
                 RealDebridTorrentInfo info = await GetTorrentInfoAsync(torrentId);
-
-                // DIAGNOSTIC-ONLY (Part 2, controller-A-delay
-                // investigation): this loop, per the aggregation
-                // service's own documented worst case (15x1s + 30x2s =
-                // 75s per torrent), is the single most likely site of
-                // multi-second delay in the whole pipeline - logging
-                // every attempt (not just entry/exit) is deliberate here.
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] {0} time={1:HH:mm:ss.fff} attempt={2}/{3} elapsedSinceLoopStartMs={4} status={5} attemptElapsedMs={6}",
-                        diagLabel ?? "RD-poll",
-                        DateTime.UtcNow,
-                        attempt + 1,
-                        maxAttempts,
-                        (DateTime.UtcNow - diagPollStart).TotalMilliseconds,
-                        info != null ? info.Status : "(null info)",
-                        (DateTime.UtcNow - diagAttemptStart).TotalMilliseconds));
 
                 if (info == null)
                 {
@@ -301,8 +180,7 @@ namespace StremioVideoCenter.Services
 
                 if (IsErrorStatus(info.Status))
                 {
-                    // The status value itself is already in the poll log
-                    // line above; it is not repeated in the message.
+                    // The status value is not repeated in the message.
                     throw new RealDebridException(
                         RealDebridFailureReason.ResourceUnavailable,
                         "Real-Debrid reported that it could not process this torrent.");

@@ -85,6 +85,9 @@
     <Compile Include="Controls\LocalMediaView.xaml.cs">
       <DependentUpon>LocalMediaView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\FolderBrowserView.xaml.cs">
+      <DependentUpon>FolderBrowserView.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Controls\HistoryView.xaml.cs">
       <DependentUpon>HistoryView.xaml</DependentUpon>
     </Compile>
@@ -170,6 +173,11 @@
     <Compile Include="Services\LocalMediaIdentificationService.cs" />
     <Compile Include="Services\LocalMediaScanService.cs" />
     <Compile Include="Services\LocalLibraryService.cs" />
+    <Compile Include="Services\LocalMediaIndexStore.cs" />
+    <Compile Include="Services\LocalMediaMatchingService.cs" />
+    <Compile Include="Services\LocalLibraryBrowse.cs" />
+    <Compile Include="Services\LocalLibraryManager.cs" />
+    <Compile Include="Services\FolderBrowserService.cs" />
     <Compile Include="Services\ProfileService.cs" />
     <Compile Include="Models\UserProfile.cs" />
     <Compile Include="Models\WatchStateEntry.cs" />
@@ -246,6 +254,10 @@
       <Generator>MSBuild:Compile</Generator>
     </Page>
     <Page Include="Controls\LocalMediaView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\FolderBrowserView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

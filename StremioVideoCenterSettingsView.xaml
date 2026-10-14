@@ -30,7 +30,7 @@
             <!-- ========================================================= -->
 
             <TextBlock
-                Text="Stremio Video Center"
+                Text="Zino's Media Center"
                 FontWeight="Bold"
                 FontSize="16"
                 Margin="0,0,0,20"/>

@@ -187,10 +187,22 @@ namespace StremioVideoCenterControls
         // DEFAULT VIEW: FEATURED / POPULAR / NEW RELEASES
         // =========================================================
 
+        // Slice 21 (F8): guards against a second default-view load (the
+        // Try Again button) overlapping one that is still in flight.
+        private bool _isLoadingDefault;
+
         private async Task LoadDefaultViewAsync()
         {
+            if (_isLoadingDefault)
+            {
+                return;
+            }
+
+            _isLoadingDefault = true;
+
             LoadingText.Visibility = Visibility.Visible;
             DefaultEmptyText.Visibility = Visibility.Collapsed;
+            DefaultRetryButton.Visibility = Visibility.Collapsed;
 
             int currentYear = DateTime.UtcNow.Year;
 
@@ -222,7 +234,15 @@ namespace StremioVideoCenterControls
             NewSection.Visibility = newest.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
             bool anyContent = featured.Count > 0 || popular.Count > 0 || newest.Count > 0;
+            // The catalogue services report a failed request as an empty list,
+            // and a Cinemeta default row is never genuinely empty, so all three
+            // rows empty means the load failed. Say so, and offer Try Again
+            // (empty results are never cached, so this really re-requests).
+            DefaultEmptyText.Text = "Couldn't load titles right now. Check your connection, then choose Try Again.";
             DefaultEmptyText.Visibility = anyContent ? Visibility.Collapsed : Visibility.Visible;
+            DefaultRetryButton.Visibility = anyContent ? Visibility.Collapsed : Visibility.Visible;
+
+            _isLoadingDefault = false;
 
             Dispatcher.BeginInvoke(new Action(FocusFirstAvailable), DispatcherPriority.Input);
         }
@@ -437,6 +457,11 @@ namespace StremioVideoCenterControls
             {
                 Dispatcher.BeginInvoke(new Action(() => FocusFilteredCard(0)), DispatcherPriority.Input);
             }
+        }
+
+        private void DefaultRetryButton_Click(object sender, RoutedEventArgs e)
+        {
+            BeginLoadDefaultView();
         }
 
         private async void LoadMoreButton_Click(object sender, RoutedEventArgs e)
@@ -1121,6 +1146,23 @@ namespace StremioVideoCenterControls
 
             if (sections.Length == 0)
             {
+                // Slice 21 (F8): after a failed load the Try Again button is
+                // the only content; Up returns to the filter bar like the
+                // topmost section does.
+                if (DefaultRetryButton.Visibility == Visibility.Visible)
+                {
+                    if (direction < 0)
+                    {
+                        GenreCombo.Focus();
+                    }
+                    else
+                    {
+                        DefaultRetryButton.Focus();
+                    }
+
+                    return;
+                }
+
                 CloseButton.Focus();
                 return;
             }
@@ -1161,6 +1203,12 @@ namespace StremioVideoCenterControls
             foreach (MediaSection section in GetVisibleDefaultSections())
             {
                 section.FocusFirstCard();
+                return;
+            }
+
+            if (DefaultRetryButton.Visibility == Visibility.Visible)
+            {
+                DefaultRetryButton.Focus();
                 return;
             }
 

@@ -28,26 +28,66 @@ namespace StremioVideoCenterControls
     //
     //   - Nothing is captured on press, so a plain click reaches the card or
     //     button exactly as before.
-    //   - Dragging starts only after the pointer moves more than a small
-    //     threshold AND mostly along this viewer's axis (so a vertical page
-    //     and a horizontal row inside it never fight: whichever axis the
-    //     user drags decides who scrolls).
-    //   - Once dragging, the viewer captures the mouse. The element that was
-    //     pressed loses its capture, so its click never fires on release,
-    //     and the release itself is swallowed.
+    //   - Slice 21 (drag arbitration): a vertical page and the horizontal
+    //     rows inside it all see the same press, so they share ONE gesture
+    //     record instead of each judging the movement on its own. The
+    //     gesture remembers where the press began. The first time the
+    //     pointer has travelled StartThreshold from there, the dominant
+    //     direction is decided ONCE (horizontal when |dx| >= |dy|), and only
+    //     the viewer scrolling that axis may claim the gesture. The claim is
+    //     final: the other viewers ignore the rest of the gesture, so a
+    //     slight movement across the drag axis can no longer hand the drag
+    //     to the parent page (or back) midway.
+    //   - Once claimed, the owning viewer captures the mouse. The element
+    //     that was pressed loses its capture, so its click never fires on
+    //     release, and the release itself is swallowed.
     //   - Capture is released on mouse-up, on loss of capture, when the
     //     button is found not pressed on a later move, and when the viewer
-    //     unloads - it can never stay stuck.
+    //     unloads - it can never stay stuck, and the gesture is ended with
+    //     it.
     //   - Presses on text boxes, sliders, scroll bars, combo boxes and
     //     other controls where dragging already means something are
     //     ignored.
+    //   - The mouse wheel is not handled here at all.
     public static class DragScroll
     {
         // Pixels the pointer must travel before a press becomes a drag.
+        // MediaCard uses the same distance to tell a click from a drag.
         private const double StartThreshold = 8.0;
 
         private static readonly ConditionalWeakTable<ScrollViewer, DragState> States =
             new ConditionalWeakTable<ScrollViewer, DragState>();
+
+        // The one press currently being tracked. Every attached viewer on
+        // the press's route reads and updates this same record. Replaced by
+        // the next press and cleared on release; UI thread only.
+        private static Gesture _gesture;
+
+        private sealed class Gesture
+        {
+            // The press event itself: the same instance is routed through
+            // every viewer, which is how they recognise one shared press.
+            public MouseButtonEventArgs Press;
+
+            // Pointer position at press, relative to the window root, so it
+            // does not move when a viewer scrolls underneath the pointer.
+            public Point Origin;
+
+            // The press began on a control where dragging means something
+            // else (text box, slider, scroll bar...): nobody may drag.
+            public bool Blocked;
+
+            // The movement threshold has been crossed and Axis is final.
+            public bool Decided;
+            public DragScrollAxis Axis;
+
+            // The single viewer that claimed the gesture, if any.
+            public DragState Owner;
+
+            // Cancelled or finished early (capture refused or lost, button
+            // released unseen, viewer unloaded): nobody may drag any more.
+            public bool Ended;
+        }
 
         public static void Attach(ScrollViewer viewer, DragScrollAxis axis)
         {
@@ -86,9 +126,8 @@ namespace StremioVideoCenterControls
         private sealed class DragState
         {
             private readonly ScrollViewer _viewer;
-            private bool _pressed;
             private bool _dragging;
-            private Point _origin;
+            private Point _dragAnchor;
             private double _originOffset;
 
             public DragState(ScrollViewer viewer, DragScrollAxis axis)
@@ -160,66 +199,117 @@ namespace StremioVideoCenterControls
                 // event may have left behind.
                 EndDrag();
 
-                DependencyObject source = e.OriginalSource as DependencyObject;
+                // The first viewer on the route starts the shared gesture;
+                // the others (same event instance) join it.
+                Gesture gesture = _gesture;
 
-                if (IsExcludedSource(source))
+                if (gesture == null || !ReferenceEquals(gesture.Press, e))
                 {
-                    return;
+                    gesture = new Gesture
+                    {
+                        Press = e,
+                        Origin = e.GetPosition(null)
+                    };
+
+                    _gesture = gesture;
                 }
 
-                _pressed = true;
-                _origin = e.GetPosition(_viewer);
+                if (IsExcludedSource(e.OriginalSource as DependencyObject))
+                {
+                    gesture.Blocked = true;
+                }
             }
 
             private void Viewer_PreviewMouseMove(object sender, MouseEventArgs e)
             {
-                if (!_pressed && !_dragging)
+                // The button was released somewhere we did not see (another
+                // window, capture taken elsewhere): never keep dragging, and
+                // end the shared gesture so no other viewer starts one.
+                if (e.LeftButton != MouseButtonState.Pressed)
+                {
+                    EndDrag();
+
+                    Gesture released = _gesture;
+
+                    if (released != null)
+                    {
+                        released.Ended = true;
+                    }
+
+                    return;
+                }
+
+                Gesture gesture = _gesture;
+
+                if (gesture == null || gesture.Blocked || gesture.Ended)
                 {
                     return;
                 }
 
-                // The button was released somewhere we did not see (another
-                // window, capture taken elsewhere): never keep dragging.
-                if (e.LeftButton != MouseButtonState.Pressed)
+                // Another viewer owns this gesture: it is final, leave it be.
+                if (gesture.Owner != null)
                 {
+                    if (ReferenceEquals(gesture.Owner, this))
+                    {
+                        ContinueDrag(e);
+                    }
+
+                    return;
+                }
+
+                if (!gesture.Decided)
+                {
+                    Point position = e.GetPosition(null);
+                    double dx = position.X - gesture.Origin.X;
+                    double dy = position.Y - gesture.Origin.Y;
+
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) < StartThreshold)
+                    {
+                        return;
+                    }
+
+                    // Decided once, here, and never revisited.
+                    gesture.Decided = true;
+                    gesture.Axis = Math.Abs(dx) >= Math.Abs(dy)
+                        ? DragScrollAxis.Horizontal
+                        : DragScrollAxis.Vertical;
+                }
+
+                // Only a viewer that scrolls the decided axis may claim it.
+                if (gesture.Axis != Axis || !CanScroll)
+                {
+                    return;
+                }
+
+                gesture.Owner = this;
+                _dragging = true;
+                _dragAnchor = e.GetPosition(_viewer);
+                _originOffset = CurrentOffset;
+
+                _viewer.CaptureMouse();
+
+                if (!_viewer.IsMouseCaptured)
+                {
+                    // Capture refused: do not drag without it, and do not let
+                    // another viewer pick the gesture up half-way.
                     EndDrag();
+                    gesture.Ended = true;
+                    return;
+                }
+
+                ContinueDrag(e);
+            }
+
+            private void ContinueDrag(MouseEventArgs e)
+            {
+                if (!_dragging)
+                {
                     return;
                 }
 
                 Point position = e.GetPosition(_viewer);
 
-                if (!_dragging)
-                {
-                    double dx = position.X - _origin.X;
-                    double dy = position.Y - _origin.Y;
-                    double along = Math.Abs(IsVertical ? dy : dx);
-                    double across = Math.Abs(IsVertical ? dx : dy);
-
-                    if (along < StartThreshold || along < across)
-                    {
-                        return;
-                    }
-
-                    if (!CanScroll)
-                    {
-                        return;
-                    }
-
-                    _dragging = true;
-                    _origin = position;
-                    _originOffset = CurrentOffset;
-
-                    _viewer.CaptureMouse();
-
-                    if (!_viewer.IsMouseCaptured)
-                    {
-                        // Capture refused: do not drag without it.
-                        EndDrag();
-                        return;
-                    }
-                }
-
-                double travelled = IsVertical ? position.Y - _origin.Y : position.X - _origin.X;
+                double travelled = IsVertical ? position.Y - _dragAnchor.Y : position.X - _dragAnchor.X;
                 double target = Math.Max(0, Math.Min(MaxOffset, _originOffset - travelled));
 
                 if (IsVertical)
@@ -240,6 +330,10 @@ namespace StremioVideoCenterControls
 
                 EndDrag();
 
+                // The press is over. (Runs on every viewer on the route; the
+                // owner's own state is independent of this reference.)
+                _gesture = null;
+
                 if (wasDragging)
                 {
                     // The release that ends a drag is not a click.
@@ -257,8 +351,11 @@ namespace StremioVideoCenterControls
                     return;
                 }
 
-                _pressed = false;
-                _dragging = false;
+                if (_dragging)
+                {
+                    _dragging = false;
+                    EndOwnedGesture();
+                }
             }
 
             private void Viewer_Unloaded(object sender, RoutedEventArgs e)
@@ -270,12 +367,27 @@ namespace StremioVideoCenterControls
             {
                 bool hadCapture = _dragging;
 
-                _pressed = false;
                 _dragging = false;
 
-                if (hadCapture && _viewer.IsMouseCaptured)
+                if (hadCapture)
                 {
-                    _viewer.ReleaseMouseCapture();
+                    EndOwnedGesture();
+
+                    if (_viewer.IsMouseCaptured)
+                    {
+                        _viewer.ReleaseMouseCapture();
+                    }
+                }
+            }
+
+            // If this viewer owns the current gesture, that gesture is over.
+            private void EndOwnedGesture()
+            {
+                Gesture gesture = _gesture;
+
+                if (gesture != null && ReferenceEquals(gesture.Owner, this))
+                {
+                    gesture.Ended = true;
                 }
             }
 

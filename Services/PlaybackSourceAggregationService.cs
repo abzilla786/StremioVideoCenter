@@ -76,14 +76,8 @@ namespace StremioVideoCenter.Services
             _maxRealDebridAttempts = maxRealDebridAttempts;
         }
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the Aggr# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagAggrSeq;
-
         public async Task<PlaybackSourceSet> AggregateAsync(ContentRequest request)
         {
-            int diagSeq = Interlocked.Increment(ref _diagAggrSeq);
 
             if (request == null)
             {
@@ -92,20 +86,9 @@ namespace StremioVideoCenter.Services
 
             PlaybackSourceSet result = new PlaybackSourceSet();
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} awaiting _discovery.ResolveStreamsAsync (fan-out across all registered addons)",
-                    diagSeq,
-                    DateTime.UtcNow));
 
             List<StremioStream> streams = await _discovery.ResolveStreamsAsync(request);
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _discovery.ResolveStreamsAsync returned {2} stream(s)",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    streams != null ? streams.Count : 0));
 
             if (streams == null || streams.Count == 0)
             {
@@ -221,35 +204,17 @@ namespace StremioVideoCenter.Services
                 // carry the user's RD key embedded in it, and callers
                 // must always fall back to a generic label instead of
                 // the URL.
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} awaiting _resolver.ResolveStreamAsync stream=[{2}] addon={3}",
-                        diagSeq,
-                        DateTime.UtcNow,
-                        diagStreamIdentity,
-                        !string.IsNullOrWhiteSpace(stream.SourceAddonName)
-                            ? stream.SourceAddonName
-                            : "(unnamed addon)"));
 
                 try
                 {
                     source = await _resolver.ResolveStreamAsync(stream);
 
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync returned stream=[{2}] kind={3}",
-                            diagSeq,
-                            DateTime.UtcNow,
-                            diagStreamIdentity,
-                            source != null ? source.Kind.ToString() : "(null)"));
                 }
                 catch (Exception ex)
                 {
                     StremioVideoCenterLogger.Info(
                         string.Format(
-                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync threw stream=[{2}] debridReason={3} ex={4}",
-                            diagSeq,
-                            DateTime.UtcNow,
+                            "Stream resolution failed stream=[{0}] debridReason={1} ex={2}",
                             diagStreamIdentity,
                             ex is RealDebridException
                                 ? ((RealDebridException)ex).Reason.ToString()
@@ -317,13 +282,6 @@ namespace StremioVideoCenter.Services
                 result.Sources.Add(source);
             }
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} end sources={2} unresolved={3}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    result.Sources.Count,
-                    result.Unresolved.Count));
 
             return result;
         }

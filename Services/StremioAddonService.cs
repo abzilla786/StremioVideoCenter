@@ -61,17 +61,11 @@ namespace StremioVideoCenter.Services
         // GET STREAMS
         // =========================================================
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the AddonSvc# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagAddonSvcSeq;
-
         public async Task<List<StremioStream>> GetStreamsAsync(
             string type,
             string id,
             CancellationToken cancellationToken = default(CancellationToken))
         {
-            int diagSeq = Interlocked.Increment(ref _diagAddonSvcSeq);
 
             if (string.IsNullOrWhiteSpace(type))
             {
@@ -91,33 +85,15 @@ namespace StremioVideoCenter.Services
                 Uri.EscapeDataString(id) +
                 ".json";
 
-            DateTime diagCallStart = DateTime.UtcNow;
-
             // SECURITY: never log the full addon URL. Per
             // StremioAddonRegistry's own remarks, a Real-Debrid-
             // configured addon's manifest/base URL can carry the user's
             // RD key embedded in the URL path itself (a common Stremio
             // addon convention) - only the host is safe to write to a
             // plaintext log file.
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] AddonSvc#{0} time={1:HH:mm:ss.fff} awaiting DownloadStringAsync host={2} type={3} id={4}",
-                    diagSeq,
-                    diagCallStart,
-                    RedactUrlHostForLogging(url),
-                    type,
-                    id));
 
             string json =
                 await DownloadStringAsync(url, StreamTimeoutMs, cancellationToken);
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] AddonSvc#{0} time={1:HH:mm:ss.fff} DownloadStringAsync returned elapsedMs={2} responseLength={3}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagCallStart).TotalMilliseconds,
-                    json != null ? json.Length : 0));
 
             StremioStreamResponse response =
                 Deserialize<StremioStreamResponse>(json);
@@ -226,11 +202,10 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
-        // DIAGNOSTIC URL REDACTION (Part 2, controller-A-delay
-        // investigation)
+        // LOG-SAFE URL REDACTION
         // =========================================================
         //
-        // Host-only, for the AddonSvc# diagnostic log lines above. Never
+        // Host-only, for log lines. Never
         // used for anything other than logging - the real _addonUrl and
         // the constructed request url are always used unredacted for the
         // actual HTTP call.

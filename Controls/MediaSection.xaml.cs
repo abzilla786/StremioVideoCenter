@@ -227,14 +227,6 @@ namespace StremioVideoCenterControls
         // HORIZONTAL NAVIGATION
         // =========================================================
 
-        // TEMPORARY DIAGNOSTIC (controller double-input investigation,
-        // phase 2 - downstream trace) - logs the before/after index on
-        // every call, so a single physical D-pad Left/Right press can be
-        // checked against how many times this method actually ran and by
-        // how much the index actually moved. Remove once the root cause
-        // is confirmed.
-        private static int _diagMoveHCallSeq;
-
         // "See More" focusability fix: a section with a visible More
         // link previously had no way for directional Left/Right to ever
         // reach it - Right from the last card just re-clamped onto that
@@ -261,10 +253,6 @@ namespace StremioVideoCenterControls
                 // off of the first card.
                 return;
             }
-
-            int diagMoveHSeq =
-                System.Threading.Interlocked.Increment(
-                    ref _diagMoveHCallSeq);
 
             int count =
                 MediaItemsControl.Items.Count;
@@ -295,14 +283,6 @@ namespace StremioVideoCenterControls
                 direction > 0 &&
                 MoreButton.Visibility == Visibility.Visible)
             {
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] MoveH#{0} section={1} direction={2} beforeIndex={3} afterIndex=More count={4}",
-                        diagMoveHSeq,
-                        Title,
-                        direction,
-                        beforeIndex,
-                        count));
 
                 MoreButton.Focus();
 
@@ -315,16 +295,6 @@ namespace StremioVideoCenterControls
                     Math.Min(
                         currentIndex,
                         count - 1));
-
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] MoveH#{0} section={1} direction={2} beforeIndex={3} afterIndex={4} count={5}",
-                    diagMoveHSeq,
-                    Title,
-                    direction,
-                    beforeIndex,
-                    currentIndex,
-                    count));
 
             FocusCard(currentIndex);
         }
@@ -448,21 +418,6 @@ namespace StremioVideoCenterControls
             {
                 return;
             }
-
-            // TEMPORARY DIAGNOSTIC (controller double-input investigation,
-            // phase 2) - logs every actual card.Focus() call, including
-            // index and remaining retry budget, so a call that resolves
-            // on its first attempt can be told apart from one that only
-            // succeeds after one or more Dispatcher.BeginInvoke retries
-            // (which would still be one logical FocusCard() call from the
-            // caller's perspective, but worth ruling out explicitly).
-            // Remove once the root cause is confirmed.
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] FocusCard section={0} index={1} attemptsRemaining={2}",
-                    Title,
-                    index,
-                    attemptsRemaining));
 
             card.Focus();
 

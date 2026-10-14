@@ -321,7 +321,8 @@ namespace StremioVideoCenter.Services
                 return new KitsuBrowseResult
                 {
                     Items = new List<KitsuAnimeResource>(),
-                    TotalCount = 0
+                    TotalCount = 0,
+                    Failed = true
                 };
             }
         }
@@ -1275,5 +1276,10 @@ namespace StremioVideoCenter.Services
     {
         public List<KitsuAnimeResource> Items { get; set; }
         public int TotalCount { get; set; }
+
+        // Slice 21 (F9): true when the request failed (unreachable or
+        // malformed), as opposed to genuinely returning no matches, so the
+        // UI can tell the two apart. Items is still an empty list.
+        public bool Failed { get; set; }
     }
 }
