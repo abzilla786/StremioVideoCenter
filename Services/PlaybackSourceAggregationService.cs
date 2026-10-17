@@ -1,6 +1,7 @@
 using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Threading;
 
@@ -76,7 +77,90 @@ namespace StremioVideoCenter.Services
             _maxRealDebridAttempts = maxRealDebridAttempts;
         }
 
+        // TEMPORARY DIAGNOSTIC (tag [AGG-DIAG]): per-request timing around
+        // the original aggregation body, which now lives unchanged in
+        // AggregateCoreAsync. This wrapper only measures and logs; results,
+        // exceptions and cancellation pass through exactly as before.
+        // Remove together with AggregationDiagnostics once the slow stage
+        // has been identified.
+        private static int _diagSequence;
+
         public async Task<PlaybackSourceSet> AggregateAsync(ContentRequest request)
+        {
+            AggregationDiagnostics diag = new AggregationDiagnostics(
+                Interlocked.Increment(ref _diagSequence));
+
+            Stopwatch total = Stopwatch.StartNew();
+            string outcome = "completed";
+
+            DiagLog("[AGG-DIAG] Agg#{0} start", diag.Id);
+
+            try
+            {
+                return await AggregateCoreAsync(request, diag);
+            }
+            catch (OperationCanceledException)
+            {
+                outcome = "cancelled";
+                throw;
+            }
+            catch (Exception ex)
+            {
+                outcome = "failed(" + ex.GetType().Name + ")";
+                throw;
+            }
+            finally
+            {
+                total.Stop();
+
+                DiagLog(
+                    "[AGG-DIAG] Agg#{0} end outcome={1} totalMs={2} discoveryMs={3} " +
+                    "streams={4} direct={5} torrentOnly={6} unsupported={7} nullEntries={8} " +
+                    "rdDuplicatesSkipped={9} rdBudgetSkipped={10} rdAttempted={11} " +
+                    "rdSucceeded={12} rdFailed={13} rdTotalMs={14} directResolved={15} " +
+                    "sourcesReturned={16} unresolvedReturned={17}",
+                    diag.Id,
+                    outcome,
+                    total.ElapsedMilliseconds,
+                    diag.DiscoveryMs,
+                    diag.Streams,
+                    diag.Direct,
+                    diag.TorrentOnly,
+                    diag.Unsupported,
+                    diag.NullEntries,
+                    diag.RdDuplicatesSkipped,
+                    diag.RdBudgetSkipped,
+                    diag.RdAttempted,
+                    diag.RdSucceeded,
+                    diag.RdFailed,
+                    diag.RdTotalMs,
+                    diag.DirectResolved,
+                    diag.SourcesReturned,
+                    diag.UnresolvedReturned);
+            }
+        }
+
+        // TEMPORARY DIAGNOSTIC: used only for [AGG-DIAG] messages. Formatting
+        // and writing happen inside the try, so a logging failure can never
+        // reach the aggregation path (results, exceptions, cancellation or
+        // the existing per-stream failure handling). It is deliberately NOT
+        // used for any production log line, and the aggregation logic's own
+        // exceptions are never caught here.
+        private static void DiagLog(string format, params object[] args)
+        {
+            try
+            {
+                StremioVideoCenterLogger.Info(string.Format(format, args));
+            }
+            catch (Exception)
+            {
+                // Diagnostic output is best-effort by design.
+            }
+        }
+
+        private async Task<PlaybackSourceSet> AggregateCoreAsync(
+            ContentRequest request,
+            AggregationDiagnostics diag)
         {
 
             if (request == null)
@@ -87,8 +171,48 @@ namespace StremioVideoCenter.Services
             PlaybackSourceSet result = new PlaybackSourceSet();
 
 
+            Stopwatch discoveryWatch = Stopwatch.StartNew();
+
             List<StremioStream> streams = await _discovery.ResolveStreamsAsync(request);
 
+            discoveryWatch.Stop();
+            diag.DiscoveryMs = discoveryWatch.ElapsedMilliseconds;
+
+            if (streams != null)
+            {
+                // [AGG-DIAG] counts by broad kind only (same classification
+                // the loop below uses). Nothing from a stream is logged.
+                diag.Streams = streams.Count;
+
+                foreach (StremioStream counted in streams)
+                {
+                    if (counted == null)
+                    {
+                        diag.NullEntries++;
+                    }
+                    else if (StreamResolverService.IsPlayableDirectUrl(counted.Url))
+                    {
+                        diag.Direct++;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(counted.InfoHash))
+                    {
+                        diag.TorrentOnly++;
+                    }
+                    else
+                    {
+                        diag.Unsupported++;
+                    }
+                }
+            }
+
+            DiagLog(
+                "[AGG-DIAG] Agg#{0} discovery done ms={1} streams={2} direct={3} torrentOnly={4} unsupported={5}",
+                diag.Id,
+                diag.DiscoveryMs,
+                diag.Streams,
+                diag.Direct,
+                diag.TorrentOnly,
+                diag.Unsupported);
 
             if (streams == null || streams.Count == 0)
             {
@@ -109,7 +233,11 @@ namespace StremioVideoCenter.Services
                     continue;
                 }
 
-                bool hasDirectUrl = !string.IsNullOrWhiteSpace(stream.Url);
+                // Slice 22: a direct URL counts only when it is a well-formed
+                // http(s) address (same rule the resolver applies). A stream
+                // whose url is unusable but which has an infoHash is treated
+                // as a torrent stream, including the budget and dedup below.
+                bool hasDirectUrl = StreamResolverService.IsPlayableDirectUrl(stream.Url);
                 bool hasInfoHash = !string.IsNullOrWhiteSpace(stream.InfoHash);
 
                 // ExternalUrl-only (or genuinely empty) streams are
@@ -123,7 +251,7 @@ namespace StremioVideoCenter.Services
                     result.Unresolved.Add(new UnresolvedSource
                     {
                         Stream = stream,
-                        Reason = "No direct URL or torrent source - external-only streams are not supported for in-app playback.",
+                        Reason = StreamResolverService.DescribeUnsupported(stream),
                         Cause = UnresolvedCause.Unsupported
                     });
 
@@ -164,11 +292,14 @@ namespace StremioVideoCenter.Services
 
                     if (!seenInfoHashes.Add(infoHashKey))
                     {
+                        diag.RdDuplicatesSkipped++;
                         continue;
                     }
 
                     if (realDebridAttemptsRemaining <= 0)
                     {
+                        diag.RdBudgetSkipped++;
+
                         result.Unresolved.Add(new UnresolvedSource
                         {
                             Stream = stream,
@@ -205,13 +336,64 @@ namespace StremioVideoCenter.Services
                 // must always fall back to a generic label instead of
                 // the URL.
 
+                // [AGG-DIAG] a torrent-only stream is the one that reaches
+                // Real-Debrid; only those get per-attempt timing.
+                bool diagIsRdAttempt = !hasDirectUrl && hasInfoHash;
+                Stopwatch diagResolveWatch = Stopwatch.StartNew();
+                int diagAttemptNumber = 0;
+
+                if (diagIsRdAttempt)
+                {
+                    diag.RdAttempted++;
+                    diagAttemptNumber = diag.RdAttempted;
+
+                    DiagLog(
+                        "[AGG-DIAG] Agg#{0} rd#{1} start",
+                        diag.Id,
+                        diagAttemptNumber);
+                }
+
                 try
                 {
                     source = await _resolver.ResolveStreamAsync(stream);
 
+                    diagResolveWatch.Stop();
+
+                    if (diagIsRdAttempt)
+                    {
+                        diag.RdSucceeded++;
+                        diag.RdTotalMs += diagResolveWatch.ElapsedMilliseconds;
+
+                        DiagLog(
+                            "[AGG-DIAG] Agg#{0} rd#{1} end outcome=ok ms={2}",
+                            diag.Id,
+                            diagAttemptNumber,
+                            diagResolveWatch.ElapsedMilliseconds);
+                    }
+                    else
+                    {
+                        diag.DirectResolved++;
+                    }
                 }
                 catch (Exception ex)
                 {
+                    diagResolveWatch.Stop();
+
+                    if (diagIsRdAttempt)
+                    {
+                        diag.RdFailed++;
+                        diag.RdTotalMs += diagResolveWatch.ElapsedMilliseconds;
+
+                        DiagLog(
+                            "[AGG-DIAG] Agg#{0} rd#{1} end outcome={2} ms={3}",
+                            diag.Id,
+                            diagAttemptNumber,
+                            ex is RealDebridException
+                                ? ((RealDebridException)ex).Reason.ToString()
+                                : ex.GetType().Name,
+                            diagResolveWatch.ElapsedMilliseconds);
+                    }
+
                     StremioVideoCenterLogger.Info(
                         string.Format(
                             "Stream resolution failed stream=[{0}] debridReason={1} ex={2}",
@@ -282,8 +464,36 @@ namespace StremioVideoCenter.Services
                 result.Sources.Add(source);
             }
 
+            diag.SourcesReturned = result.Sources.Count;
+            diag.UnresolvedReturned = result.Unresolved.Count;
 
             return result;
+        }
+
+        // TEMPORARY DIAGNOSTIC: mutable counters for one AggregateAsync call.
+        private sealed class AggregationDiagnostics
+        {
+            public AggregationDiagnostics(int id)
+            {
+                Id = id;
+            }
+
+            public readonly int Id;
+            public long DiscoveryMs;
+            public int Streams;
+            public int Direct;
+            public int TorrentOnly;
+            public int Unsupported;
+            public int NullEntries;
+            public int RdDuplicatesSkipped;
+            public int RdBudgetSkipped;
+            public int RdAttempted;
+            public int RdSucceeded;
+            public int RdFailed;
+            public long RdTotalMs;
+            public int DirectResolved;
+            public int SourcesReturned;
+            public int UnresolvedReturned;
         }
     }
 

@@ -26,6 +26,57 @@ namespace StremioVideoCenter
         private StremioVideoCenterView videoCenterView;
         private StremioVideoCenterSettingsViewModel settings { get; set; }
 
+        // Slice 22: set by the settings view-model when config.json existed
+        // but could not be loaded AND could not be copied aside, so that
+        // nothing in this session overwrites it. See SettingsLoadGuard.
+        internal bool SettingsPersistenceBlocked { get; set; }
+
+        private bool persistenceBlockedLogged;
+
+        internal string GetSettingsFilePath()
+        {
+            return System.IO.Path.Combine(GetPluginUserDataPath(), "config.json");
+        }
+
+        // The one place that writes the plugin settings. Behaves exactly
+        // like SavePluginSettings unless an unreadable config.json could not
+        // be preserved (SettingsPersistenceBlocked), in which case it
+        // writes nothing.
+        internal void SaveSettings(StremioVideoCenterSettings toSave)
+        {
+            if (SettingsPersistenceBlocked)
+            {
+                if (!persistenceBlockedLogged)
+                {
+                    persistenceBlockedLogged = true;
+                    StremioVideoCenterLogger.Warn(
+                        "Settings were not saved: the saved settings file could not be read or preserved this session.");
+                }
+
+                return;
+            }
+
+            SavePluginSettings(toSave);
+        }
+
+        internal void NotifySettingsUnreadable(bool saveDisabled)
+        {
+            try
+            {
+                PlayniteApi.Notifications.Add(
+                    "StremioVideoCenter_SettingsUnreadable",
+                    saveDisabled
+                        ? "Zino's Media Center could not read its saved settings and could not make a safe copy, so it will not save changes this session. Close Playnite and check the plugin's settings file."
+                        : "Zino's Media Center could not read its saved settings. A copy of the unreadable file was kept in the plugin's data folder and default settings are in use.",
+                    NotificationType.Error);
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "The settings notification could not be shown: " + ex.GetType().Name);
+            }
+        }
+
         // Playnite's on-screen bounds captured in true physical device
         // pixels (via PointToScreen) at the moment Video Center is opened.
         // Physical pixels are DPI-context-independent, unlike
@@ -51,7 +102,7 @@ namespace StremioVideoCenter
             }
             catch (Exception ex)
             {
-                logger.Warn(ex, "Failed to initialize StremioVideoCenterLogger.");
+                logger.Warn("Failed to initialize StremioVideoCenterLogger. " + UserFacingErrors.ForLog(ex));
             }
 
             // Slice 20 Stage 1A: redact a stale MPV log (left by a crashed
@@ -152,7 +203,7 @@ namespace StremioVideoCenter
             }
             catch (Exception ex)
             {
-                logger.Error(ex, "Failed to create StremioVideoCenterView.");
+                logger.Error("Failed to create StremioVideoCenterView. " + UserFacingErrors.ForLog(ex));
 
                 // Slice 21: the full exception (stack trace, file paths) goes
                 // to the log above; the dialog shows only the sanitised summary.
@@ -160,96 +211,119 @@ namespace StremioVideoCenter
                     UserFacingErrors.ForLog(ex),
                     "Zino's Media Center Load Error");
 
-                videoCenterWindow.Close();
+                // Slice 22: clear the references BEFORE closing, so a Close()
+                // that throws cannot leave a stale window blocking reopen.
+                System.Windows.Window failedWindow = videoCenterWindow;
                 videoCenterWindow = null;
+                videoCenterView = null;
+
+                try
+                {
+                    failedWindow.Close();
+                }
+                catch (Exception closeEx)
+                {
+                    logger.Warn("Closing the failed window also failed. " + UserFacingErrors.ForLog(closeEx));
+                }
 
                 return;
             }
 
-            videoCenterWindow.WindowStyle =
-                System.Windows.WindowStyle.None;
+            // Slice 22: from here the window exists and is half-configured.
+            // Any failure (owner/placement, event hookup, Show) must not
+            // leave a stale window, view or event subscription behind that
+            // would block the next open - see AbortFailedOpen.
+            try
+            {
+                videoCenterWindow.WindowStyle =
+                    System.Windows.WindowStyle.None;
 
-            videoCenterWindow.ResizeMode =
-                System.Windows.ResizeMode.NoResize;
+                videoCenterWindow.ResizeMode =
+                    System.Windows.ResizeMode.NoResize;
 
-            videoCenterWindow.ShowInTaskbar = false;
+                videoCenterWindow.ShowInTaskbar = false;
 
-            videoCenterWindow.WindowState =
-                System.Windows.WindowState.Normal;
+                videoCenterWindow.WindowState =
+                    System.Windows.WindowState.Normal;
 
-            videoCenterWindow.SizeToContent =
-                System.Windows.SizeToContent.Manual;
+                videoCenterWindow.SizeToContent =
+                    System.Windows.SizeToContent.Manual;
 
-            videoCenterWindow.WindowStartupLocation =
-                System.Windows.WindowStartupLocation.Manual;
+                videoCenterWindow.WindowStartupLocation =
+                    System.Windows.WindowStartupLocation.Manual;
 
-            // Make Playnite the owner of the Video Center window.
-            // This helps Windows restore focus to Playnite when
-            // the Video Center closes.
-            videoCenterWindow.Owner = playniteWindow;
+                // Make Playnite the owner of the Video Center window.
+                // This helps Windows restore focus to Playnite when
+                // the Video Center closes.
+                videoCenterWindow.Owner = playniteWindow;
 
-            // Capture Playnite's on-screen bounds in true physical device
-            // pixels now, while playniteWindow's own DPI context is what's
-            // in effect. PointToScreen is DPI-context-independent, unlike
-            // Left/Top/ActualWidth/ActualHeight (device-independent units
-            // relative to that window's own per-monitor DPI context). On a
-            // multi-monitor setup where the monitors don't share the same
-            // DPI scale, copying Left/Top/ActualWidth/ActualHeight directly
-            // onto a different window renders it at the wrong physical
-            // size/position - this is what caused the Video Center window
-            // to render wider than Playnite's own window and spill onto an
-            // adjacent monitor instead of covering only the Playnite
-            // window. Converting through physical pixels (finished in
-            // VideoCenterWindow_Loaded, once videoCenterWindow has its own
-            // DPI context to convert back into) keeps the two windows
-            // aligned pixel-for-pixel regardless of DPI differences.
-            playniteTopLeftPhysical = playniteWindow.PointToScreen(
-                new System.Windows.Point(0, 0));
+                // Capture Playnite's on-screen bounds in true physical device
+                // pixels now, while playniteWindow's own DPI context is what's
+                // in effect. PointToScreen is DPI-context-independent, unlike
+                // Left/Top/ActualWidth/ActualHeight (device-independent units
+                // relative to that window's own per-monitor DPI context). On a
+                // multi-monitor setup where the monitors don't share the same
+                // DPI scale, copying Left/Top/ActualWidth/ActualHeight directly
+                // onto a different window renders it at the wrong physical
+                // size/position - this is what caused the Video Center window
+                // to render wider than Playnite's own window and spill onto an
+                // adjacent monitor instead of covering only the Playnite
+                // window. Converting through physical pixels (finished in
+                // VideoCenterWindow_Loaded, once videoCenterWindow has its own
+                // DPI context to convert back into) keeps the two windows
+                // aligned pixel-for-pixel regardless of DPI differences.
+                playniteTopLeftPhysical = playniteWindow.PointToScreen(
+                    new System.Windows.Point(0, 0));
 
-            playniteBottomRightPhysical = playniteWindow.PointToScreen(
-                new System.Windows.Point(
-                    playniteWindow.ActualWidth,
-                    playniteWindow.ActualHeight));
+                playniteBottomRightPhysical = playniteWindow.PointToScreen(
+                    new System.Windows.Point(
+                        playniteWindow.ActualWidth,
+                        playniteWindow.ActualHeight));
 
-            // Best-effort initial placement using the raw DIU values, in
-            // case this window's DPI context happens to match Playnite's
-            // (the common single-monitor/uniform-DPI case). This also
-            // avoids the window flashing at its default dialog size before
-            // Loaded fires. VideoCenterWindow_Loaded performs the
-            // authoritative, DPI-correct placement once it can.
-            videoCenterWindow.Left = playniteWindow.Left;
-            videoCenterWindow.Top = playniteWindow.Top;
-            videoCenterWindow.Width = playniteWindow.ActualWidth;
-            videoCenterWindow.Height = playniteWindow.ActualHeight;
+                // Best-effort initial placement using the raw DIU values, in
+                // case this window's DPI context happens to match Playnite's
+                // (the common single-monitor/uniform-DPI case). This also
+                // avoids the window flashing at its default dialog size before
+                // Loaded fires. VideoCenterWindow_Loaded performs the
+                // authoritative, DPI-correct placement once it can.
+                videoCenterWindow.Left = playniteWindow.Left;
+                videoCenterWindow.Top = playniteWindow.Top;
+                videoCenterWindow.Width = playniteWindow.ActualWidth;
+                videoCenterWindow.Height = playniteWindow.ActualHeight;
 
-            // Authoritative placement, performed once the window has a
-            // PresentationSource (and therefore its own DPI context) to
-            // convert the physical-pixel bounds captured above back into.
-            videoCenterWindow.Loaded += VideoCenterWindow_Loaded;
-            videoCenterWindow.SourceInitialized += VideoCenterWindow_SourceInitialized;
+                // Authoritative placement, performed once the window has a
+                // PresentationSource (and therefore its own DPI context) to
+                // convert the physical-pixel bounds captured above back into.
+                videoCenterWindow.Loaded += VideoCenterWindow_Loaded;
+                videoCenterWindow.SourceInitialized += VideoCenterWindow_SourceInitialized;
 
-            // Keep the window glued to Playnite's client area for as long as it
-            // is open: Playnite moving/resizing/maximising/changing monitor or
-            // DPI, and display configuration changes (mirroring a TV, a
-            // resolution change), all re-sync it. See SyncHostBounds.
-            // Slice 21 (temporary): reset the host-geometry diagnostic state
-            // for this open.
-            hostDiagQueued = false;
-            hostDiagFailed = false;
-            hostDiagCount = 0;
-            hostDiagLastBody = null;
+                // Keep the window glued to Playnite's client area for as long as it
+                // is open: Playnite moving/resizing/maximising/changing monitor or
+                // DPI, and display configuration changes (mirroring a TV, a
+                // resolution change), all re-sync it. See SyncHostBounds.
+                // Slice 21 (temporary): reset the host-geometry diagnostic state
+                // for this open.
+                hostDiagQueued = false;
+                hostDiagFailed = false;
+                hostDiagCount = 0;
+                hostDiagLastBody = null;
 
-            SubscribeHostGeometryEvents();
+                SubscribeHostGeometryEvents();
 
-            // Keyboard close handling.
-            videoCenterWindow.KeyDown += VideoCenterWindow_KeyDown;
+                // Keyboard close handling.
+                videoCenterWindow.KeyDown += VideoCenterWindow_KeyDown;
 
-            // Clean up our reference when the window closes.
-            videoCenterWindow.Closed += VideoCenterWindow_Closed;
+                // Clean up our reference when the window closes.
+                videoCenterWindow.Closed += VideoCenterWindow_Closed;
 
-            videoCenterWindow.Show();
+                videoCenterWindow.Show();
 
-            EnsureVideoCenterForeground();
+                EnsureVideoCenterForeground();
+            }
+            catch (Exception ex)
+            {
+                AbortFailedOpen(ex);
+            }
         }
 
         // =========================================================
@@ -806,7 +880,7 @@ namespace StremioVideoCenter
 
             return new ProfileService(
                 liveSettings,
-                () => SavePluginSettings(liveSettings));
+                () => SaveSettings(liveSettings));
         }
 
         // =========================================================
@@ -837,7 +911,7 @@ namespace StremioVideoCenter
                     {
                         if (settings?.Settings != null)
                         {
-                            SavePluginSettings(settings.Settings);
+                            SaveSettings(settings.Settings);
                         }
                     },
                     GetPluginUserDataPath(),
@@ -888,7 +962,7 @@ namespace StremioVideoCenter
 
             var watchStateService = new WatchStateService(
                 liveSettings,
-                () => SavePluginSettings(liveSettings));
+                () => SaveSettings(liveSettings));
 
             if (profileService != null)
             {
@@ -919,7 +993,7 @@ namespace StremioVideoCenter
 
             var watchHistoryService = new WatchHistoryService(
                 liveSettings,
-                () => SavePluginSettings(liveSettings));
+                () => SaveSettings(liveSettings));
 
             if (profileService != null)
             {
@@ -950,7 +1024,7 @@ namespace StremioVideoCenter
 
             var myListService = new MyListService(
                 liveSettings,
-                () => SavePluginSettings(liveSettings));
+                () => SaveSettings(liveSettings));
 
             if (profileService != null)
             {
@@ -962,6 +1036,59 @@ namespace StremioVideoCenter
             return myListService;
         }
 
+        // =====================================================================
+        // SLICE22-CTRL-DIAG (TEMPORARY - remove after the Windows result)
+        // =====================================================================
+        //
+        // Answers one question: in Playnite Desktop mode, which controller
+        // callbacks does Playnite actually raise, and does Zino react? Each
+        // line holds only the callback name, button name, press/release
+        // state, Playnite's mode, whether the Zino window is open and what
+        // Zino did - no credentials, paths, titles or payloads. Capped so a
+        // long session cannot grow the log. The Desktop callback below only
+        // LOGS; it does not route input, so behaviour is unchanged.
+        private int ctrlDiagLines;
+
+        private void CtrlDiag(string callback, OnControllerButtonStateChangedArgs args, string outcome)
+        {
+            if (ctrlDiagLines >= 300)
+            {
+                return;
+            }
+
+            ctrlDiagLines++;
+
+            string mode;
+
+            try
+            {
+                mode = PlayniteApi.ApplicationInfo.Mode.ToString();
+            }
+            catch (Exception)
+            {
+                mode = "(unknown)";
+            }
+
+            StremioVideoCenterLogger.Info(
+                "[CTRL-DIAG22] cb=" + callback +
+                " button=" + args.Button +
+                " state=" + args.State +
+                " mode=" + mode +
+                " windowOpen=" + (videoCenterWindow != null && videoCenterView != null) +
+                " outcome=" + outcome);
+        }
+
+        public override void OnDesktopControllerButtonStateChanged(
+            OnControllerButtonStateChangedArgs args)
+        {
+            CtrlDiag("desktop", args, "logged-only");
+        }
+
+        public override void OnControllerConnected(OnControllerConnectedArgs args)
+        {
+            StremioVideoCenterLogger.Info("[CTRL-DIAG22] cb=connected");
+        }
+
         public override void OnControllerButtonStateChanged(
             OnControllerButtonStateChangedArgs args)
         {
@@ -969,11 +1096,13 @@ namespace StremioVideoCenter
             if (videoCenterWindow == null ||
                 videoCenterView == null)
             {
+                CtrlDiag("base", args, "no-window");
                 return;
             }
 
             if (args.State != ControllerInputState.Pressed)
             {
+                CtrlDiag("base", args, "ignored-not-pressed");
                 return;
             }
 
@@ -982,8 +1111,11 @@ namespace StremioVideoCenter
             // Select action for cards and player controls.
             if (videoCenterView.HandleControllerInput(args.Button))
             {
+                CtrlDiag("base", args, "consumed");
                 return;
             }
+
+            CtrlDiag("base", args, "not-consumed");
 
             // If the Video Center did not consume B, close the window.
             if (args.Button == ControllerInput.B)
@@ -1015,11 +1147,30 @@ namespace StremioVideoCenter
             // StopHeroBackdropRotation's own remarks.
             videoCenterView?.StopHeroBackdropRotation();
 
+            // Slice 22: whatever the reason the window closed (B/Escape,
+            // Playnite exiting and taking its owned window with it), save
+            // the playback position and end the player this view started.
+            // Idempotent; the normal in-app player exit has already done
+            // this through ClosePlayer and is unaffected.
+            try
+            {
+                videoCenterView?.ShutdownForClose();
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Shutdown clean-up failed. " + UserFacingErrors.ForLog(ex));
+            }
+
             videoCenterWindow = null;
             videoCenterView = null;
 
             // Restore focus to Playnite after the Video Center
             // window has completely closed.
+            RestorePlayniteFocus();
+        }
+
+        private void RestorePlayniteFocus()
+        {
             if (playniteWindow != null)
             {
                 playniteWindow.Dispatcher.BeginInvoke(
@@ -1042,9 +1193,81 @@ namespace StremioVideoCenter
                         }
                         catch (Exception ex)
                         {
-                            logger.Error(ex, "Failed to restore focus to Playnite.");
+                            logger.Error("Failed to restore focus to Playnite. " + UserFacingErrors.ForLog(ex));
                         }
                     }));
+            }
+        }
+
+        // Slice 22: OpenVideoCenter failed after the window (and possibly
+        // the view, event subscriptions and the window itself) had been
+        // created. Leaves nothing behind that would make the next open
+        // think Zino is already open: the plugin's references are cleared
+        // FIRST, so even if a clean-up step throws the next open starts
+        // fresh. Does not alter host-window selection or geometry logic.
+        private void AbortFailedOpen(Exception failure)
+        {
+            logger.Error("Opening Zino's Media Center failed. " + UserFacingErrors.ForLog(failure));
+
+            System.Windows.Window window = videoCenterWindow;
+            StremioVideoCenterView view = videoCenterView;
+
+            try
+            {
+                UnsubscribeHostGeometryEvents();
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Open recovery: unsubscribing geometry events failed. " + UserFacingErrors.ForLog(ex));
+            }
+
+            videoCenterWindow = null;
+            videoCenterView = null;
+
+            if (window != null)
+            {
+                window.Loaded -= VideoCenterWindow_Loaded;
+                window.SourceInitialized -= VideoCenterWindow_SourceInitialized;
+                window.KeyDown -= VideoCenterWindow_KeyDown;
+                window.Closed -= VideoCenterWindow_Closed;
+            }
+
+            try
+            {
+                if (view != null)
+                {
+                    view.ShutdownForClose();
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Open recovery: view clean-up failed. " + UserFacingErrors.ForLog(ex));
+            }
+
+            try
+            {
+                if (window != null)
+                {
+                    window.Content = null;
+                    window.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Open recovery: closing the window failed. " + UserFacingErrors.ForLog(ex));
+            }
+
+            RestorePlayniteFocus();
+
+            try
+            {
+                System.Windows.MessageBox.Show(
+                    UserFacingErrors.ForLog(failure),
+                    "Zino's Media Center Load Error");
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Open recovery: the error dialog could not be shown. " + UserFacingErrors.ForLog(ex));
             }
         }
 
@@ -1090,7 +1313,37 @@ namespace StremioVideoCenter
 
         public override void OnApplicationStopped(OnApplicationStoppedEventArgs args)
         {
-            // Add code to be executed when Playnite is shutting down.
+            // Slice 22: Playnite is shutting down. Normally the owned Zino
+            // window has already closed (running VideoCenterWindow_Closed);
+            // this covers the case where it has not. Both paths are
+            // idempotent. Only what this plugin started is touched.
+            try
+            {
+                StremioVideoCenterView view = videoCenterView;
+
+                if (view != null)
+                {
+                    view.ShutdownForClose();
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Application stop: player clean-up failed. " + UserFacingErrors.ForLog(ex));
+            }
+
+            // Local Files: stop a running scan. Matching titles found so
+            // far are kept by the manager's own cancellation handling.
+            try
+            {
+                if (localLibraryManager != null)
+                {
+                    localLibraryManager.CancelScan();
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.Warn("Application stop: cancelling the library scan failed. " + UserFacingErrors.ForLog(ex));
+            }
         }
 
         public override void OnLibraryUpdated(OnLibraryUpdatedEventArgs args)

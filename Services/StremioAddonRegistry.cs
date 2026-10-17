@@ -1,6 +1,7 @@
 using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -235,6 +236,14 @@ namespace StremioVideoCenter.Services
 
             List<Task<List<StremioStream>>> tasks = new List<Task<List<StremioStream>>>();
 
+            // [STREAM-QUERY-DIAG] temporary, diagnostic only.
+            int diagBatchId = Interlocked.Increment(ref _diagBatchSequence);
+            Stopwatch diagBatchWatch = Stopwatch.StartNew();
+            int diagSkippedNoStreamResource = 0;
+            int diagSkippedRole = 0;
+            int diagSkippedDeclaredId = 0;
+            int diagQueried = 0;
+
             foreach (AddonEntry entry in _entries)
             {
                 // Capability-aware skip: only skip when this addon's
@@ -250,6 +259,7 @@ namespace StremioVideoCenter.Services
                     entry.ResourceNames.Count > 0 &&
                     !entry.ResourceNames.Contains("stream"))
                 {
+                    diagSkippedNoStreamResource++;
 
                     continue;
                 }
@@ -275,6 +285,7 @@ namespace StremioVideoCenter.Services
                     entry.Roles.Count > 0 &&
                     !entry.Roles.Contains(AddonRole.StreamProvider))
                 {
+                    diagSkippedRole++;
 
                     continue;
                 }
@@ -301,6 +312,7 @@ namespace StremioVideoCenter.Services
                         null,
                         id))
                 {
+                    diagSkippedDeclaredId++;
 
                     continue;
                 }
@@ -315,10 +327,46 @@ namespace StremioVideoCenter.Services
                 // from before this slice and still performed inside
                 // QueryAddonAsync below - only WHEN the requests are
                 // issued changes, not any per-addon behaviour.
+                // [STREAM-QUERY-DIAG] hands the batch id / query number to
+                // QueryAddonAsync and StremioAddonService through an
+                // AsyncLocal, so no signature changes. Diagnostic only.
+                diagQueried++;
+                StremioAddonService.DiagContext.Value =
+                    new StremioAddonService.DiagQueryContext(diagBatchId, diagQueried, diagBatchWatch);
+
                 tasks.Add(QueryAddonAsync(entry, type, id, cancellationToken));
             }
 
-            List<StremioStream>[] perAddonResults = await Task.WhenAll(tasks);
+            StremioAddonService.DiagContext.Value = null;
+
+            DiagLog(
+                "[STREAM-QUERY-DIAG] B{0} batch start registered={1} queried={2} " +
+                "skippedNoStreamResource={3} skippedRole={4} skippedDeclaredId={5} elapsedMs={6}",
+                diagBatchId,
+                _entries.Count,
+                diagQueried,
+                diagSkippedNoStreamResource,
+                diagSkippedRole,
+                diagSkippedDeclaredId,
+                diagBatchWatch.ElapsedMilliseconds);
+
+            List<StremioStream>[] perAddonResults = null;
+            string diagBatchOutcome = "threw";
+
+            try
+            {
+                perAddonResults = await Task.WhenAll(tasks);
+                diagBatchOutcome = "completed";
+            }
+            finally
+            {
+                DiagLog(
+                    "[STREAM-QUERY-DIAG] B{0} batch end outcome={1} queried={2} elapsedMs={3}",
+                    diagBatchId,
+                    diagBatchOutcome,
+                    diagQueried,
+                    diagBatchWatch.ElapsedMilliseconds);
+            }
 
             List<StremioStream> combined = new List<StremioStream>();
 
@@ -332,6 +380,36 @@ namespace StremioVideoCenter.Services
 
 
             return combined;
+        }
+
+        // TEMPORARY DIAGNOSTIC ([STREAM-QUERY-DIAG]): batch counter, a safe
+        // logging helper, and a safe addon label. Formatting and writing
+        // happen inside the try, so a logging failure can never reach the
+        // discovery path. Used for no other log line.
+        private static int _diagBatchSequence;
+
+        private static void DiagLog(string format, params object[] args)
+        {
+            try
+            {
+                StremioVideoCenterLogger.Info(string.Format(format, args));
+            }
+            catch (Exception)
+            {
+                // Diagnostic output is best-effort by design.
+            }
+        }
+
+        private static string SafeDiagLabel(AddonEntry entry)
+        {
+            try
+            {
+                return AddonLogName(entry);
+            }
+            catch (Exception)
+            {
+                return "(unknown)";
+            }
         }
 
         // Name used in diagnostics. Normally the addon's friendly name. A
@@ -362,10 +440,25 @@ namespace StremioVideoCenter.Services
         {
             DateTime diagAddonCallStart = DateTime.UtcNow;
 
+            // [STREAM-QUERY-DIAG] read synchronously, before the first await,
+            // so it is this addon's own context. Diagnostic only.
+            StremioAddonService.DiagQueryContext diagCtx = StremioAddonService.DiagContext.Value;
+            Stopwatch diagQueryWatch = Stopwatch.StartNew();
+            long diagStartOffsetMs = diagCtx != null ? diagCtx.BatchWatch.ElapsedMilliseconds : -1;
+            string diagLabel = SafeDiagLabel(entry);
+
 
             try
             {
                 List<StremioStream> streams = await entry.Service.GetStreamsAsync(type, id, cancellationToken);
+
+                DiagLog(
+                    "[STREAM-QUERY-DIAG] {0} addon={1} startOffsetMs={2} elapsedMs={3} outcome=success items={4}",
+                    diagCtx != null ? "B" + diagCtx.BatchId + ".Q" + diagCtx.QueryNumber : "(none)",
+                    diagLabel,
+                    diagStartOffsetMs,
+                    diagQueryWatch.ElapsedMilliseconds,
+                    streams != null ? streams.Count : 0);
 
 
                 List<StremioStream> tagged = new List<StremioStream>();
@@ -393,10 +486,28 @@ namespace StremioVideoCenter.Services
                 // cancellation-type exception (not caused by this token)
                 // falls through to the general handler below and is treated
                 // as that addon failing, exactly as before.
+                DiagLog(
+                    "[STREAM-QUERY-DIAG] {0} addon={1} startOffsetMs={2} elapsedMs={3} outcome=cancelled",
+                    diagCtx != null ? "B" + diagCtx.BatchId + ".Q" + diagCtx.QueryNumber : "(none)",
+                    diagLabel,
+                    diagStartOffsetMs,
+                    diagQueryWatch.ElapsedMilliseconds);
+
                 throw;
             }
             catch (Exception ex)
             {
+                DiagLog(
+                    "[STREAM-QUERY-DIAG] {0} addon={1} startOffsetMs={2} elapsedMs={3} outcome={4} exceptionType={5}",
+                    diagCtx != null ? "B" + diagCtx.BatchId + ".Q" + diagCtx.QueryNumber : "(none)",
+                    diagLabel,
+                    diagStartOffsetMs,
+                    diagQueryWatch.ElapsedMilliseconds,
+                    ex is TimeoutException
+                        ? "timeout"
+                        : (ex is OperationCanceledException ? "cancelled(not-caller)" : "failed"),
+                    ex.GetType().Name);
+
                 // Slice 20 Stage 1A: ForLog (exception type + message with
                 // URLs and local paths removed) instead of the raw message,
                 // which can carry the addon URL and its embedded key.

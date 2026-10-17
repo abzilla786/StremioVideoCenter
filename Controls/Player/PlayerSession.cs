@@ -66,6 +66,11 @@ namespace StremioVideoCenterControls.Player
         // reply must not let ticks pile up). 0 = free, 1 = poll running.
         private int _pollInProgress;
 
+        // Slice 22: true while mpv's http-header-fields holds headers set
+        // for an earlier stream, so the next stream (which may have none)
+        // clears them rather than inheriting another addon's headers.
+        private bool _requestHeadersApplied;
+
         // Bumped for every new loadfile. Poll results that started under an
         // older generation are discarded so they cannot write stale state.
         private int _playGeneration;
@@ -228,11 +233,12 @@ namespace StremioVideoCenterControls.Player
 
             try
             {
+                await ApplyRequestHeadersAsync(context).ConfigureAwait(true);
                 await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
             }
             catch (MpvCommandException)
             {
-                await RecoverAndRetryPlayAsync(url).ConfigureAwait(true);
+                await RecoverAndRetryPlayAsync(context).ConfigureAwait(true);
                 return;
             }
 
@@ -257,6 +263,53 @@ namespace StremioVideoCenterControls.Player
                 return;
 
             await _host.WaitForAndAttachMpvWindowAsync(process.ProcessId, 3000).ConfigureAwait(true);
+        }
+
+        // Slice 22: applies the request headers an addon declared for this
+        // stream (behaviorHints.proxyHeaders.request, sanitised by
+        // StreamResolverService) as mpv's http-header-fields, which mpv
+        // sends with the stream request. Sets nothing when the stream has no
+        // headers and none were set earlier. Headers are never logged. If
+        // headers are required and mpv refuses them the failure propagates
+        // (playing without them would just be rejected by the server); a
+        // failure while merely clearing old headers is best-effort.
+        private async Task ApplyRequestHeadersAsync(PlaybackContext context)
+        {
+            Dictionary<string, string> headers = null;
+
+            if (context != null && context.Source != null && context.Source.Source != null)
+                headers = context.Source.Source.Headers;
+
+            bool hasHeaders = headers != null && headers.Count > 0;
+
+            if (!hasHeaders && !_requestHeadersApplied)
+                return;
+
+            JArray fields = new JArray();
+
+            if (hasHeaders)
+            {
+                foreach (KeyValuePair<string, string> pair in headers)
+                    fields.Add(pair.Key + ": " + pair.Value);
+            }
+
+            if (hasHeaders)
+            {
+                await _ipc.SetPropertyAsync("http-header-fields", fields).ConfigureAwait(true);
+                _requestHeadersApplied = true;
+                return;
+            }
+
+            try
+            {
+                await _ipc.SetPropertyAsync("http-header-fields", fields).ConfigureAwait(true);
+                _requestHeadersApplied = false;
+            }
+            catch (MpvCommandException)
+            {
+                // Best-effort clear; the next stream with headers sets them
+                // again, and one without will retry the clear.
+            }
         }
 
         // Clears everything that describes the previous file BEFORE loadfile
@@ -297,12 +350,15 @@ namespace StremioVideoCenterControls.Player
         // If mpv died between sessions (crash, killed externally, IPC faulted),
         // rebuild the process once and retry the play command. This never
         // touches --wid/renderer launch configuration.
-        private async Task RecoverAndRetryPlayAsync(string url)
+        private async Task RecoverAndRetryPlayAsync(PlaybackContext context)
         {
+            string url = context.PlaybackUrl;
             IntPtr hostHandle = _host.WindowHandle;
             TeardownMpvOnly();
+            _requestHeadersApplied = false;
             await StartAsync(hostHandle).ConfigureAwait(true);
             ResetPlaybackState();
+            await ApplyRequestHeadersAsync(context).ConfigureAwait(true);
             await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
 
             MpvProcessService process = _process;
@@ -1098,19 +1154,26 @@ namespace StremioVideoCenterControls.Player
                 // Bounded: a wedged pipe must not block close for the full
                 // default command timeout. TeardownMpvOnly below kills the
                 // process regardless.
+                ExitDiag.Log("mpv quit command sent");
                 try { await _ipc.RunCommandWithTimeoutAsync(1000, "quit").ConfigureAwait(false); }
                 catch { }
+                ExitDiag.Log("mpv quit command returned");
 
                 try
                 {
                     MpvProcessService process = _process;
                     if (process != null)
-                        process.WaitForExit(500);
+                    {
+                        bool exitedDiag = process.WaitForExit(500);
+                        ExitDiag.Log("mpv process wait done exited=" + exitedDiag);
+                    }
                 }
                 catch { }
             }
 
+            ExitDiag.Log("mpv teardown start");
             TeardownMpvOnly();
+            ExitDiag.Log("mpv teardown done");
         }
 
         public void Dispose()

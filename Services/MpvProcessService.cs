@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -18,6 +19,15 @@ namespace StremioVideoCenter.Services
         private readonly string _pipeName;
         private Process _process;
         private bool _disposed;
+
+        // Slice 22: Windows Job Object (kill-on-close) owned by this
+        // instance and holding only the mpv process this instance started.
+        // It never terminates mpv while Zino is running - the handle stays
+        // open for the whole life of the process - and exists only so that
+        // if Playnite is killed or crashes (so no cleanup code runs) the OS
+        // closes the handle and ends the orphaned mpv. Best-effort: if the
+        // job cannot be created or assigned, playback is unaffected.
+        private IntPtr _jobHandle = IntPtr.Zero;
 
         public MpvProcessService()
         {
@@ -178,6 +188,8 @@ namespace StremioVideoCenter.Services
             if (!_process.Start())
                 throw new InvalidOperationException("Unable to start mpv.exe.");
 
+            AttachProcessToKillOnCloseJob(_process);
+
             NamedPipeClientStream pipe = new NamedPipeClientStream(
                 ".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
 
@@ -215,6 +227,29 @@ namespace StremioVideoCenter.Services
             string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
             string currentDirectory = Environment.CurrentDirectory;
 
+            // Slice 22: the mpv bundled with THIS plugin comes first, so a
+            // stray mpv folder next to Playnite's own executable (or in its
+            // current directory) cannot shadow it. The other locations stay
+            // as fallbacks in their previous order.
+            string pluginDirectory = null;
+
+            try
+            {
+                pluginDirectory = Path.GetDirectoryName(typeof(MpvProcessService).Assembly.Location);
+            }
+            catch (Exception)
+            {
+                pluginDirectory = null;
+            }
+
+            if (!string.IsNullOrEmpty(pluginDirectory))
+            {
+                string pluginLocal = Path.Combine(pluginDirectory, "mpv", "mpv.exe");
+
+                if (IsUsableExecutable(pluginLocal))
+                    return Path.GetFullPath(pluginLocal);
+            }
+
             string[] candidates =
             {
                 Path.Combine(baseDirectory, "mpv", "mpv.exe"),
@@ -227,11 +262,140 @@ namespace StremioVideoCenter.Services
 
             foreach (string candidate in candidates)
             {
-                if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+                if (!string.IsNullOrWhiteSpace(candidate) && IsUsableExecutable(candidate))
                     return Path.GetFullPath(candidate);
             }
 
             return null;
+        }
+
+        // Exists and is not an empty/truncated file (a partially copied
+        // mpv.exe). Not a signature check - only a cheap sanity filter.
+        private static bool IsUsableExecutable(string path)
+        {
+            try
+            {
+                FileInfo info = new FileInfo(path);
+                return info.Exists && info.Length > 0;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        // =========================================================
+        // KILL-ON-CLOSE JOB OBJECT (orphan protection)
+        // =========================================================
+
+        private const int JobObjectExtendedLimitInformationClass = 9;
+        private const uint JobObjectLimitKillOnJobClose = 0x00002000;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobBasicLimitInformation
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobIoCounters
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobExtendedLimitInformation
+        {
+            public JobBasicLimitInformation BasicLimitInformation;
+            public JobIoCounters IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateJobObject(IntPtr securityAttributes, string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetInformationJobObject(
+            IntPtr job, int infoClass, IntPtr info, uint infoLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        // Never throws. Only the process this instance just started is
+        // assigned; no other process is touched.
+        private void AttachProcessToKillOnCloseJob(Process process)
+        {
+            IntPtr job = IntPtr.Zero;
+            IntPtr infoPointer = IntPtr.Zero;
+
+            try
+            {
+                job = CreateJobObject(IntPtr.Zero, null);
+
+                if (job == IntPtr.Zero)
+                    throw new InvalidOperationException("CreateJobObject failed.");
+
+                JobExtendedLimitInformation info = new JobExtendedLimitInformation();
+                info.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+
+                int length = Marshal.SizeOf(typeof(JobExtendedLimitInformation));
+                infoPointer = Marshal.AllocHGlobal(length);
+                Marshal.StructureToPtr(info, infoPointer, false);
+
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformationClass, infoPointer, (uint)length))
+                    throw new InvalidOperationException("SetInformationJobObject failed.");
+
+                if (!AssignProcessToJobObject(job, process.Handle))
+                    throw new InvalidOperationException("AssignProcessToJobObject failed.");
+
+                _jobHandle = job;
+                job = IntPtr.Zero;
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "MPV orphan protection (job object) could not be set up; playback is unaffected: " +
+                    ex.GetType().Name + " " + ex.Message);
+            }
+            finally
+            {
+                if (infoPointer != IntPtr.Zero)
+                    Marshal.FreeHGlobal(infoPointer);
+
+                if (job != IntPtr.Zero)
+                    CloseHandle(job);
+            }
+        }
+
+        private void CloseJob()
+        {
+            IntPtr job = _jobHandle;
+            _jobHandle = IntPtr.Zero;
+
+            if (job != IntPtr.Zero)
+                CloseHandle(job);
         }
 
         // Waits up to timeoutMilliseconds for mpv to exit on its own (e.g.
@@ -272,6 +436,10 @@ namespace StremioVideoCenter.Services
 
             try { _process?.Dispose(); } catch { }
             _process = null;
+
+            // The process this job protected is gone (or was killed above);
+            // closing the handle now cannot affect anything else.
+            CloseJob();
 
             // mpv has exited (or the wait above timed out, in which case
             // RedactLog leaves the still-open file for the next start).

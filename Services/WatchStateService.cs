@@ -386,8 +386,8 @@ namespace StremioVideoCenter.Services
                 // updated regardless, mirroring ProfileService.TryPersist
                 // exactly.
                 Playnite.SDK.LogManager.GetLogger().Warn(
-                    ex,
-                    "WatchStateService: failed to persist watch state settings.");
+                    "WatchStateService: failed to persist watch state settings. " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
     }

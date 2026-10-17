@@ -400,6 +400,69 @@ namespace StremioVideoCenterControls
             RestartHideTimer();
         }
 
+        // Set by HideVideoForClose: the player is being replaced and must not
+        // re-show any of its own top-level windows (controls overlay / popup)
+        // before DisposePlayer runs.
+        private bool _closingForVideo;
+
+        // Slice 22 (white-flash test): the owner calls this immediately
+        // before DisposePlayer so the native video window is hidden before
+        // the UI thread blocks waiting for mpv to quit. No-op once disposed
+        // or when the host was never created.
+        //
+        // It also hides the controls overlay window / popup (separate
+        // top-level HWNDs that would otherwise stay on screen above the
+        // Source Selector) and stops ShowControls / OpenControlsHost from
+        // re-showing them. Idempotent; DisposePlayer still tears everything
+        // down exactly as before.
+        public void HideVideoForClose()
+        {
+            if (_disposed) return;
+
+            _closingForVideo = true;
+
+            MpvHost host = _mpvHost;
+
+            if (host != null)
+                host.HideNativeWindow();
+
+            try
+            {
+                OverlayHostWindow overlay = _overlayWindow;
+
+                if (overlay != null && overlay.IsVisible)
+                    overlay.Hide();
+
+                ControlsPopup.IsOpen = false;
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "Hiding the controls overlay before close failed: " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
+        // [EXIT-DIAG] (temporary): read-only state snapshot for the exit
+        // diagnostics. UI thread only. Changes nothing.
+        public string ExitDiagSnapshot()
+        {
+            try
+            {
+                MpvHost host = _mpvHost;
+                Window window = Window.GetWindow(this);
+
+                return (host != null ? host.DescribeNativeWindowForDiag() : "hostHwnd=none") +
+                    " playerFullscreen=" + _uiState.IsFullscreen +
+                    " disposed=" + _disposed +
+                    " overlayWindowVisible=" + (_overlayWindow != null && _overlayWindow.IsVisible) +
+                    " zinoWindowState=" + (window != null ? window.WindowState.ToString() : "none");
+            }
+            catch (Exception ex)
+            {
+                return "snapshot-failed type=" + ex.GetType().Name;
+            }
+        }
+
         public void DisposePlayer()
         {
             if (_disposed) return;
@@ -424,10 +487,21 @@ namespace StremioVideoCenterControls
 
             // Closing the player must not leave the host window borderless/
             // maximised because fullscreen was toggled on.
-            try { if (_uiState.IsFullscreen) ToggleFullscreen(); } catch { }
+            try
+            {
+                if (_uiState.IsFullscreen)
+                {
+                    ExitDiag.Log("ToggleFullscreen start (exit fullscreen)");
+                    ToggleFullscreen();
+                    ExitDiag.Log("ToggleFullscreen done");
+                }
+            }
+            catch { }
 
             try { ControlsPopup.IsOpen = false; } catch { }
+            ExitDiag.Log("overlay close start");
             CloseOverlayWindow();
+            ExitDiag.Log("overlay close done");
             try { ControlsPopup.Opened -= ControlsPopup_Opened; } catch { }
             try { ControlsPopup.Closed -= ControlsPopup_Closed; } catch { }
             DetachPopupSizeHook();
@@ -455,7 +529,9 @@ namespace StremioVideoCenterControls
                     _session.PlaybackFailed -= Session_PlaybackFailed;
                     _session.PlaybackEstablished -= Session_PlaybackEstablished;
                     _session.Disconnected -= Session_Disconnected;
+                    ExitDiag.Log("session dispose start");
                     _session.Dispose();
+                    ExitDiag.Log("session dispose done");
                 }
                 catch { }
                 _session = null;
@@ -469,6 +545,7 @@ namespace StremioVideoCenterControls
             catch { }
 
             _mpvHost = null;
+            ExitDiag.Log("host removed from visual tree");
         }
 
         // =====================================================================
@@ -995,7 +1072,7 @@ namespace StremioVideoCenterControls
         // Opens the controls host: the popup, or the overlay window.
         private void OpenControlsHost()
         {
-            if (_disposed) return;
+            if (_disposed || _closingForVideo) return;
 
             if (_overlayHostKind == OverlayHostKind.Popup)
             {
@@ -2760,7 +2837,7 @@ namespace StremioVideoCenterControls
         // is visible.
         private void ShowControls([CallerMemberName] string caller = null)
         {
-            if (_disposed) return;
+            if (_disposed || _closingForVideo) return;
 
             NoteOverlayActivity("ShowControls<-" + caller);
 

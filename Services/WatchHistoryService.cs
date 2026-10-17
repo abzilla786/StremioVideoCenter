@@ -266,8 +266,8 @@ namespace StremioVideoCenter.Services
             catch (Exception ex)
             {
                 Playnite.SDK.LogManager.GetLogger().Warn(
-                    ex,
-                    "WatchHistoryService: failed to persist watch history settings.");
+                    "WatchHistoryService: failed to persist watch history settings. " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
     }

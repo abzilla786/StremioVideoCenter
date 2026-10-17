@@ -64,8 +64,8 @@ namespace StremioVideoCenter.Services
                 // Recovery unchanged (no list, so no Previous/Next), but
                 // the failure is now logged. Only the show id is logged.
                 Playnite.SDK.LogManager.GetLogger().Warn(
-                    ex,
-                    "EpisodeListService: failed to load the episode list for " + showStremioId + ".");
+                    "EpisodeListService: failed to load the episode list for " + showStremioId + ". " +
+                    UserFacingErrors.ForLog(ex));
                 list = null;
             }
 

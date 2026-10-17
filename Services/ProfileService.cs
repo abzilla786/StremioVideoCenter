@@ -338,8 +338,8 @@ namespace StremioVideoCenter.Services
                 // own plugin-settings system already has everywhere
                 // else in this codebase).
                 Playnite.SDK.LogManager.GetLogger().Warn(
-                    ex,
-                    "ProfileService: failed to persist profile settings.");
+                    "ProfileService: failed to persist profile settings. " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
 

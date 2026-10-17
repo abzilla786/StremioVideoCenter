@@ -4,9 +4,120 @@ using StremioVideoCenter.Models;
 using StremioVideoCenter.Services;
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 namespace StremioVideoCenter
 {
+    // =========================================================
+    // SLICE 22 - UNREADABLE CONFIGURATION PROTECTION
+    // =========================================================
+    //
+    // Playnite's LoadPluginSettings returns null when it cannot produce
+    // settings, which this plugin treats as "first launch" and replaces with
+    // defaults - and the schema clean-up that then runs saves those defaults
+    // straight over config.json. If the real file was merely unreadable (a
+    // malformed edit, a OneDrive sync lock) that silently destroyed the
+    // user's addons, profiles, watch state and keys. This helper is used
+    // only when a load returns nothing although config.json exists: it
+    // keeps a byte-for-byte copy beside it BEFORE anything can overwrite
+    // it. It never modifies, moves or deletes config.json or any earlier
+    // backup, and never reuses a backup name.
+    internal enum UnreadableConfigOutcome
+    {
+        // No config.json (or an empty one): a genuine first launch.
+        NothingToPreserve,
+
+        // A copy of the unreadable file exists (new, or an identical one
+        // kept earlier).
+        Preserved,
+
+        // The file exists but could not be copied (locked, no access).
+        // The caller must not let anything overwrite it this session.
+        NotPreserved
+    }
+
+    internal static class SettingsLoadGuard
+    {
+        private const string BackupPrefix = "config.unreadable-";
+        private const int MaxBackupsCompared = 20;
+
+        internal static UnreadableConfigOutcome PreserveUnreadableConfig(string configPath)
+        {
+            try
+            {
+                FileInfo info = new FileInfo(configPath);
+
+                if (!info.Exists || info.Length == 0)
+                {
+                    return UnreadableConfigOutcome.NothingToPreserve;
+                }
+
+                string directory = info.DirectoryName;
+                byte[] original = File.ReadAllBytes(configPath);
+
+                string[] existing =
+                    Directory.GetFiles(directory, BackupPrefix + "*.json");
+
+                for (int i = 0; i < existing.Length && i < MaxBackupsCompared; i++)
+                {
+                    FileInfo candidate = new FileInfo(existing[i]);
+
+                    if (candidate.Length != original.Length)
+                    {
+                        continue;
+                    }
+
+                    byte[] other = File.ReadAllBytes(existing[i]);
+                    bool same = true;
+
+                    for (int b = 0; b < original.Length; b++)
+                    {
+                        if (original[b] != other[b])
+                        {
+                            same = false;
+                            break;
+                        }
+                    }
+
+                    if (same)
+                    {
+                        return UnreadableConfigOutcome.Preserved;
+                    }
+                }
+
+                string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+                string target = Path.Combine(directory, BackupPrefix + stamp + ".json");
+                int suffix = 1;
+
+                while (File.Exists(target))
+                {
+                    target = Path.Combine(directory, BackupPrefix + stamp + "-" + suffix + ".json");
+                    suffix++;
+                }
+
+                using (FileStream stream = new FileStream(target, FileMode.CreateNew, FileAccess.Write))
+                {
+                    stream.Write(original, 0, original.Length);
+                }
+
+                if (new FileInfo(target).Length != original.Length)
+                {
+                    return UnreadableConfigOutcome.NotPreserved;
+                }
+
+                return UnreadableConfigOutcome.Preserved;
+            }
+            catch (Exception ex)
+            {
+                // Type name only: the message can carry the config path.
+                StremioVideoCenterLogger.Warn(
+                    "The unreadable settings file could not be copied: " + ex.GetType().Name);
+
+                return UnreadableConfigOutcome.NotPreserved;
+            }
+        }
+    }
+
     // =========================================================
     // STORED PLUGIN SETTINGS
     // =========================================================
@@ -618,8 +729,20 @@ namespace StremioVideoCenter
             this.plugin = plugin;
 
             // Load previously saved settings.
-            var savedSettings =
-                plugin.LoadPluginSettings<StremioVideoCenterSettings>();
+            StremioVideoCenterSettings savedSettings = null;
+
+            try
+            {
+                savedSettings =
+                    plugin.LoadPluginSettings<StremioVideoCenterSettings>();
+            }
+            catch (Exception ex)
+            {
+                // Treated exactly like a null result below; the file is
+                // preserved before anything can overwrite it.
+                StremioVideoCenterLogger.Warn(
+                    "Loading the saved settings failed: " + UserFacingErrors.ForLog(ex));
+            }
 
             if (savedSettings != null)
             {
@@ -627,8 +750,30 @@ namespace StremioVideoCenter
             }
             else
             {
-                // First launch - create default settings.
+                // First launch (no config.json) - create default settings.
+                // Slice 22: if config.json DOES exist but could not be
+                // loaded, keep a copy of it first (see SettingsLoadGuard);
+                // if it cannot be copied, nothing may overwrite it this
+                // session.
                 Settings = new StremioVideoCenterSettings();
+
+                UnreadableConfigOutcome outcome =
+                    SettingsLoadGuard.PreserveUnreadableConfig(
+                        plugin.GetSettingsFilePath());
+
+                if (outcome != UnreadableConfigOutcome.NothingToPreserve)
+                {
+                    bool blocked = outcome == UnreadableConfigOutcome.NotPreserved;
+
+                    plugin.SettingsPersistenceBlocked = blocked;
+
+                    StremioVideoCenterLogger.Warn(
+                        blocked
+                            ? "Saved settings could not be read or preserved; saving is disabled for this session."
+                            : "Saved settings could not be read; a copy was kept and defaults are in use.");
+
+                    plugin.NotifySettingsUnreadable(blocked);
+                }
             }
 
             // One-directional, additive, idempotent migration - any
@@ -666,13 +811,13 @@ namespace StremioVideoCenter
 
                 try
                 {
-                    plugin.SavePluginSettings(Settings);
+                    plugin.SaveSettings(Settings);
                 }
                 catch (Exception ex)
                 {
                     Playnite.SDK.LogManager.GetLogger().Warn(
-                        ex,
-                        "Settings clean-up save failed; will retry on next launch.");
+                        "Settings clean-up save failed; will retry on next launch. " +
+                        UserFacingErrors.ForLog(ex));
                 }
             }
 
@@ -695,7 +840,7 @@ namespace StremioVideoCenter
 
                 if (seeded)
                 {
-                    plugin.SavePluginSettings(Settings);
+                    plugin.SaveSettings(Settings);
                 }
             }
             catch (Exception ex)
@@ -706,8 +851,8 @@ namespace StremioVideoCenter
                 // list after each addon's own construction succeeds),
                 // and the next launch will simply retry.
                 Playnite.SDK.LogManager.GetLogger().Warn(
-                    ex,
-                    "Core addon seeding failed; will retry on next launch.");
+                    "Core addon seeding failed; will retry on next launch. " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
 
@@ -744,8 +889,10 @@ namespace StremioVideoCenter
             Settings.SyncLegacyAddonUrls();
 
             // Save the current settings using Playnite's
-            // standard plugin settings system.
-            plugin.SavePluginSettings(Settings);
+            // standard plugin settings system (through the plugin's guarded
+            // save, which refuses to write while an unreadable config.json
+            // could not be preserved - see SettingsLoadGuard).
+            plugin.SaveSettings(Settings);
         }
 
         // =========================================================

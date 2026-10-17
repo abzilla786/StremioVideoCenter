@@ -936,6 +936,105 @@ namespace StremioVideoCenter
 
 
         // =========================================================
+        // SHUTDOWN CLEAN-UP (Slice 22)
+        // =========================================================
+        //
+        // Called by the plugin when the Zino window closes for ANY reason
+        // (including Playnite closing and taking its owned window with it)
+        // and when Playnite stops. Until now a close while a video was
+        // playing never reached ClosePlayer, so the last position was not
+        // saved and mpv was left to the process-exit clean-up.
+        //
+        // Does only what is needed to leave nothing running: stop the
+        // rotation loop, cancel the recommendation calculation, persist the
+        // last VALID playback position (a no-op when playback never
+        // established) and dispose the player this view created - which
+        // ends only the mpv process that player's session started. It does
+        // not touch the window, focus, navigation or any other process, and
+        // it does not refresh UI that is about to go away.
+        //
+        // Idempotent: the window-closed path and the application-stopped
+        // path can both call it.
+        private bool _shutdownCleanupDone;
+
+        public void ShutdownForClose()
+        {
+            if (_shutdownCleanupDone)
+            {
+                return;
+            }
+
+            _shutdownCleanupDone = true;
+
+            try
+            {
+                StopHeroBackdropRotation();
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "Shutdown: stopping the hero rotation failed: " + UserFacingErrors.ForLog(ex));
+            }
+
+            try
+            {
+                CancellationTokenSource recommendations = _recommendationCts;
+                _recommendationCts = null;
+
+                if (recommendations != null)
+                {
+                    recommendations.Cancel();
+                }
+            }
+            catch (Exception ex)
+            {
+                // Already disposed or cancelled: nothing left to stop.
+                StremioVideoCenterLogger.Info(
+                    "Shutdown: cancelling recommendations: " + ex.GetType().Name);
+            }
+
+            // Invalidate any episode transition still resolving streams.
+            _playbackGeneration++;
+
+            if (_stremioPlayer == null)
+            {
+                return;
+            }
+
+            try
+            {
+                FlushPlaybackProgress();
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "Shutdown: saving the playback position failed: " + UserFacingErrors.ForLog(ex));
+            }
+
+            try
+            {
+                _stremioPlayer.CloseRequested -= StremioPlayer_CloseRequested;
+                _stremioPlayer.PlaybackStateChanged -= StremioPlayer_PlaybackStateChanged;
+                _stremioPlayer.PlaybackFailed -= StremioPlayer_PlaybackFailed;
+                _stremioPlayer.PlaybackEstablished -= StremioPlayer_PlaybackEstablished;
+                _stremioPlayer.PreviousEpisodeRequested -= StremioPlayer_PreviousEpisodeRequested;
+                _stremioPlayer.NextEpisodeRequested -= StremioPlayer_NextEpisodeRequested;
+                _stremioPlayer.EndOfFileReached -= StremioPlayer_EndOfFileReached;
+                _stremioPlayer.OverlayKeyPreview -= StremioVideoCenterView_PreviewKeyDown;
+                _stremioPlayer.DisposePlayer();
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "Shutdown: disposing the player failed: " + UserFacingErrors.ForLog(ex));
+            }
+
+            _stremioPlayer = null;
+            _playbackContext = null;
+            _progressRecorder = null;
+        }
+
+        // =========================================================
         // UNLOADED (lifecycle fix backstop)
         // =========================================================
 
@@ -2596,6 +2695,15 @@ namespace StremioVideoCenter
 
                 if (resumePlan != null)
                 {
+                    // Immediate feedback for the slow discovery / resolution
+                    // that follows. Dismissed on file-loaded or any terminal
+                    // path - see ShowResumeLoadingToast. Shown only when the
+                    // plan carries a valid saved position (the plan's own
+                    // StartPositionSeconds), i.e. playback will really resume.
+                    if (resumePlan.StartPositionSeconds.HasValue)
+                    {
+                        ShowResumeLoadingToast();
+                    }
 
                     await PlaySelectedMediaAsync(
                         BuildResumeMediaItem(resumePlan),
@@ -2650,6 +2758,12 @@ namespace StremioVideoCenter
             {
                 _isResolvingMediaSelection = false;
 
+                // No player exists, so nothing will ever report file-loaded:
+                // do not leave the loading toast up.
+                if (_resumeLoadingToastActive && _stremioPlayer == null)
+                {
+                    DismissResumeLoadingToast();
+                }
             }
         }
 
@@ -3045,6 +3159,12 @@ namespace StremioVideoCenter
 
         private void ShowToast(string message)
         {
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                // This toast replaces the (single-slot) resume-loading one.
+                _resumeLoadingToastActive = false;
+            }
+
             FeedbackToast?.Show(message);
         }
 
@@ -3057,7 +3177,60 @@ namespace StremioVideoCenter
 
         private void ShowPlaybackNotice(string message)
         {
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                // This notice replaces the (single-slot) resume-loading toast.
+                _resumeLoadingToastActive = false;
+            }
+
             FeedbackToast?.Show(message, PlaybackNoticeSeconds);
+        }
+
+        // Loading toast for a Continue Watching / History item that is being
+        // resumed from saved Watch State (UI only). It uses the same
+        // single-slot FeedbackToast, so it can never stack with another
+        // message; any other message simply replaces it (see ShowToast /
+        // ShowPlaybackNotice). It is shown when the resume is requested and
+        // dismissed when mpv reports file-loaded (StremioPlayer_
+        // PlaybackEstablished) or on any path where playback will not
+        // proceed (source selector shown, ClosePlayer, start failure, the
+        // selection handler finishing with no player). The long timer is
+        // only a failsafe for the toast's own auto-hide.
+        private const double ResumeLoadingToastFailsafeSeconds = 120;
+        private bool _resumeLoadingToastActive;
+
+        private void ShowResumeLoadingToast()
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(ShowResumeLoadingToast));
+                return;
+            }
+
+            if (FeedbackToast == null)
+            {
+                return;
+            }
+
+            FeedbackToast.Show("Loading content\u2026", ResumeLoadingToastFailsafeSeconds);
+            _resumeLoadingToastActive = true;
+        }
+
+        private void DismissResumeLoadingToast()
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(DismissResumeLoadingToast));
+                return;
+            }
+
+            if (!_resumeLoadingToastActive)
+            {
+                return;
+            }
+
+            _resumeLoadingToastActive = false;
+            FeedbackToast?.Hide();
         }
 
         private const int RecommendationDebounceMilliseconds = 400;
@@ -3837,7 +4010,7 @@ namespace StremioVideoCenter
 
         private void StremioPlayer_PreviousEpisodeRequested(object sender, EventArgs e)
         {
-            if (sender == _stremioPlayer)
+            if (sender == _stremioPlayer && !_isSwappingPlayerForSelector)
             {
                 var ignored = NavigateEpisodeAsync(forward: false, automatic: false);
             }
@@ -3845,7 +4018,7 @@ namespace StremioVideoCenter
 
         private void StremioPlayer_NextEpisodeRequested(object sender, EventArgs e)
         {
-            if (sender == _stremioPlayer)
+            if (sender == _stremioPlayer && !_isSwappingPlayerForSelector)
             {
                 var ignored = NavigateEpisodeAsync(forward: true, automatic: false);
             }
@@ -3856,7 +4029,7 @@ namespace StremioVideoCenter
         // 2. If a next episode exists, play it in the same player.
         private void StremioPlayer_EndOfFileReached(object sender, EventArgs e)
         {
-            if (sender != _stremioPlayer || _stremioPlayer == null)
+            if (sender != _stremioPlayer || _stremioPlayer == null || _isSwappingPlayerForSelector)
             {
                 return;
             }
@@ -4027,7 +4200,16 @@ namespace StremioVideoCenter
             // (An episode transition deliberately keeps the running player.)
             if (_stremioPlayer != null && transition == null)
             {
+                // ClosePlayer dismisses the resume-loading toast; this attempt
+                // is still loading, so restore it.
+                bool loadingToastWasActive = _resumeLoadingToastActive;
+
                 ClosePlayer();
+
+                if (loadingToastWasActive)
+                {
+                    ShowResumeLoadingToast();
+                }
             }
 
             try
@@ -4598,8 +4780,12 @@ namespace StremioVideoCenter
             PlaybackContext context)
         {
             // A previous attempt's error notice must not linger over (or
-            // under) a new attempt.
-            FeedbackToast?.Hide();
+            // under) a new attempt. (The resume-loading toast belongs to this
+            // attempt and stays until file-loaded or a terminal path.)
+            if (!_resumeLoadingToastActive)
+            {
+                FeedbackToast?.Hide();
+            }
 
             // Reusing the running player for another episode: persist the
             // episode being left (its recorder is bound to ITS context), then
@@ -4715,6 +4901,9 @@ namespace StremioVideoCenter
                 return;
             }
 
+            // mpv confirmed file-loaded for the current attempt.
+            DismissResumeLoadingToast();
+
             EstablishWatchStateOnPlaybackStart(context);
             EstablishHistoryOnPlaybackStart(context);
 
@@ -4746,6 +4935,7 @@ namespace StremioVideoCenter
             PlaybackContext failedContext = _playbackContext;
 
             if (_isRecoveringFromFailure ||
+                _isSwappingPlayerForSelector ||
                 sender != _stremioPlayer ||
                 failedContext == null ||
                 !ReferenceEquals(_stremioPlayer.CurrentContext, failedContext))
@@ -5269,6 +5459,9 @@ namespace StremioVideoCenter
             selector.Populate(sources, mediaItem, preferredProviderKey);
             selector.SetMyListState(IsMediaItemInMyList(mediaItem));
 
+            // The selector is up: the resume-loading toast (if any) is done.
+            DismissResumeLoadingToast();
+
             // Slice 20 Stage 2: optional explanation of why the user is
             // looking at this selector. With nothing to list it becomes part
             // of the empty state; otherwise it is a transient notice.
@@ -5669,7 +5862,7 @@ namespace StremioVideoCenter
             object sender,
             EventArgs e)
         {
-            if (sender != _stremioPlayer || _isReturningToSelector)
+            if (sender != _stremioPlayer || _isReturningToSelector || _isSwappingPlayerForSelector)
             {
                 return;
             }
@@ -5808,6 +6001,12 @@ namespace StremioVideoCenter
         // must not be navigated to).
         private void ClosePlayer(bool restoreHomeFocus = true)
         {
+            StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer enter restoreHomeFocus=" + restoreHomeFocus);
+
+            // The player is going away: playback of this attempt will not
+            // establish, so the resume-loading toast must not outlive it.
+            DismissResumeLoadingToast();
+
             if (_stremioPlayer != null)
             {
                 // Slice 16B: persist whatever position/duration is
@@ -5845,6 +6044,8 @@ namespace StremioVideoCenter
 
                 try
                 {
+                    StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer pre-dispose work done");
+
                     _stremioPlayer.CloseRequested -=
                         StremioPlayer_CloseRequested;
                     _stremioPlayer.PlaybackStateChanged -=
@@ -5861,7 +6062,22 @@ namespace StremioVideoCenter
                         StremioPlayer_EndOfFileReached;
                     _stremioPlayer.OverlayKeyPreview -=
                         StremioVideoCenterView_PreviewKeyDown;
+
+                    // Slice 22 (white-flash test): hide the native video
+                    // window before the blocking disposal below.
+                    try
+                    {
+                        _stremioPlayer.HideVideoForClose();
+                    }
+                    catch (Exception hideEx)
+                    {
+                        StremioVideoCenterLogger.Warn(
+                            "Hiding the video window before close failed: " + UserFacingErrors.ForLog(hideEx));
+                    }
+
+                    StremioVideoCenterControls.Player.ExitDiag.Log("DisposePlayer start " + _stremioPlayer.ExitDiagSnapshot());
                     _stremioPlayer.DisposePlayer();
+                    StremioVideoCenterControls.Player.ExitDiag.Log("DisposePlayer done");
                 }
                 catch
                 {
@@ -5890,6 +6106,8 @@ namespace StremioVideoCenter
 
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;
+
+            StremioVideoCenterControls.Player.ExitDiag.Log("PlaybackTestHost collapsed");
 
             // Local Files page underneath: it takes focus back, instead of
             // the Home focus restoration below.
@@ -5939,16 +6157,107 @@ namespace StremioVideoCenter
             MediaItem mediaItem,
             string failureNotice = null)
         {
+            // [EXIT-DIAG] (temporary): one id per player-to-selector transition.
+            string exitDiagId = _stremioPlayer != null
+                ? StremioVideoCenterControls.Player.ExitDiag.Begin("transition start sources=" + (sources != null ? sources.Count : 0))
+                : null;
+
             Task<NormalizedPlaybackSource> selection =
                 ShowSourceSelectorAsync(sources, mediaItem, failureNotice);
 
-            if (_stremioPlayer != null)
+            StremioVideoCenterControls.Player.ExitDiag.Log("selector mounted (sync part returned)");
+
+            MpvPlayer playerToClose = _stremioPlayer;
+
+            if (playerToClose != null)
             {
-                ClosePlayer(restoreHomeFocus: false);
+                // ClosePlayer blocks the UI thread while mpv quits, so the
+                // selector mounted above would not be presented until it
+                // returned (a black gap). Experiment (option B) order:
+                //   1. yield at Render priority while the native video window
+                //      is STILL visible, so the selector's (expensive) layout
+                //      and render run under the video;
+                //   2. hide the native video window and the controls overlay;
+                //   3. yield at Render priority again, so the already-laid-out
+                //      selector is presented as soon as the window is hidden;
+                //   4. only then tear the player down (ClosePlayer).
+                //
+                // While either yield is pending the old player is still
+                // current and its queued events (Normal priority) can run, so
+                // they are ignored for the whole window
+                // (_isSwappingPlayerForSelector, set before the first yield and
+                // cleared only in the finally). Input runs below Render
+                // priority and cannot run in the window, and controller input
+                // is routed to the mounted selector first. If the selector
+                // completes or is cancelled during a yield, the old player is
+                // still closed below before the selection result is returned.
+                _isSwappingPlayerForSelector = true;
+
+                try
+                {
+                    // 1. First yield: the native video window is still visible.
+                    StremioVideoCenterControls.Player.ExitDiag.Log("render yield 1 start (video visible) " + playerToClose.ExitDiagSnapshot());
+                    long exitDiagYield1Start = System.Diagnostics.Stopwatch.GetTimestamp();
+
+                    await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
+
+                    StremioVideoCenterControls.Player.ExitDiag.Log(
+                        "render yield 1 done durationMs=" +
+                        ((System.Diagnostics.Stopwatch.GetTimestamp() - exitDiagYield1Start) * 1000 / System.Diagnostics.Stopwatch.Frequency) +
+                        " selectionCompleted=" + selection.IsCompleted);
+
+                    if (ReferenceEquals(_stremioPlayer, playerToClose))
+                    {
+                        // 2. Hide the native video window and the controls overlay.
+                        StremioVideoCenterControls.Player.ExitDiag.Log("HideVideoForClose start " + playerToClose.ExitDiagSnapshot());
+                        playerToClose.HideVideoForClose();
+                        StremioVideoCenterControls.Player.ExitDiag.Log("HideVideoForClose done " + playerToClose.ExitDiagSnapshot());
+
+                        // 3. Second yield: lets WPF present the exposed selector.
+                        StremioVideoCenterControls.Player.ExitDiag.Log("render yield 2 start (video hidden)");
+                        long exitDiagYield2Start = System.Diagnostics.Stopwatch.GetTimestamp();
+
+                        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+
+                        StremioVideoCenterControls.Player.ExitDiag.Log(
+                            "render yield 2 done durationMs=" +
+                            ((System.Diagnostics.Stopwatch.GetTimestamp() - exitDiagYield2Start) * 1000 / System.Diagnostics.Stopwatch.Frequency) +
+                            " selectionCompleted=" + selection.IsCompleted);
+                    }
+
+                    // 4. Tear the player down (the identity is re-checked after
+                    // both yields, so a replaced/closed player is never closed
+                    // twice).
+                    if (ReferenceEquals(_stremioPlayer, playerToClose))
+                    {
+                        StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer call start");
+                        ClosePlayer(restoreHomeFocus: false);
+                        StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer returned");
+                    }
+                    else
+                    {
+                        StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer skipped (player no longer current)");
+                    }
+                }
+                finally
+                {
+                    _isSwappingPlayerForSelector = false;
+                    StremioVideoCenterControls.Player.ExitDiag.End(exitDiagId, "transition end (swap flag cleared)");
+                }
+            }
+            else if (exitDiagId != null)
+            {
+                StremioVideoCenterControls.Player.ExitDiag.End(exitDiagId, "transition end (no player)");
             }
 
             return await selection;
         }
+
+        // True from the moment the old player is hidden until it has been
+        // closed, while the Source Selector replaces it. Player events and
+        // actions that would start a conflicting close / recovery / episode
+        // change are ignored in that window.
+        private bool _isSwappingPlayerForSelector;
 
         // =========================================================
         // STREMIO TYPE

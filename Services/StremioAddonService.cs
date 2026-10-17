@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Runtime.Serialization;
@@ -7,6 +8,7 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using StremioVideoCenter.Models;
 
@@ -92,19 +94,160 @@ namespace StremioVideoCenter.Services
             // addon convention) - only the host is safe to write to a
             // plaintext log file.
 
+            // [STREAM-QUERY-DIAG] temporary timing around the unchanged
+            // download and parse calls. Diagnostic only.
+            DiagQueryContext diagCtx = DiagContext.Value;
+            Stopwatch diagDownloadWatch = Stopwatch.StartNew();
+
             string json =
                 await DownloadStringAsync(url, StreamTimeoutMs, cancellationToken);
 
-            StremioStreamResponse response =
-                Deserialize<StremioStreamResponse>(json);
+            diagDownloadWatch.Stop();
 
-            if (response == null ||
-                response.Streams == null)
+            Stopwatch diagParseWatch = Stopwatch.StartNew();
+            List<StremioStream> diagParsed = null;
+
+            try
             {
-                return new List<StremioStream>();
+                diagParsed = ParseStreams(json);
+            }
+            finally
+            {
+                diagParseWatch.Stop();
+
+                DiagLog(
+                    "[STREAM-QUERY-DIAG] {0} fetch downloadMs={1} parseMs={2} responseChars={3} responseUtf8Bytes={4} items={5}",
+                    diagCtx != null ? "B" + diagCtx.BatchId + ".Q" + diagCtx.QueryNumber : "(none)",
+                    diagDownloadWatch.ElapsedMilliseconds,
+                    diagParseWatch.ElapsedMilliseconds,
+                    json != null ? json.Length : 0,
+                    DiagUtf8Bytes(json),
+                    diagParsed != null ? diagParsed.Count : -1);
             }
 
-            return response.Streams;
+            return diagParsed;
+        }
+
+        // TEMPORARY DIAGNOSTIC ([STREAM-QUERY-DIAG]). Carries the batch id and
+        // query number set by StremioAddonRegistry to the download/parse
+        // timing above, without changing any method signature.
+        internal sealed class DiagQueryContext
+        {
+            public DiagQueryContext(int batchId, int queryNumber, Stopwatch batchWatch)
+            {
+                BatchId = batchId;
+                QueryNumber = queryNumber;
+                BatchWatch = batchWatch;
+            }
+
+            public readonly int BatchId;
+            public readonly int QueryNumber;
+            public readonly Stopwatch BatchWatch;
+        }
+
+        internal static readonly AsyncLocal<DiagQueryContext> DiagContext =
+            new AsyncLocal<DiagQueryContext>();
+
+        // Formatting and writing happen inside the try, so a logging failure
+        // can never reach the stream path. Used for no other log line.
+        private static void DiagLog(string format, params object[] args)
+        {
+            try
+            {
+                StremioVideoCenterLogger.Info(string.Format(format, args));
+            }
+            catch (Exception)
+            {
+                // Diagnostic output is best-effort by design.
+            }
+        }
+
+        private static int DiagUtf8Bytes(string text)
+        {
+            try
+            {
+                return text == null ? 0 : Encoding.UTF8.GetByteCount(text);
+            }
+            catch (Exception)
+            {
+                return -1;
+            }
+        }
+
+        // Slice 22: parses the "streams" array one entry at a time. The
+        // previous whole-document DataContractJsonSerializer pass failed the
+        // ENTIRE response when a single entry had one field of an
+        // unexpected type (for example a string "fileIdx"), which discarded
+        // every other usable stream from that addon. Here a malformed entry
+        // is skipped on its own and counted; the rest are kept. A response
+        // that is not JSON at all, or not an object, still throws/returns
+        // empty exactly as before, so the registry's per-addon handling is
+        // unchanged. Field names and meanings come from the same
+        // [DataContract] model as before (Newtonsoft honours it).
+        internal static List<StremioStream> ParseStreams(string json)
+        {
+            List<StremioStream> result = new List<StremioStream>();
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return result;
+            }
+
+            JObject root = JToken.Parse(json) as JObject;
+
+            if (root == null)
+            {
+                return result;
+            }
+
+            JArray entries = root["streams"] as JArray;
+
+            if (entries == null)
+            {
+                return result;
+            }
+
+            int skipped = 0;
+
+            foreach (JToken entry in entries)
+            {
+                if (entry == null || entry.Type != JTokenType.Object)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    StremioStream stream = entry.ToObject<StremioStream>();
+
+                    if (stream == null)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    result.Add(stream);
+                }
+                catch (Exception)
+                {
+                    // Any conversion failure for this one entry (wrong
+                    // field type, out-of-range number): skipped and
+                    // counted below, never silently ignored.
+                    skipped++;
+                }
+            }
+
+            if (skipped > 0)
+            {
+                // Count only: no entry content, name or URL is logged.
+                StremioVideoCenterLogger.Info(
+                    "An addon response contained " + skipped +
+                    " stream entr" + (skipped == 1 ? "y" : "ies") +
+                    " that could not be read; the remaining entries were kept.");
+            }
+
+            return result;
         }
 
         // =========================================================
