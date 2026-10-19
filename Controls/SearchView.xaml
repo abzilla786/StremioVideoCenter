@@ -156,11 +156,10 @@
         <!-- ========================================================= -->
         <!--
             Real providers only: Cinemeta's own "search" extra on both
-            movie/top and series/top (live-verified this slice, ranked
-            and functional for both) and AnimeFLV's primary "animeflv"
-            search catalog (live-verified manifest, see
-            AnimeFlvCatalogueService remarks) - no custom scraper, no
-            second/duplicate search engine of this project's own.
+            movie/top and series/top (live-verified, ranked and
+            functional for both) and Kitsu for anime - no custom
+            scraper, no second/duplicate search engine of this
+            project's own.
         -->
 
         <Grid Grid.Row="1" Margin="32,0,32,20">

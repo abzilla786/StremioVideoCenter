@@ -1,6 +1,7 @@
-﻿Id: StremioVideoCenter_00000000-0000-0000-0000-000000000001
-Name: Stremio Video Center
+﻿Id: StremioVideoCenter_2b114735-64f4-4d7d-9069-9f4036dc85bf
+Name: "Zino's Media Center"
 Author: Abdullah Ayyaz
 Version: 1.0.0
 Module: StremioVideoCenter.dll
 Type: GenericPlugin
+Icon: icon.png

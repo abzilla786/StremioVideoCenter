@@ -262,13 +262,6 @@ namespace StremioVideoCenter
 
 
         // =========================================================
-        // OMDB CREDENTIAL
-        // =========================================================
-
-        private readonly string _omdbApiKey;
-
-
-        // =========================================================
         // REAL-DEBRID CREDENTIAL
         // =========================================================
 
@@ -379,9 +372,6 @@ namespace StremioVideoCenter
             ApplyResponsiveHeroSize(e.NewSize.Width, e.NewSize.Height);
         }
 
-        private double _lastHeroViewportWidth = -1;
-        private double _lastHeroViewportHeight = -1;
-
         // Scales the hero (design 1240 x 698, see HeroLayout) uniformly from the
         // viewport WPF actually provides. Everything is in DIPs, straight from
         // layout, so DPI, monitor and window changes arrive as SizeChanged and are
@@ -396,26 +386,6 @@ namespace StremioVideoCenter
             HeroCanvasScale.ScaleY = layout.Scale;
             HeroContentScale.ScaleX = layout.Scale;
             HeroContentScale.ScaleY = layout.Scale;
-
-            if (Math.Abs(viewportWidth - _lastHeroViewportWidth) < 0.5 &&
-                Math.Abs(viewportHeight - _lastHeroViewportHeight) < 0.5)
-            {
-                return;
-            }
-
-            _lastHeroViewportWidth = viewportWidth;
-            _lastHeroViewportHeight = viewportHeight;
-
-            // Diagnostic: the viewport and result actually used for the hero.
-            try
-            {
-                DpiScale dpi = VisualTreeHelper.GetDpi(this);
-                StremioVideoCenterLogger.Info(string.Format(
-                    "[HOME-LAYOUT] viewport={0:0.#}x{1:0.#} dipScale={2:0.###} hero={3:0}x{4:0} scale={5:0.###} contentTop={6:0}",
-                    viewportWidth, viewportHeight, dpi.DpiScaleX,
-                    layout.Width, layout.Height, layout.Scale, layout.ContentTop));
-            }
-            catch { }
         }
 
         public StremioVideoCenterView(
@@ -431,9 +401,6 @@ namespace StremioVideoCenter
             MainScrollViewer.SizeChanged += MainScrollViewer_SizeChanged;
 
             configuration = configuration ?? new StremioVideoCenterConfiguration();
-
-            _omdbApiKey =
-                configuration.OmdbApiKey;
 
             _realDebridApiTokenSnapshot =
                 configuration.RealDebridApiKey;
@@ -2675,7 +2642,7 @@ namespace StremioVideoCenter
                 // architectural goal ("Anime Series -> Season -> Episode
                 // -> Source Selector -> MPV", the same hierarchy as TV) -
                 // previously an Anime-typed MediaItem (from either the
-                // earlier catalogue rows or the AnimeFLV/Kitsu browse/search
+                // earlier catalogue rows or the Kitsu browse/search
                 // paths) skipped episode browsing entirely and went
                 // straight to playback as if it were a single show-level
                 // lookup. EpisodeBrowserView.LoadAsync itself already
@@ -5258,11 +5225,7 @@ namespace StremioVideoCenter
             // This page does not need a CatalogueService at
             // all - Kitsu (via KitsuService.BrowseAnimeAsync) is now
             // the sole source for the Anime Browse filter/discovery
-            // section. Slice 17 UI/navigation fix: the page's own
-            // "Browse AnimeFLV" section has been removed (AnimeFLV's
-            // generic addon/service architecture is untouched elsewhere),
-            // so AnimeBrowseView.Initialize no longer takes an
-            // AnimeFlvCatalogueService.
+            // section.
             var kitsuService = new KitsuService();
 
             page.Initialize(kitsuService);
@@ -6001,8 +5964,6 @@ namespace StremioVideoCenter
         // must not be navigated to).
         private void ClosePlayer(bool restoreHomeFocus = true)
         {
-            StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer enter restoreHomeFocus=" + restoreHomeFocus);
-
             // The player is going away: playback of this attempt will not
             // establish, so the resume-loading toast must not outlive it.
             DismissResumeLoadingToast();
@@ -6044,8 +6005,6 @@ namespace StremioVideoCenter
 
                 try
                 {
-                    StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer pre-dispose work done");
-
                     _stremioPlayer.CloseRequested -=
                         StremioPlayer_CloseRequested;
                     _stremioPlayer.PlaybackStateChanged -=
@@ -6075,9 +6034,7 @@ namespace StremioVideoCenter
                             "Hiding the video window before close failed: " + UserFacingErrors.ForLog(hideEx));
                     }
 
-                    StremioVideoCenterControls.Player.ExitDiag.Log("DisposePlayer start " + _stremioPlayer.ExitDiagSnapshot());
                     _stremioPlayer.DisposePlayer();
-                    StremioVideoCenterControls.Player.ExitDiag.Log("DisposePlayer done");
                 }
                 catch
                 {
@@ -6106,8 +6063,6 @@ namespace StremioVideoCenter
 
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;
-
-            StremioVideoCenterControls.Player.ExitDiag.Log("PlaybackTestHost collapsed");
 
             // Local Files page underneath: it takes focus back, instead of
             // the Home focus restoration below.
@@ -6157,15 +6112,8 @@ namespace StremioVideoCenter
             MediaItem mediaItem,
             string failureNotice = null)
         {
-            // [EXIT-DIAG] (temporary): one id per player-to-selector transition.
-            string exitDiagId = _stremioPlayer != null
-                ? StremioVideoCenterControls.Player.ExitDiag.Begin("transition start sources=" + (sources != null ? sources.Count : 0))
-                : null;
-
             Task<NormalizedPlaybackSource> selection =
                 ShowSourceSelectorAsync(sources, mediaItem, failureNotice);
-
-            StremioVideoCenterControls.Player.ExitDiag.Log("selector mounted (sync part returned)");
 
             MpvPlayer playerToClose = _stremioPlayer;
 
@@ -6196,33 +6144,15 @@ namespace StremioVideoCenter
                 try
                 {
                     // 1. First yield: the native video window is still visible.
-                    StremioVideoCenterControls.Player.ExitDiag.Log("render yield 1 start (video visible) " + playerToClose.ExitDiagSnapshot());
-                    long exitDiagYield1Start = System.Diagnostics.Stopwatch.GetTimestamp();
-
                     await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Render);
-
-                    StremioVideoCenterControls.Player.ExitDiag.Log(
-                        "render yield 1 done durationMs=" +
-                        ((System.Diagnostics.Stopwatch.GetTimestamp() - exitDiagYield1Start) * 1000 / System.Diagnostics.Stopwatch.Frequency) +
-                        " selectionCompleted=" + selection.IsCompleted);
 
                     if (ReferenceEquals(_stremioPlayer, playerToClose))
                     {
                         // 2. Hide the native video window and the controls overlay.
-                        StremioVideoCenterControls.Player.ExitDiag.Log("HideVideoForClose start " + playerToClose.ExitDiagSnapshot());
                         playerToClose.HideVideoForClose();
-                        StremioVideoCenterControls.Player.ExitDiag.Log("HideVideoForClose done " + playerToClose.ExitDiagSnapshot());
 
                         // 3. Second yield: lets WPF present the exposed selector.
-                        StremioVideoCenterControls.Player.ExitDiag.Log("render yield 2 start (video hidden)");
-                        long exitDiagYield2Start = System.Diagnostics.Stopwatch.GetTimestamp();
-
                         await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
-
-                        StremioVideoCenterControls.Player.ExitDiag.Log(
-                            "render yield 2 done durationMs=" +
-                            ((System.Diagnostics.Stopwatch.GetTimestamp() - exitDiagYield2Start) * 1000 / System.Diagnostics.Stopwatch.Frequency) +
-                            " selectionCompleted=" + selection.IsCompleted);
                     }
 
                     // 4. Tear the player down (the identity is re-checked after
@@ -6230,24 +6160,13 @@ namespace StremioVideoCenter
                     // twice).
                     if (ReferenceEquals(_stremioPlayer, playerToClose))
                     {
-                        StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer call start");
                         ClosePlayer(restoreHomeFocus: false);
-                        StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer returned");
-                    }
-                    else
-                    {
-                        StremioVideoCenterControls.Player.ExitDiag.Log("ClosePlayer skipped (player no longer current)");
                     }
                 }
                 finally
                 {
                     _isSwappingPlayerForSelector = false;
-                    StremioVideoCenterControls.Player.ExitDiag.End(exitDiagId, "transition end (swap flag cleared)");
                 }
-            }
-            else if (exitDiagId != null)
-            {
-                StremioVideoCenterControls.Player.ExitDiag.End(exitDiagId, "transition end (no player)");
             }
 
             return await selection;

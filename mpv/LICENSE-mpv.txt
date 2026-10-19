@@ -1,0 +1,54 @@
+MPV: licence, provenance and source availability
+=================================================
+
+This folder contains MPV as a separate executable (`mpv.exe`). Zino's Media Center starts it as its own process and communicates using command-line options and JSON IPC. MPV is not covered by the project's MIT licence.
+
+## Binary identity
+
+- File: `mpv.exe`
+- Version: `v0.41.0-1224-g6a262d11f`
+- MPV commit: `6a262d11f63733d37e3ee6d5fafcb1be1ef83952`
+- FFmpeg version string: `N-127652-gffb15c94c`
+- FFmpeg commit in package table: `ffb15c94c286c9d1af911991b3ad08724427372a`
+- Size: 121,949,184 bytes
+- SHA-256: `0c7894d232438ed1d3f59884d438918fd5401eea9efed014dae6eaeec6277b80`
+- Publisher/release: https://github.com/zhongfly/mpv-winbuild/releases/tag/2026-10-18-6a262d11f6
+- Workflow run: https://github.com/zhongfly/mpv-winbuild/actions/runs/39138561860
+- Asset: `mpv-x86_64-20261018-git-6a262d11f6.7z` (baseline x86-64, not v3)
+- Archive SHA-256: `ea8c0decf5b22fb3dfaf580bc95e70c301cb966d3538637c4245f11eb0163e2b`
+
+The archive hash was recorded as matching the publisher's hash list, and the executable in the archive was verified byte-identical to the bundled executable.
+
+## Build provenance
+
+- Build project: https://github.com/zhongfly/mpv-winbuild (project revision recorded elsewhere as `8a39c5134b8e16f104ee56a5d85e36a592ad9477`)
+- MPV source: https://github.com/mpv-player/mpv at the commit above
+- FFmpeg source revision: `ffb15c94c286c9d1af911991b3ad08724427372a`
+- Build recipe/toolchain: https://github.com/shinchiro/mpv-winbuild-cmake at commit `1f8d2e76255abc48f0456d9be99b4cab9c6566e6`
+- Build packaging revision in log: `e8683d51a15a4d5293b939cd901929ffaadaf121`
+- Compiler: Clang 23.1.2; LLVM revision `03b58ead1a5d7caae4ab76ec69d66cfa896da372`
+- Build target: 64-bit baseline x86-64; `lgpl=false`; `simple_package=false`
+- The build log confirms the shaderc/SPIRV-Cross “skip unused stuff” patch was applied.
+- The same log records local edits to `CMakeLists.txt` (removing the `ccache_conf.in` line) and `exec.in` (removing lines containing `ccache`). These edits must be preserved in a corresponding source bundle.
+
+The `mpv-winbuild-cmake` commit above was found in the supplied build log. The recipe commit is now identified; this does **not** prove that every dependency source archive and patch has been collected.
+
+## Licence
+
+The selected executable is a GPL-enabled MPV build, not the separately configured LGPL `libmpv` build. MPV upstream says the default program is GPLv2-or-later; its own licensing page explains that individual files and linked libraries can carry distinct licences: https://github.com/mpv-player/mpv/blob/master/Copyright. Existing build evidence indicates FFmpeg was configured with `--enable-gpl --enable-version3` and without `--enable-nonfree`, but those flags have not been independently re-extracted from the newly uploaded raw logs. Conservatively treat the executable stack as subject to GPL obligations until exact source/configuration is matched.
+
+The standard licence texts are in `licenses/`. They do not replace the component-specific copyright notices and licence texts required for all components in the actual build.
+
+## Corresponding source — OPEN RELEASE BLOCKER
+
+**No complete corresponding-source archive has been created or published as part of this documentation update.** The small uploaded `mpv-winbuild` ZIP was only a version file, and the build-log ZIP is not the full source bundle.
+
+Before distributing this executable, create and publish a stable source archive corresponding to this exact binary, including MPV, FFmpeg (or the actual source remote used by the build), every relevant linked library, all local patches, build scripts, the exact toolchain recipe revision and its local edits, and any archive-fetched sources needed to rebuild. Use exact revisions from `docs/MPV_BUILD_COMPONENTS.md`; resolve abbreviated IDs and any uncertain source remotes. Record the stable URL here after publication.
+
+## Third-party notices — OPEN RELEASE BLOCKER
+
+The component table is a build-package inventory, not a verified list of all libraries linked into the executable. Collect the actual copyright, licence and NOTICE files from the exact source trees into `THIRD_PARTY_LICENSES.txt`, preserving each component's own terms. Do not manufacture a single blanket licence for all dependencies.
+
+## Release status
+
+MPV identity and recipe provenance are substantially documented. Licensing/source-distribution compliance is **not closed** until the corresponding source and component notices are complete, the final package is inspected, and the source URL is recorded here.

@@ -86,7 +86,7 @@ namespace StremioVideoCenter
         private System.Windows.Point playniteTopLeftPhysical;
         private System.Windows.Point playniteBottomRightPhysical;
 
-        public override Guid Id { get; } = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        public override Guid Id { get; } = Guid.Parse("2b114735-64f4-4d7d-9069-9f4036dc85bf");
 
         public StremioVideoCenter(IPlayniteAPI api) : base(api)
         {
@@ -182,7 +182,6 @@ namespace StremioVideoCenter
 
                 var configuration = new StremioVideoCenterConfiguration
                 {
-                    OmdbApiKey = settings?.Settings?.OmdbApiKey,
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
@@ -301,13 +300,6 @@ namespace StremioVideoCenter
                 // is open: Playnite moving/resizing/maximising/changing monitor or
                 // DPI, and display configuration changes (mirroring a TV, a
                 // resolution change), all re-sync it. See SyncHostBounds.
-                // Slice 21 (temporary): reset the host-geometry diagnostic state
-                // for this open.
-                hostDiagQueued = false;
-                hostDiagFailed = false;
-                hostDiagCount = 0;
-                hostDiagLastBody = null;
-
                 SubscribeHostGeometryEvents();
 
                 // Keyboard close handling.
@@ -545,17 +537,9 @@ namespace StremioVideoCenter
         // Positions the Video Center window over Playnite's client area.
         // Returns true if it is now (or already was) at the right place, false
         // if the geometry could not be determined (callers may fall back).
-        //
-        // Slice 21 (temporary diagnostics): this wrapper only queues one
-        // read-only [HOST-GEOMETRY] diagnostic record per meaningful change;
-        // placement itself happens in SyncHostBoundsCore.
         private bool SyncHostBounds(string reason)
         {
-            bool result = SyncHostBoundsCore();
-
-            QueueHostGeometryDiagnostics(reason);
-
-            return result;
+            return SyncHostBoundsCore();
         }
 
         // The rectangle Zino's outer window is placed on: Playnite's client
@@ -631,180 +615,6 @@ namespace StremioVideoCenter
             }
         }
 
-        // =========================================================
-        // TEMPORARY HOST-GEOMETRY DIAGNOSTICS (Slice 21)
-        // =========================================================
-        //
-        // Read-only: writes one "[HOST-GEOMETRY]" line to the Zino log per
-        // meaningful bounds sync. Never moves, resizes or restyles anything.
-        // Units are labelled in the record: "px" = physical screen pixels
-        // (Win32), "dip" = WPF device-independent units. Records are
-        // coalesced (one per idle after a burst of events), suppressed when
-        // identical to the previous record, and capped per open. No paths,
-        // titles, URLs or personal data are included.
-
-        private const int HostDiagMaxRecords = 60;
-
-        private bool hostDiagQueued;
-        private bool hostDiagFailed;
-        private int hostDiagCount;
-        private string hostDiagReason;
-        private string hostDiagLastBody;
-
-        private void QueueHostGeometryDiagnostics(string reason)
-        {
-            if (hostDiagFailed || hostDiagCount >= HostDiagMaxRecords || videoCenterWindow == null)
-            {
-                return;
-            }
-
-            hostDiagReason = reason;
-
-            if (hostDiagQueued)
-            {
-                return;
-            }
-
-            hostDiagQueued = true;
-
-            videoCenterWindow.Dispatcher.BeginInvoke(
-                new Action(() =>
-                {
-                    hostDiagQueued = false;
-                    WriteHostGeometryDiagnostics();
-                }),
-                DispatcherPriority.ContextIdle);
-        }
-
-        private void WriteHostGeometryDiagnostics()
-        {
-            if (videoCenterWindow == null || playniteWindow == null)
-            {
-                return;
-            }
-
-            try
-            {
-                IntPtr zino = new WindowInteropHelper(videoCenterWindow).Handle;
-                IntPtr host = new WindowInteropHelper(playniteWindow).Handle;
-
-                var hostWnd = HostWindowGeometry.GetWindowRectOnScreen(host);
-                var hostClient = HostWindowGeometry.GetClientRectOnScreen(host);
-                var zinoWnd = HostWindowGeometry.GetWindowRectOnScreen(zino);
-                var zinoClient = HostWindowGeometry.GetClientRectOnScreen(zino);
-
-                // The target SyncHostBoundsCore applies to Zino's OUTER rect.
-                var target = GetHostTargetRect(host);
-
-                StremioVideoCenterControls.Player.PixelRect hostMon, hostWork, zinoMon, zinoWork;
-                bool hostMonOk = HostWindowGeometry.TryGetMonitorRects(host, out hostMon, out hostWork);
-                bool zinoMonOk = HostWindowGeometry.TryGetMonitorRects(zino, out zinoMon, out zinoWork);
-
-                var sb = new StringBuilder();
-
-                sb.Append("mode=").Append(PlayniteApi.ApplicationInfo.Mode);
-
-                sb.Append(" | playnite: wpfState=").Append(playniteWindow.WindowState);
-                sb.Append(" outer[px]=").Append(HostWindowGeometry.FormatRect(hostWnd));
-                sb.Append(" client[px]=").Append(HostWindowGeometry.FormatRect(hostClient));
-                sb.Append(" size[dip]=")
-                  .Append(playniteWindow.ActualWidth.ToString("0.#"))
-                  .Append("x")
-                  .Append(playniteWindow.ActualHeight.ToString("0.#"));
-                sb.Append(" dpi=").Append(HostWindowGeometry.TryGetWindowDpi(host));
-                sb.Append(" style=").Append(HostWindowGeometry.DescribeStyle(host));
-
-                sb.Append(" | target(applied to Zino outer)[px]=")
-                  .Append(HostWindowGeometry.FormatRect(target));
-
-                sb.Append(" | monitor(playnite)[px]=")
-                  .Append(hostMonOk ? HostWindowGeometry.FormatRect(hostMon) : "n/a");
-                sb.Append(" work[px]=")
-                  .Append(hostMonOk ? HostWindowGeometry.FormatRect(hostWork) : "n/a");
-
-                if (target.HasValue && hostMonOk)
-                {
-                    // Positive = the target extends beyond the monitor edge.
-                    sb.Append(" targetBeyondMonitor(L,T,R,B)[px]=(")
-                      .Append((hostMon.Left - target.Value.Left).ToString("0")).Append(",")
-                      .Append((hostMon.Top - target.Value.Top).ToString("0")).Append(",")
-                      .Append((target.Value.Right - hostMon.Right).ToString("0")).Append(",")
-                      .Append((target.Value.Bottom - hostMon.Bottom).ToString("0")).Append(")");
-                }
-
-                sb.Append(" | zino: wpfState=").Append(videoCenterWindow.WindowState);
-                sb.Append(" outer[px]=").Append(HostWindowGeometry.FormatRect(zinoWnd));
-                sb.Append(" client[px]=").Append(HostWindowGeometry.FormatRect(zinoClient));
-                sb.Append(" size[dip]=")
-                  .Append(videoCenterWindow.ActualWidth.ToString("0.#"))
-                  .Append("x")
-                  .Append(videoCenterWindow.ActualHeight.ToString("0.#"));
-                sb.Append(" dpi=").Append(HostWindowGeometry.TryGetWindowDpi(zino));
-                sb.Append(" style=").Append(HostWindowGeometry.DescribeStyle(zino));
-                sb.Append(" monitor[px]=")
-                  .Append(zinoMonOk ? HostWindowGeometry.FormatRect(zinoMon) : "n/a");
-                sb.Append(" work[px]=")
-                  .Append(zinoMonOk ? HostWindowGeometry.FormatRect(zinoWork) : "n/a");
-
-                if (zinoWnd.HasValue && target.HasValue)
-                {
-                    sb.Append(" zinoOuterMinusTarget(L,T,R,B)[px]=(")
-                      .Append((zinoWnd.Value.Left - target.Value.Left).ToString("0")).Append(",")
-                      .Append((zinoWnd.Value.Top - target.Value.Top).ToString("0")).Append(",")
-                      .Append((zinoWnd.Value.Right - target.Value.Right).ToString("0")).Append(",")
-                      .Append((zinoWnd.Value.Bottom - target.Value.Bottom).ToString("0")).Append(")");
-                }
-
-                if (zinoWnd.HasValue && zinoClient.HasValue)
-                {
-                    // Non-client thickness of Zino's own window (0 = none).
-                    sb.Append(" zinoNonClient(L,T,R,B)[px]=(")
-                      .Append((zinoClient.Value.Left - zinoWnd.Value.Left).ToString("0")).Append(",")
-                      .Append((zinoClient.Value.Top - zinoWnd.Value.Top).ToString("0")).Append(",")
-                      .Append((zinoWnd.Value.Right - zinoClient.Value.Right).ToString("0")).Append(",")
-                      .Append((zinoWnd.Value.Bottom - zinoClient.Value.Bottom).ToString("0")).Append(")");
-                }
-
-                if (videoCenterView != null)
-                {
-                    sb.Append(" | view[dip]=")
-                      .Append(videoCenterView.ActualWidth.ToString("0.#"))
-                      .Append("x")
-                      .Append(videoCenterView.ActualHeight.ToString("0.#"));
-
-                    if (videoCenterView.IsLoaded)
-                    {
-                        sb.Append(" viewDpiScale=")
-                          .Append(System.Windows.Media.VisualTreeHelper
-                              .GetDpi(videoCenterView).DpiScaleX.ToString("0.###"));
-                    }
-                }
-
-                string body = sb.ToString();
-
-                if (string.Equals(body, hostDiagLastBody, StringComparison.Ordinal))
-                {
-                    return;
-                }
-
-                hostDiagLastBody = body;
-                hostDiagCount++;
-
-                StremioVideoCenterLogger.Info(
-                    "[HOST-GEOMETRY] #" + hostDiagCount +
-                    " reason=" + hostDiagReason + " " + body);
-            }
-            catch (Exception ex)
-            {
-                // Diagnostics must never affect the window; stop after one
-                // failure (type name only) rather than repeating it.
-                hostDiagFailed = true;
-
-                StremioVideoCenterLogger.Info(
-                    "[HOST-GEOMETRY] diagnostics disabled after " + ex.GetType().Name);
-            }
-        }
-
         private void VideoCenterWindow_KeyDown(
             object sender,
             System.Windows.Input.KeyEventArgs e)
@@ -833,7 +643,6 @@ namespace StremioVideoCenter
 
                 var configuration = new StremioVideoCenterConfiguration
                 {
-                    OmdbApiKey = settings?.Settings?.OmdbApiKey,
                     RealDebridApiKey = settings?.Settings?.RealDebridApiKey,
                     StremioAddonUrls = settings?.Settings?.StremioAddonUrls,
                     AddonInstances = settings?.Settings?.AddonInstances,
@@ -1036,59 +845,6 @@ namespace StremioVideoCenter
             return myListService;
         }
 
-        // =====================================================================
-        // SLICE22-CTRL-DIAG (TEMPORARY - remove after the Windows result)
-        // =====================================================================
-        //
-        // Answers one question: in Playnite Desktop mode, which controller
-        // callbacks does Playnite actually raise, and does Zino react? Each
-        // line holds only the callback name, button name, press/release
-        // state, Playnite's mode, whether the Zino window is open and what
-        // Zino did - no credentials, paths, titles or payloads. Capped so a
-        // long session cannot grow the log. The Desktop callback below only
-        // LOGS; it does not route input, so behaviour is unchanged.
-        private int ctrlDiagLines;
-
-        private void CtrlDiag(string callback, OnControllerButtonStateChangedArgs args, string outcome)
-        {
-            if (ctrlDiagLines >= 300)
-            {
-                return;
-            }
-
-            ctrlDiagLines++;
-
-            string mode;
-
-            try
-            {
-                mode = PlayniteApi.ApplicationInfo.Mode.ToString();
-            }
-            catch (Exception)
-            {
-                mode = "(unknown)";
-            }
-
-            StremioVideoCenterLogger.Info(
-                "[CTRL-DIAG22] cb=" + callback +
-                " button=" + args.Button +
-                " state=" + args.State +
-                " mode=" + mode +
-                " windowOpen=" + (videoCenterWindow != null && videoCenterView != null) +
-                " outcome=" + outcome);
-        }
-
-        public override void OnDesktopControllerButtonStateChanged(
-            OnControllerButtonStateChangedArgs args)
-        {
-            CtrlDiag("desktop", args, "logged-only");
-        }
-
-        public override void OnControllerConnected(OnControllerConnectedArgs args)
-        {
-            StremioVideoCenterLogger.Info("[CTRL-DIAG22] cb=connected");
-        }
-
         public override void OnControllerButtonStateChanged(
             OnControllerButtonStateChangedArgs args)
         {
@@ -1096,13 +852,11 @@ namespace StremioVideoCenter
             if (videoCenterWindow == null ||
                 videoCenterView == null)
             {
-                CtrlDiag("base", args, "no-window");
                 return;
             }
 
             if (args.State != ControllerInputState.Pressed)
             {
-                CtrlDiag("base", args, "ignored-not-pressed");
                 return;
             }
 
@@ -1111,11 +865,8 @@ namespace StremioVideoCenter
             // Select action for cards and player controls.
             if (videoCenterView.HandleControllerInput(args.Button))
             {
-                CtrlDiag("base", args, "consumed");
                 return;
             }
-
-            CtrlDiag("base", args, "not-consumed");
 
             // If the Video Center did not consume B, close the window.
             if (args.Button == ControllerInput.B)

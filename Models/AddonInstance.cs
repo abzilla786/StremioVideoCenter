@@ -223,7 +223,7 @@ namespace StremioVideoCenter.Models
         }
 
         // True only for the fixed set of zero-config addons seeded by
-        // CoreAddonSeedingService on first run (Cinemeta, AnimeFLV,
+        // CoreAddonSeedingService on first run (Cinemeta,
         // OpenSubtitles v3, Local Files). Drives the "CORE / DEFAULT"
         // grouping in Settings - never set by the user-facing installers.
         public bool IsCore
@@ -250,7 +250,7 @@ namespace StremioVideoCenter.Models
         // Role Correction) - replaces the earlier single Role(string)
         // field (and its AddonRole.AnimeScopedStream value, now removed
         // entirely - see AddonRole's own remarks below for why). An
-        // addon can hold more than one role at once (e.g. AnimeFLV is
+        // addon can hold more than one role at once (e.g. Cinemeta is
         // both Metadata and Catalogue, but never StreamProvider) - a
         // single string could not express that, so this is a list.
         //
@@ -400,11 +400,10 @@ namespace StremioVideoCenter.Models
     // Role Correction) - supersedes the earlier Workstream B design,
     // which introduced a single, provider-shaped AddonRole.
     // AnimeScopedStream value (content-type-conditional stream
-    // eligibility for AnimeFLV specifically). That design is REMOVED
-    // entirely per this slice's explicit correction: AnimeFLV must
-    // never be queried for playable stream URLs, for ANY content type
-    // (Movie, TV, Anime alike) - not "only outside Anime requests".
-    // There is deliberately no provider-named role of any kind here -
+    // eligibility for one specific provider). That design is REMOVED
+    // entirely per this slice's explicit correction: a metadata/
+    // catalogue-only addon must never be queried for playable stream
+    // URLs, for ANY content type (Movie, TV, Anime alike). There is deliberately no provider-named role of any kind here -
     // only generic capability/usage categories that any addon, present
     // or future, can carry:
     //
@@ -427,7 +426,7 @@ namespace StremioVideoCenter.Models
     //                      local filesystem rather than a remote addon
     //                      backend.
     //
-    // An addon can carry more than one of these at once (e.g. AnimeFLV
+    // An addon can carry more than one of these at once (e.g. Cinemeta
     // = Metadata + Catalogue, never StreamProvider) - see
     // AddonInstance.Roles. Narrows WHEN an addon's already-declared
     // "stream" resource capability (AddonCapabilities.Streams below)
@@ -438,8 +437,9 @@ namespace StremioVideoCenter.Models
     // to - never instead of - the pre-existing ResourceNames-based skip
     // in GetAllStreamsAsync: that check answers "can this addon serve
     // streams at all" (e.g. Cinemeta cannot); this model answers "does
-    // Zino intend to use this addon for streams at all" (e.g. AnimeFLV
-    // can, per its manifest, but Zino deliberately never asks it to).
+    // Zino intend to use this addon for streams at all" (e.g. an addon
+    // whose manifest declares "stream" but which is assigned only
+    // Metadata/Catalogue is never asked for streams).
     //
     // Free-form string constants, matching this project's existing
     // Category/InstallPolicy convention (see their own remarks above),
@@ -470,13 +470,12 @@ namespace StremioVideoCenter.Models
         // this is a pure relabeling, not a second source of truth.
         // Applied uniformly regardless of provider name - there is no
         // per-addon branch here. This is deliberately NOT used for the
-        // five core addons (CoreAddonSeedingService assigns their
-        // Roles explicitly) because at least one of them - AnimeFLV -
-        // needs its assigned Roles to intentionally differ from what
-        // this generic inference would produce from its manifest (its
-        // manifest genuinely declares "stream", but Zino must never
-        // treat it as a StreamProvider) - exactly the distinction the
-        // class remarks above describe.
+        // core addons (CoreAddonSeedingService assigns their Roles
+        // explicitly) because an addon's assigned Roles may intentionally
+        // differ from what this generic inference would produce from its
+        // manifest (a manifest can declare "stream" while Zino must not
+        // treat the addon as a StreamProvider) - exactly the distinction
+        // the class remarks above describe.
         public static List<string> InferFromResourceNames(List<string> resourceNames)
         {
             var inferred = new List<string>();

@@ -13,7 +13,7 @@ namespace StremioVideoCenter.Services
     // OpenSubtitles v1 core addon was once seeded as well; it is no
     // longer seeded - see CoreProviderRoles below.)
     //
-    // Installs Zino's four CORE / DEFAULT addons (Cinemeta, AnimeFLV,
+    // Installs Zino's three CORE / DEFAULT addons (Cinemeta,
     // OpenSubtitles v3, Local Files) into AddonInstances
     // on first run, through the exact same AddonInstance/
     // StremioAddonRegistry architecture every other addon uses - there
@@ -27,15 +27,15 @@ namespace StremioVideoCenter.Services
     // Playnite startup, before Playnite has even finished loading. A
     // live HTTP fetch here (StremioAddonService.GetManifestAsync, which
     // has no explicit timeout - WebClient defaults to ~100 seconds) for
-    // up to five addons would risk a severe, unacceptable Playnite
+    // several addons would risk a severe, unacceptable Playnite
     // startup delay, especially with no network connection. Instead,
     // each core addon's manifest identity below (id, name, version,
     // resources, types, idPrefixes) was captured from a verified source,
     // not invented:
-    //   - Cinemeta, AnimeFLV, OpenSubtitles v3, Local Files: a REAL, live
-    //     fetch of that addon's own public manifest.json, performed
-    //     during the original Cinemeta-First Addon Settings Architecture
-    //     slice (see claude/Cinemeta_First_Addon_Settings_Architecture.md).
+    //   - Cinemeta, OpenSubtitles v3: a REAL, live fetch of that addon's
+    //     own public manifest.json, performed during the original
+    //     Cinemeta-First Addon Settings Architecture slice (see
+    //     claude/Cinemeta_First_Addon_Settings_Architecture.md).
     //   - Local Files (Slice 20 correction): NOT fetched from any addon;
     //     a built-in registration with no address - see
     //     CreateLocalFilesDefinition.
@@ -131,8 +131,7 @@ namespace StremioVideoCenter.Services
             // using for exactly this kind of "single active instance per
             // provider" purpose - never off FriendlyName or ManifestUrl,
             // so it can never touch a user's own custom addon even one
-            // that happens to reuse the same name or URL. Supersedes the
-            // earlier, AnimeFLV-only SyncAnimeFlvRole migration.
+            // that happens to reuse the same name or URL.
             if (SyncCoreAddonRoles(settings))
             {
                 changed = true;
@@ -160,11 +159,10 @@ namespace StremioVideoCenter.Services
             {
                 { "cinemeta", new List<string> { AddonRole.Metadata, AddonRole.Catalogue } },
 
-                // AnimeFLV: Metadata + Catalogue ONLY. Its manifest does
-                // declare "stream" (it really can serve anime streams),
-                // but this slice's explicit correction is that AnimeFLV
-                // must never be used as a StreamProvider, for any
-                // content type - see AddonRole's own remarks.
+                // AnimeFLV is no longer seeded or used by Zino. This entry
+                // only protects an instance that an older saved
+                // configuration may still hold: Metadata + Catalogue ONLY,
+                // never a StreamProvider, for any content type.
                 { "animeflv", new List<string> { AddonRole.Metadata, AddonRole.Catalogue } },
 
                 // OpenSubtitles (legacy v1): no longer seeded (Slice 20
@@ -261,69 +259,13 @@ namespace StremioVideoCenter.Services
                 },
 
                 // -----------------------------------------------------
-                // ANIMEFLV (public "AnimES" instance)
-                // -----------------------------------------------------
-                // Live-confirmed this slice: GET https://pigamer37.alwaysdata.net/manifest.json
-                // id "com.animeflv.stremio.addon", name "AnimES", resources
-                // ["stream", {meta,...}, "catalog"], behaviorHints.configurable
-                // = true but configurationRequired is NOT set - usable as-is
-                // with no configuration step, matching "installed by default,
-                // no configuration required."
-                //
-                // Roles = [Metadata, Catalogue], deliberately NOT
-                // StreamProvider (Slice 15 Anime Architecture Audit +
-                // Kitsu Migration + Provider Role Correction): this
-                // addon's manifest genuinely declares "stream" (it really
-                // does serve anime streams, and ResourceNames above is
-                // left completely unchanged/accurate - that field remains
-                // an honest record of the manifest's own capabilities),
-                // but per this slice's explicit correction AnimeFLV must
-                // never be queried during stream discovery for ANY
-                // content type - not scoped to "outside Anime requests"
-                // (the prior AddonRole.AnimeScopedStream design, now
-                // removed). Its metadata/catalogue/search/artwork role
-                // (AnimeFlvCatalogueService, AnimeBrowseView's genre/
-                // search browse grid) is completely untouched by this -
-                // only stream-discovery eligibility is scoped, via
-                // StremioAddonRegistry.GetAllStreamsAsync's generic
-                // Roles-based check (no AnimeFLV-specific code there at
-                // all).
-                new AddonInstance
-                {
-                    ProviderKey = "animeflv",
-                    IsCore = true,
-                    InstallPolicy = AddonInstallPolicy.ReplaceExisting,
-                    Category = "Core",
-                    FriendlyName = "AnimeFLV",
-                    AddonId = "com.animeflv.stremio.addon",
-                    ManifestUrl = "https://pigamer37.alwaysdata.net",
-                    Enabled = true,
-                    Version = "1.4.5",
-                    Description =
-                        "AnimeFLV, AnimeAV1, Henaojara, TioAnime, AnimeJara & JKAnime " +
-                        "catalogs and metadata for Stremio. Used by Zino for anime " +
-                        "genre/search browsing only - never queried for streams.",
-                    Types = new List<string> { "movie", "series", "anime", "other" },
-                    IdPrefixes = new List<string>
-                    {
-                        "tt", "animeflv:", "animeav1:", "henaojara:", "tioanime:",
-                        "animejara:", "jkanime:", "tmdb:", "anilist:", "kitsu:",
-                        "mal:", "anidb:"
-                    },
-                    ResourceNames = new List<string> { "stream", "meta", "catalog" },
-                    Roles = new List<string> { AddonRole.Metadata, AddonRole.Catalogue }
-                },
-
-                // -----------------------------------------------------
                 // OPENSUBTITLES V3
                 // -----------------------------------------------------
                 // Live-confirmed in the original slice: GET
                 // https://opensubtitles-v3.strem.io/manifest.json - id
                 // "org.stremio.opensubtitlesv3", resources ["subtitles"],
                 // idPrefixes ["tt"], no configurable/configurationRequired
-                // (zero-config). A separate addon/instance from legacy
-                // OpenSubtitles above - different id and transport URL;
-                // both are seeded, neither replaces the other.
+                // (zero-config).
                 new AddonInstance
                 {
                     ProviderKey = "opensubtitlesv3",

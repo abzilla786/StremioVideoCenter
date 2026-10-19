@@ -10,8 +10,6 @@ namespace StremioVideoCenter.Models
     // exposes - not a general configuration framework.
     public class StremioVideoCenterConfiguration
     {
-        public string OmdbApiKey { get; set; }
-
         public string RealDebridApiKey { get; set; }
 
         // Raw newline-delimited addon URLs, same shape as the underlying

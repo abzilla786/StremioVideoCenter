@@ -18,10 +18,9 @@ namespace StremioVideoCenter.Services
     // Movies, TV and (as of Slice 17) Anime. Not Home-specific - Home's
     // six rows AND the dedicated Movies/TV pages (Featured/Popular/New
     // Releases, with genre/year filtering and skip-based pagination)
-    // both call this same class. AnimeFlvCatalogueService remains the
-    // separate, parallel client for AnimeFLV's own genre/search
-    // catalogs, kept out of this class per "keep systems modular, don't
-    // tightly couple unrelated systems."
+    // both call this same class. Kitsu-sourced anime browsing lives in
+    // its own separate client (KitsuService), kept out of this class per
+    // "keep systems modular, don't tightly couple unrelated systems."
     //
     // =============================================================
     // SLICE 17 ANIME CHANGE (Kitsu locked in as Zino's permanent anime

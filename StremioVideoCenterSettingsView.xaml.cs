@@ -105,12 +105,6 @@ namespace StremioVideoCenter
 
             isLoadingValues = true;
 
-            // OMDb's PasswordBox was removed from this panel (Cinemeta-
-            // First Addon Settings Architecture slice - see the XAML
-            // remarks above the Real-Debrid section). Settings.OmdbApiKey
-            // itself is left untouched here; nothing in this view reads
-            // or writes it any more.
-
             RealDebridApiKeyBox.Password =
                 viewModel.Settings.RealDebridApiKey ?? string.Empty;
 
@@ -361,6 +355,44 @@ namespace StremioVideoCenter
                 CustomInstallButton);
         }
 
+        // Accepts only an absolute http:// or https:// address with a host.
+        // Anything else (file://, ftp://, stremio://, javascript:, a bare
+        // host name, a relative path) is rejected with a fixed message that
+        // does not repeat the input.
+        private static bool IsAcceptableAddonUrl(string url, out string problem)
+        {
+            problem = null;
+
+            Uri uri;
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+            {
+                problem =
+                    "That is not a valid address. Paste the full addon manifest URL, " +
+                    "starting with https:// (or http://).";
+                return false;
+            }
+
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            {
+                problem =
+                    "Only http:// and https:// addon addresses are supported. " +
+                    "If the addon gave you a stremio:// link, use its https:// manifest URL instead.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(uri.Host))
+            {
+                problem =
+                    "That address has no host name. Paste the full addon manifest URL, " +
+                    "starting with https:// (or http://).";
+                return false;
+            }
+
+            return true;
+        }
+
         // Fetches and validates a manifest, then saves it as a new
         // AddonInstance. Never partially saves - the instance is only
         // added to Settings.AddonInstances (via InstallOrReplaceAddonInstance)
@@ -420,6 +452,18 @@ namespace StremioVideoCenter
                 trimmedUrl.EndsWith(manifestSuffix, StringComparison.OrdinalIgnoreCase)
                     ? trimmedUrl.Substring(0, trimmedUrl.Length - manifestSuffix.Length)
                     : trimmedUrl.TrimEnd('/');
+
+            // Release-hardening: only http:// and https:// manifest URLs
+            // are accepted, checked BEFORE any network access or any change
+            // to the saved configuration. The input is deliberately never
+            // echoed back - an addon URL can carry the user's keys.
+            string urlProblem;
+
+            if (!IsAcceptableAddonUrl(baseUrl, out urlProblem))
+            {
+                statusText.Text = urlProblem;
+                return;
+            }
 
             bool isReplacePolicy =
                 string.Equals(installPolicy, AddonInstallPolicy.ReplaceExisting, StringComparison.OrdinalIgnoreCase) &&

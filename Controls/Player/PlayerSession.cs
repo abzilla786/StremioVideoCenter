@@ -1154,26 +1154,21 @@ namespace StremioVideoCenterControls.Player
                 // Bounded: a wedged pipe must not block close for the full
                 // default command timeout. TeardownMpvOnly below kills the
                 // process regardless.
-                ExitDiag.Log("mpv quit command sent");
                 try { await _ipc.RunCommandWithTimeoutAsync(1000, "quit").ConfigureAwait(false); }
                 catch { }
-                ExitDiag.Log("mpv quit command returned");
 
                 try
                 {
                     MpvProcessService process = _process;
                     if (process != null)
                     {
-                        bool exitedDiag = process.WaitForExit(500);
-                        ExitDiag.Log("mpv process wait done exited=" + exitedDiag);
+                        process.WaitForExit(500);
                     }
                 }
                 catch { }
             }
 
-            ExitDiag.Log("mpv teardown start");
             TeardownMpvOnly();
-            ExitDiag.Log("mpv teardown done");
         }
 
         public void Dispose()

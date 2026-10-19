@@ -174,21 +174,6 @@ namespace StremioVideoCenterControls.Player
             NativeMethods.ShowWindow(handle, NativeMethods.SW_HIDE);
         }
 
-        // [EXIT-DIAG] (temporary): read-only description of the native host
-        // window for the exit diagnostics. Changes nothing.
-        public string DescribeNativeWindowForDiag()
-        {
-            IntPtr handle = _handle;
-
-            if (handle == IntPtr.Zero)
-                return "hostHwnd=none";
-
-            bool valid = NativeMethods.IsWindow(handle);
-
-            return "hostHwnd=" + (valid ? "valid" : "destroyed") +
-                " hostVisible=" + (valid && NativeMethods.IsWindowVisible(handle));
-        }
-
         protected override void DestroyWindowCore(HandleRef hwnd)
         {
             if (hwnd.Handle != IntPtr.Zero)
@@ -222,10 +207,6 @@ namespace StremioVideoCenterControls.Player
             [DllImport("user32.dll")]
             [return: MarshalAs(UnmanagedType.Bool)]
             public static extern bool IsWindow(IntPtr handle);
-
-            [DllImport("user32.dll")]
-            [return: MarshalAs(UnmanagedType.Bool)]
-            public static extern bool IsWindowVisible(IntPtr handle);
 
             [DllImport("user32.dll", SetLastError = true)]
             [return: MarshalAs(UnmanagedType.Bool)]
@@ -282,74 +263,6 @@ namespace StremioVideoCenterControls.Player
             public static extern bool EnumChildWindows(IntPtr hWndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
 
             public delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
-        }
-    }
-
-    // [EXIT-DIAG] (temporary diagnostics, removable as one unit): a single
-    // active "transition" at a time. Begin() starts it with a new id and
-    // stopwatch; Log() is a no-op while none is active, so only events
-    // inside the selector-replaces-player transition are recorded. Lines are
-    // fixed strings plus numbers/booleans only - never a URL, path, title
-    // or token. Never throws and never alters the caller's behaviour.
-    public static class ExitDiag
-    {
-        private static readonly object Gate = new object();
-        private static long _sequence;
-        private static string _id;
-        private static Stopwatch _watch;
-
-        public static string Begin(string evt)
-        {
-            string id;
-
-            lock (Gate)
-            {
-                _sequence++;
-                id = "X" + _sequence;
-                _id = id;
-                _watch = Stopwatch.StartNew();
-            }
-
-            Log(evt);
-            return id;
-        }
-
-        public static void End(string id, string evt)
-        {
-            Log(evt);
-
-            lock (Gate)
-            {
-                if (string.Equals(_id, id, StringComparison.Ordinal))
-                {
-                    _id = null;
-                    _watch = null;
-                }
-            }
-        }
-
-        public static void Log(string evt)
-        {
-            try
-            {
-                string id;
-                long elapsed;
-
-                lock (Gate)
-                {
-                    if (_id == null || _watch == null)
-                        return;
-
-                    id = _id;
-                    elapsed = _watch.ElapsedMilliseconds;
-                }
-
-                StremioVideoCenterLogger.Info("[EXIT-DIAG] " + id + " +" + elapsed + "ms " + evt);
-            }
-            catch (Exception)
-            {
-                // Diagnostics must never affect the exit path.
-            }
         }
     }
 }

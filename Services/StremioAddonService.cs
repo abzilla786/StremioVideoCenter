@@ -94,84 +94,10 @@ namespace StremioVideoCenter.Services
             // addon convention) - only the host is safe to write to a
             // plaintext log file.
 
-            // [STREAM-QUERY-DIAG] temporary timing around the unchanged
-            // download and parse calls. Diagnostic only.
-            DiagQueryContext diagCtx = DiagContext.Value;
-            Stopwatch diagDownloadWatch = Stopwatch.StartNew();
-
             string json =
                 await DownloadStringAsync(url, StreamTimeoutMs, cancellationToken);
 
-            diagDownloadWatch.Stop();
-
-            Stopwatch diagParseWatch = Stopwatch.StartNew();
-            List<StremioStream> diagParsed = null;
-
-            try
-            {
-                diagParsed = ParseStreams(json);
-            }
-            finally
-            {
-                diagParseWatch.Stop();
-
-                DiagLog(
-                    "[STREAM-QUERY-DIAG] {0} fetch downloadMs={1} parseMs={2} responseChars={3} responseUtf8Bytes={4} items={5}",
-                    diagCtx != null ? "B" + diagCtx.BatchId + ".Q" + diagCtx.QueryNumber : "(none)",
-                    diagDownloadWatch.ElapsedMilliseconds,
-                    diagParseWatch.ElapsedMilliseconds,
-                    json != null ? json.Length : 0,
-                    DiagUtf8Bytes(json),
-                    diagParsed != null ? diagParsed.Count : -1);
-            }
-
-            return diagParsed;
-        }
-
-        // TEMPORARY DIAGNOSTIC ([STREAM-QUERY-DIAG]). Carries the batch id and
-        // query number set by StremioAddonRegistry to the download/parse
-        // timing above, without changing any method signature.
-        internal sealed class DiagQueryContext
-        {
-            public DiagQueryContext(int batchId, int queryNumber, Stopwatch batchWatch)
-            {
-                BatchId = batchId;
-                QueryNumber = queryNumber;
-                BatchWatch = batchWatch;
-            }
-
-            public readonly int BatchId;
-            public readonly int QueryNumber;
-            public readonly Stopwatch BatchWatch;
-        }
-
-        internal static readonly AsyncLocal<DiagQueryContext> DiagContext =
-            new AsyncLocal<DiagQueryContext>();
-
-        // Formatting and writing happen inside the try, so a logging failure
-        // can never reach the stream path. Used for no other log line.
-        private static void DiagLog(string format, params object[] args)
-        {
-            try
-            {
-                StremioVideoCenterLogger.Info(string.Format(format, args));
-            }
-            catch (Exception)
-            {
-                // Diagnostic output is best-effort by design.
-            }
-        }
-
-        private static int DiagUtf8Bytes(string text)
-        {
-            try
-            {
-                return text == null ? 0 : Encoding.UTF8.GetByteCount(text);
-            }
-            catch (Exception)
-            {
-                return -1;
-            }
+            return ParseStreams(json);
         }
 
         // Slice 22: parses the "streams" array one entry at a time. The

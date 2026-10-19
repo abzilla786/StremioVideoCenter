@@ -155,7 +155,6 @@
     <Compile Include="Models\StremioVideoCenterConfiguration.cs" />
     <Compile Include="Models\AddonInstance.cs" />
     <Compile Include="Services\HeroRecommendationService.cs" />
-    <Compile Include="Services\OmdbService.cs" />
     <Compile Include="Services\SourceProviderGrouping.cs" />
     <Compile Include="Services\StremioAddonService.cs" />
     <Compile Include="Services\StremioAddonRegistry.cs" />
@@ -166,7 +165,6 @@
     <Compile Include="Services\PlaybackSourceNormalizationService.cs" />
     <Compile Include="Services\CatalogueService.cs" />
     <Compile Include="Services\CinemetaService.cs" />
-    <Compile Include="Services\AnimeFlvCatalogueService.cs" />
     <Compile Include="Services\CoreAddonSeedingService.cs" />
     <Compile Include="Services\KitsuService.cs" />
     <Compile Include="Models\LocalMediaModels.cs" />

@@ -40,15 +40,6 @@
             <!-- REAL-DEBRID SETTINGS                                       -->
             <!-- ========================================================= -->
             <!--
-                OMDb's settings section was removed in the Cinemeta-First
-                Addon Settings Architecture slice - it was confirmed dead
-                beyond this panel's own test button (never read by
-                CatalogueService/HeroRecommendationService/Home). OmdbApiKey
-                and OmdbService.cs themselves are left completely intact in
-                the backend per project rule (do not delete working code
-                that isn't proven safe to remove) - only the user-facing
-                controls are gone.
-
                 This Real-Debrid section is KEPT, not removed, even though
                 Torrentio/Comet manifest URLs can carry their own baked-in
                 RD keys. Re-audited in a later correction pass, specifically
@@ -185,7 +176,7 @@
                 Margin="0,20,0,8"/>
 
             <TextBlock
-                Text="Cinemeta, AnimeFLV, OpenSubtitles v3 and Local Files are installed automatically as Zino's core addons - see the Installed Addon Instances list below. Torrentio, Comet and AnimeSub+ are recommended providers configured entirely on their own page - Zino never reproduces that page. Open it, configure your preferences there, then paste the manifest URL it gives you back here. Re-pasting a new URL replaces the previous configuration; it never creates a duplicate entry."
+                Text="Cinemeta, OpenSubtitles v3 and Local Files are installed automatically as Zino's core addons - see the Installed Addon Instances list below. Torrentio, Comet and AnimeSub+ are recommended providers configured entirely on their own page - Zino never reproduces that page. Open it, configure your preferences there, then paste the manifest URL it gives you back here. Re-pasting a new URL replaces the previous configuration; it never creates a duplicate entry."
                 Opacity="0.65"
                 FontSize="11"
                 TextWrapping="Wrap"

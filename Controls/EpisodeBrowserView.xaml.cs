@@ -205,38 +205,17 @@ namespace StremioVideoCenterControls
 
             List<KitsuEpisodeResource> episodes;
 
-            // Slice 15 Phase 1 fix: targeted, temporary diagnostic
-            // logging to find where a 5-6 minute delay was actually
-            // happening (KitsuService.DownloadStringAsync has its own
-            // matching [KITSU-DIAG] Req# lines) - if this outer
-            // begin/end pair takes far longer than the sum of the
-            // Req# lines logged during it, the extra time is being
-            // lost somewhere in this method rather than inside
-            // KitsuService.
-            var diagStopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-            StremioVideoCenterLogger.Info(string.Format(
-                "[KITSU-DIAG] TryLoadFromKitsuAsync begin kitsuId={0}",
-                kitsuId));
-
             try
             {
                 episodes = await _kitsuService.GetEpisodesAsync(kitsuId);
-
-                StremioVideoCenterLogger.Info(string.Format(
-                    "[KITSU-DIAG] TryLoadFromKitsuAsync end reason=Success elapsedMs={0} episodeCount={1}",
-                    diagStopwatch.ElapsedMilliseconds,
-                    episodes != null ? episodes.Count : 0));
             }
             catch (Exception ex)
             {
                 // KitsuService itself is fail-soft (never throws) - this
                 // is a defensive backstop only, matching
                 // TryLoadFromCinemetaAsync's identical remark.
-                StremioVideoCenterLogger.Info(string.Format(
-                    "[KITSU-DIAG] TryLoadFromKitsuAsync end reason=Faulted elapsedMs={0} error={1}",
-                    diagStopwatch.ElapsedMilliseconds,
-                    ex.GetType().Name + ": " + ex.Message));
+                StremioVideoCenterLogger.Warn(
+                    "Loading Kitsu episodes failed: " + UserFacingErrors.ForLog(ex));
 
                 episodes = null;
             }

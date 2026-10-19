@@ -128,7 +128,6 @@ namespace StremioVideoCenter
     public class StremioVideoCenterSettings : ObservableObject
     {
         private int settingsSchemaVersion;
-        private string omdbApiKey = string.Empty;
         private string realDebridApiKey = string.Empty;
         private string stremioAddonUrls = string.Empty;
         private List<AddonInstance> addonInstances = new List<AddonInstance>();
@@ -164,16 +163,6 @@ namespace StremioVideoCenter
         {
             get => settingsSchemaVersion;
             set => SetValue(ref settingsSchemaVersion, value);
-        }
-
-        // =========================================================
-        // OMDB API CREDENTIAL
-        // =========================================================
-
-        public string OmdbApiKey
-        {
-            get => omdbApiKey;
-            set => SetValue(ref omdbApiKey, value);
         }
 
         // =========================================================
@@ -824,7 +813,7 @@ namespace StremioVideoCenter
             // Fresh-install / core-addon seeding. Runs here (the plugin
             // constructor's ISettings load, not just when the Settings
             // UI happens to be opened) so a fresh install actually has
-            // Cinemeta/AnimeFLV/OpenSubtitles v3/Local Files registered
+            // Cinemeta/OpenSubtitles v3/Local Files registered
             // the first time the user opens Video Center, not only after
             // they visit Settings. Idempotent - see
             // CoreAddonSeedingService and Settings.
@@ -906,7 +895,7 @@ namespace StremioVideoCenter
             // API credentials are optional at this stage.
             //
             // This allows the plugin to open even before the
-            // user has configured OMDb.
+            // user has configured a Real-Debrid key or any addon.
             return true;
         }
     }
