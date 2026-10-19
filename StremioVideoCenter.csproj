@@ -79,8 +79,14 @@
     <Compile Include="Controls\EpisodeBrowserView.xaml.cs">
       <DependentUpon>EpisodeBrowserView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\MovieDetailsView.xaml.cs">
+      <DependentUpon>MovieDetailsView.xaml</DependentUpon>
+    </Compile>
     <Compile Include="Controls\LocalMediaView.xaml.cs">
       <DependentUpon>LocalMediaView.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Controls\FolderBrowserView.xaml.cs">
+      <DependentUpon>FolderBrowserView.xaml</DependentUpon>
     </Compile>
     <Compile Include="Controls\HistoryView.xaml.cs">
       <DependentUpon>HistoryView.xaml</DependentUpon>
@@ -103,6 +109,8 @@
     <Compile Include="Controls\ProfileSelectionView.xaml.cs">
       <DependentUpon>ProfileSelectionView.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Controls\DragScroll.cs" />
+    <Compile Include="Controls\Player\Menus\SubtitlePage.cs" />
     <Compile Include="Controls\Player\Menus\SettingsMenu.xaml.cs">
       <DependentUpon>SettingsMenu.xaml</DependentUpon>
     </Compile>
@@ -117,6 +125,7 @@
     <Compile Include="Controls\Player\StartupTrace.cs" />
     <Compile Include="Models\MpvTrackInfo.cs" />
     <Compile Include="Models\TrackLabels.cs" />
+    <Compile Include="Models\SubtitleOption.cs" />
     <Compile Include="Models\TrackMenuLayout.cs" />
     <Compile Include="Models\PlaybackTracks.cs" />
     <Compile Include="Services\MpvTrackParser.cs" />
@@ -146,7 +155,7 @@
     <Compile Include="Models\StremioVideoCenterConfiguration.cs" />
     <Compile Include="Models\AddonInstance.cs" />
     <Compile Include="Services\HeroRecommendationService.cs" />
-    <Compile Include="Services\OmdbService.cs" />
+    <Compile Include="Services\SourceProviderGrouping.cs" />
     <Compile Include="Services\StremioAddonService.cs" />
     <Compile Include="Services\StremioAddonRegistry.cs" />
     <Compile Include="Services\StremioContentDiscoveryService.cs" />
@@ -156,13 +165,17 @@
     <Compile Include="Services\PlaybackSourceNormalizationService.cs" />
     <Compile Include="Services\CatalogueService.cs" />
     <Compile Include="Services\CinemetaService.cs" />
-    <Compile Include="Services\AnimeFlvCatalogueService.cs" />
     <Compile Include="Services\CoreAddonSeedingService.cs" />
     <Compile Include="Services\KitsuService.cs" />
     <Compile Include="Models\LocalMediaModels.cs" />
     <Compile Include="Services\LocalMediaIdentificationService.cs" />
     <Compile Include="Services\LocalMediaScanService.cs" />
     <Compile Include="Services\LocalLibraryService.cs" />
+    <Compile Include="Services\LocalMediaIndexStore.cs" />
+    <Compile Include="Services\LocalMediaMatchingService.cs" />
+    <Compile Include="Services\LocalLibraryBrowse.cs" />
+    <Compile Include="Services\LocalLibraryManager.cs" />
+    <Compile Include="Services\FolderBrowserService.cs" />
     <Compile Include="Services\ProfileService.cs" />
     <Compile Include="Models\UserProfile.cs" />
     <Compile Include="Models\WatchStateEntry.cs" />
@@ -176,6 +189,11 @@
     <Compile Include="Models\EpisodeNavigation.cs" />
     <Compile Include="Services\ResumePlanner.cs" />
     <Compile Include="Services\UserFacingErrors.cs" />
+    <Compile Include="Services\AddonManifestRefreshService.cs" />
+    <Compile Include="Services\AddonResourceQueryService.cs" />
+    <Compile Include="Services\BoundedHttp.cs" />
+    <Compile Include="Services\LogFileRedactor.cs" />
+    <Compile Include="Services\SubtitleDiscoveryService.cs" />
     <Compile Include="Models\PlaybackContext.cs" />
     <Compile Include="Models\SavedSourceReference.cs" />
     <Compile Include="Models\WatchHistoryEntry.cs" />
@@ -200,6 +218,7 @@
     <None Include="extension.yaml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="InstallerManifest.yaml" />
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
@@ -229,7 +248,15 @@
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>
+    <Page Include="Controls\MovieDetailsView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
     <Page Include="Controls\LocalMediaView.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Controls\FolderBrowserView.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
     </Page>

@@ -17,8 +17,7 @@ namespace StremioVideoCenterControls
 {
     // =============================================================
     // ANIME BROWSE VIEW (Slice 15 - dedicated Anime page; Slice 17 -
-    // Kitsu locked in as Zino's permanent anime provider; Slice 17
-    // UI/navigation fixes - AnimeFLV section removed)
+    // Kitsu locked in as Zino's permanent anime provider)
     // =============================================================
     //
     // A single content area: BROWSE ANIME (Kitsu) - a combinable,
@@ -32,13 +31,7 @@ namespace StremioVideoCenterControls
     // (see RegisterDiscoveredCategories) - Kitsu has no dedicated
     // categories-listing endpoint in its documented API.
     //
-    // The previous "Browse AnimeFLV" genre/search section (a browser
-    // against AnimeFlvCatalogueService's own catalogs) has been removed
-    // from this page per the Slice 17 UI/navigation fix request - the
-    // Anime page is now Kitsu-only. AnimeFlvCatalogueService itself and
-    // its addon registration are untouched (this removal is scoped to
-    // this page's UI only - see that class for where it may still be
-    // used elsewhere).
+    // The Anime page is Kitsu-only.
     //
     // Same overlay conventions as CatalogueBrowseView/EpisodeBrowserView/
     // SourceSelectorView - Closed/MediaSelected events bridged into an
@@ -94,6 +87,9 @@ namespace StremioVideoCenterControls
         {
             InitializeComponent();
 
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(PageScrollViewer, DragScrollAxis.Vertical);
+
             // Catches the bubbling MediaCard.SelectedEvent from the raw
             // MediaCards inside KitsuBrowseItemsControl - see
             // CatalogueBrowseView's identical remark on
@@ -128,10 +124,7 @@ namespace StremioVideoCenterControls
         // =========================================================
         //
         // Takes no CatalogueService - Kitsu (via BrowseAnimeAsync) is now
-        // the sole source for this page. Slice 17 UI/navigation fixes:
-        // no longer takes an AnimeFlvCatalogueService either - the
-        // "Browse AnimeFLV" section has been removed from this page (see
-        // class remarks).
+        // the sole source for this page.
         public void Initialize(KitsuService kitsuService)
         {
             if (kitsuService == null)
@@ -328,7 +321,7 @@ namespace StremioVideoCenterControls
             }
             catch
             {
-                result = new KitsuBrowseResult { Items = new List<KitsuAnimeResource>(), TotalCount = 0 };
+                result = new KitsuBrowseResult { Items = new List<KitsuAnimeResource>(), TotalCount = 0, Failed = true };
             }
 
             if (loadToken != _kitsuBrowseLoadToken)
@@ -356,18 +349,30 @@ namespace StremioVideoCenterControls
             }
 
             _kitsuBrowseOffset = requestOffset + page.Count;
-            _kitsuBrowseTotalCount = result?.TotalCount ?? _kitsuBrowseItems.Count;
+
+            // Slice 21 (F9): a failed request keeps the known total (it used
+            // to be overwritten with 0, which hid Load More and left no way
+            // to retry), and is reported as a failure rather than as "no
+            // anime found".
+            bool failed = result != null && result.Failed;
+
+            if (!failed)
+            {
+                _kitsuBrowseTotalCount = result?.TotalCount ?? _kitsuBrowseItems.Count;
+            }
 
             bool hasAny = _kitsuBrowseItems.Count > 0;
+            KitsuBrowseEmptyText.Text = failed
+                ? "Couldn't load anime right now. Check your connection, then choose Apply Filters to try again."
+                : "No anime found for these filters.";
             KitsuBrowseEmptyText.Visibility = hasAny ? Visibility.Collapsed : Visibility.Visible;
 
             // Real pagination against Kitsu's own meta.count total (see
-            // KitsuBrowseResult) - unlike AnimeFLV's own short-page
-            // heuristic (that addon exposes no total-count field), Kitsu
-            // does, so this only offers another page when one actually
-            // exists.
+            // KitsuBrowseResult) - so this only offers another page when
+            // one actually exists.
+            KitsuBrowseLoadMoreButton.Content = failed ? "Try Again" : "Load More";
             KitsuBrowseLoadMoreButton.Visibility =
-                (hasAny && _kitsuBrowseOffset < _kitsuBrowseTotalCount) ? Visibility.Visible : Visibility.Collapsed;
+                (hasAny && (failed || _kitsuBrowseOffset < _kitsuBrowseTotalCount)) ? Visibility.Visible : Visibility.Collapsed;
             KitsuBrowseLoadMoreButton.IsEnabled = true;
 
             _isLoadingKitsuBrowse = false;
@@ -625,7 +630,7 @@ namespace StremioVideoCenterControls
             // page out from under it - same reasoning, and the same
             // precedent (CatalogueBrowseView_PreviewKeyDown's identical
             // Escape case), as Movie/TV's filter bar. This page has no
-            // text-entry control (removed along with AnimeFLV), so Escape
+            // text-entry control, so Escape
             // is otherwise still intercepted unconditionally.
             if (e.Key == Key.Escape)
             {
@@ -878,9 +883,6 @@ namespace StremioVideoCenterControls
         //
         //   Header row -> Kitsu filter combos -> Kitsu category chips ->
         //   Apply Filters button -> Kitsu results grid -> Load More
-        //
-        // (The AnimeFLV grid that used to sit after the Kitsu grid is
-        // gone along with the rest of that section - see class remarks.)
         //
         // Filter controls fix: Load More is now wired into this custom
         // Up/Down chain (Down out of the grid's last row when Load More
@@ -1447,8 +1449,7 @@ namespace StremioVideoCenterControls
             FocusKitsuCategoryToggle(targetRowIndices[targetColumn]);
         }
 
-        // Same estimated-columns-per-row approach as used for AnimeFLV's
-        // own card grid, before that section was removed - valid here
+        // Estimated-columns-per-row approach - valid here
         // because MediaCard (unlike the category chips above) has a
         // fixed width.
         private int GetKitsuColumnsPerRow()

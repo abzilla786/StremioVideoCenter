@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
@@ -17,6 +19,15 @@ namespace StremioVideoCenter.Services
         private readonly string _pipeName;
         private Process _process;
         private bool _disposed;
+
+        // Slice 22: Windows Job Object (kill-on-close) owned by this
+        // instance and holding only the mpv process this instance started.
+        // It never terminates mpv while Zino is running - the handle stays
+        // open for the whole life of the process - and exists only so that
+        // if Playnite is killed or crashes (so no cleanup code runs) the OS
+        // closes the handle and ends the orphaned mpv. Best-effort: if the
+        // job cannot be created or assigned, playback is unaffected.
+        private IntPtr _jobHandle = IntPtr.Zero;
 
         public MpvProcessService()
         {
@@ -52,7 +63,74 @@ namespace StremioVideoCenter.Services
         // stay unique per instance, but the log filename need not be.
         public string LogFilePath
         {
+            get { return DefaultLogFilePath; }
+        }
+
+        private static string DefaultLogFilePath
+        {
             get { return Path.Combine(Path.GetTempPath(), "StremioVideoCenter_Mpv.log"); }
+        }
+
+        // Slice 20 Stage 1A: called once when the plugin starts. A log left
+        // by an earlier run that never reached the exit-time redaction
+        // (crash, Playnite killed) is redacted on a background thread so
+        // plugin startup is never delayed. A missing or locked log is
+        // simply skipped; the diagnostics written here are fixed text plus
+        // an exception type name and never include log contents or paths.
+        public static void RedactStaleLogBestEffort()
+        {
+            try
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        if (!LogFileRedactor.RedactInPlace(DefaultLogFilePath, true))
+                        {
+                            StremioVideoCenterLogger.Warn(
+                                "Stale MPV log could not be redacted at startup (file in use or not accessible); it will be retried at the next player start.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        StremioVideoCenterLogger.Warn(
+                            "Stale MPV log redaction at startup failed: " + ex.GetType().Name);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "Stale MPV log redaction could not be scheduled: " + ex.GetType().Name);
+            }
+        }
+
+        // Slice 20 Stage 1A: mpv writes its own log, and that log contains
+        // the stream URL (which can embed a Real-Debrid key or signed
+        // token), subtitle URLs and full local paths.
+        //
+        // The URLs and paths cannot be prevented: mpv's curl and
+        // stream_callback modules log every URL they open, its player core
+        // logs the loadfile command and "Opening done" line, and option
+        // values such as the log path appear too (--msg-level does not
+        // filter the --log-file output - verified at runtime). So the log
+        // is rewritten with URLs and paths removed once mpv has exited,
+        // at the next player start, and at plugin start, for a log left by
+        // a crash. Everything else in the log
+        // (timestamps, levels, modules, codec, track, renderer, audio and
+        // error lines) is kept as written.
+        //
+        // Never throws. If mpv still has the file open the rewrite is
+        // skipped and retried at the next start.
+        private void RedactLog()
+        {
+            bool clean = LogFileRedactor.RedactInPlace(LogFilePath, true);
+
+            if (!clean)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "The MPV log could not be redacted yet (file in use); it will be redacted at the next player start.");
+            }
         }
 
         // Launches mpv.exe embedded into hostHandle and connects the JSON IPC
@@ -71,6 +149,11 @@ namespace StremioVideoCenter.Services
             }
 
             string workingDirectory = Path.GetDirectoryName(executablePath);
+
+            // A log left behind by an earlier run (for example after a
+            // crash, when the exit-time redaction below never ran) is
+            // cleaned before anything else touches it.
+            RedactLog();
 
             _process = new Process
             {
@@ -104,6 +187,8 @@ namespace StremioVideoCenter.Services
 
             if (!_process.Start())
                 throw new InvalidOperationException("Unable to start mpv.exe.");
+
+            AttachProcessToKillOnCloseJob(_process);
 
             NamedPipeClientStream pipe = new NamedPipeClientStream(
                 ".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
@@ -142,6 +227,29 @@ namespace StremioVideoCenter.Services
             string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
             string currentDirectory = Environment.CurrentDirectory;
 
+            // Slice 22: the mpv bundled with THIS plugin comes first, so a
+            // stray mpv folder next to Playnite's own executable (or in its
+            // current directory) cannot shadow it. The other locations stay
+            // as fallbacks in their previous order.
+            string pluginDirectory = null;
+
+            try
+            {
+                pluginDirectory = Path.GetDirectoryName(typeof(MpvProcessService).Assembly.Location);
+            }
+            catch (Exception)
+            {
+                pluginDirectory = null;
+            }
+
+            if (!string.IsNullOrEmpty(pluginDirectory))
+            {
+                string pluginLocal = Path.Combine(pluginDirectory, "mpv", "mpv.exe");
+
+                if (IsUsableExecutable(pluginLocal))
+                    return Path.GetFullPath(pluginLocal);
+            }
+
             string[] candidates =
             {
                 Path.Combine(baseDirectory, "mpv", "mpv.exe"),
@@ -154,11 +262,140 @@ namespace StremioVideoCenter.Services
 
             foreach (string candidate in candidates)
             {
-                if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+                if (!string.IsNullOrWhiteSpace(candidate) && IsUsableExecutable(candidate))
                     return Path.GetFullPath(candidate);
             }
 
             return null;
+        }
+
+        // Exists and is not an empty/truncated file (a partially copied
+        // mpv.exe). Not a signature check - only a cheap sanity filter.
+        private static bool IsUsableExecutable(string path)
+        {
+            try
+            {
+                FileInfo info = new FileInfo(path);
+                return info.Exists && info.Length > 0;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        // =========================================================
+        // KILL-ON-CLOSE JOB OBJECT (orphan protection)
+        // =========================================================
+
+        private const int JobObjectExtendedLimitInformationClass = 9;
+        private const uint JobObjectLimitKillOnJobClose = 0x00002000;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobBasicLimitInformation
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobIoCounters
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobExtendedLimitInformation
+        {
+            public JobBasicLimitInformation BasicLimitInformation;
+            public JobIoCounters IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateJobObject(IntPtr securityAttributes, string name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetInformationJobObject(
+            IntPtr job, int infoClass, IntPtr info, uint infoLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        // Never throws. Only the process this instance just started is
+        // assigned; no other process is touched.
+        private void AttachProcessToKillOnCloseJob(Process process)
+        {
+            IntPtr job = IntPtr.Zero;
+            IntPtr infoPointer = IntPtr.Zero;
+
+            try
+            {
+                job = CreateJobObject(IntPtr.Zero, null);
+
+                if (job == IntPtr.Zero)
+                    throw new InvalidOperationException("CreateJobObject failed.");
+
+                JobExtendedLimitInformation info = new JobExtendedLimitInformation();
+                info.BasicLimitInformation.LimitFlags = JobObjectLimitKillOnJobClose;
+
+                int length = Marshal.SizeOf(typeof(JobExtendedLimitInformation));
+                infoPointer = Marshal.AllocHGlobal(length);
+                Marshal.StructureToPtr(info, infoPointer, false);
+
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformationClass, infoPointer, (uint)length))
+                    throw new InvalidOperationException("SetInformationJobObject failed.");
+
+                if (!AssignProcessToJobObject(job, process.Handle))
+                    throw new InvalidOperationException("AssignProcessToJobObject failed.");
+
+                _jobHandle = job;
+                job = IntPtr.Zero;
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Warn(
+                    "MPV orphan protection (job object) could not be set up; playback is unaffected: " +
+                    ex.GetType().Name + " " + ex.Message);
+            }
+            finally
+            {
+                if (infoPointer != IntPtr.Zero)
+                    Marshal.FreeHGlobal(infoPointer);
+
+                if (job != IntPtr.Zero)
+                    CloseHandle(job);
+            }
+        }
+
+        private void CloseJob()
+        {
+            IntPtr job = _jobHandle;
+            _jobHandle = IntPtr.Zero;
+
+            if (job != IntPtr.Zero)
+                CloseHandle(job);
         }
 
         // Waits up to timeoutMilliseconds for mpv to exit on its own (e.g.
@@ -199,6 +436,14 @@ namespace StremioVideoCenter.Services
 
             try { _process?.Dispose(); } catch { }
             _process = null;
+
+            // The process this job protected is gone (or was killed above);
+            // closing the handle now cannot affect anything else.
+            CloseJob();
+
+            // mpv has exited (or the wait above timed out, in which case
+            // RedactLog leaves the still-open file for the next start).
+            RedactLog();
         }
 
         // Best-effort, bounded confirmation that a killed process has actually

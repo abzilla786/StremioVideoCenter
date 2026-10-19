@@ -59,8 +59,13 @@ namespace StremioVideoCenter.Services
                     ? await LoadKitsuAsync(showStremioId)
                     : await LoadCinemetaAsync(showStremioId);
             }
-            catch
+            catch (Exception ex)
             {
+                // Recovery unchanged (no list, so no Previous/Next), but
+                // the failure is now logged. Only the show id is logged.
+                Playnite.SDK.LogManager.GetLogger().Warn(
+                    "EpisodeListService: failed to load the episode list for " + showStremioId + ". " +
+                    UserFacingErrors.ForLog(ex));
                 list = null;
             }
 

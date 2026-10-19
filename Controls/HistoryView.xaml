@@ -92,31 +92,49 @@
         <!-- CONTENT                                                    -->
         <!-- ========================================================= -->
         <!--
-            Slice 16C: a single MediaSection reusing the exact same
-            row/card rendering path Home already uses (no new card UI,
-            no new grid). Since History has no per-row "More" concept and
-            can hold up to 200 entries, the section's own horizontal
-            scroll is what carries the extra entries - the same way any
-            Home row already handles more items than fit on screen.
+            Slice 21: a vertically scrolling WrapPanel grid of raw
+            MediaCards - the same pattern as MyListView's
+            ResultsItemsControl, CatalogueBrowseView's
+            FilteredItemsControl and AnimeBrowseView's
+            KitsuBrowseItemsControl (replaces the Slice 16C single
+            horizontal MediaSection). Vertical DragScroll is attached to
+            PageScrollViewer in the code-behind.
         -->
 
-        <Grid Grid.Row="1" Margin="32,0,32,32">
+        <ScrollViewer x:Name="PageScrollViewer"
+                      Grid.Row="1"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="32,0,32,40">
 
-            <controls:MediaSection x:Name="HistorySection"
-                                    Title="Watched"
-                                    VerticalAlignment="Top" />
+                <ItemsControl x:Name="ResultsItemsControl" Focusable="False">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <controls:MediaCard Focusable="True"
+                                                IsTabStop="False"
+                                                FocusVisualStyle="{x:Null}"
+                                                DataContext="{Binding}" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
 
-            <TextBlock x:Name="EmptyStateText"
-                       Text="Nothing watched yet. Content you play will appear here."
-                       Foreground="#AAAAAA"
-                       FontSize="16"
-                       TextWrapping="Wrap"
-                       HorizontalAlignment="Left"
-                       VerticalAlignment="Top"
-                       MaxWidth="640"
-                       Visibility="Collapsed" />
+                <TextBlock x:Name="EmptyStateText"
+                           Text="Nothing watched yet. Content you play will appear here."
+                           Foreground="#AAAAAA"
+                           FontSize="16"
+                           TextWrapping="Wrap"
+                           HorizontalAlignment="Left"
+                           MaxWidth="640"
+                           Margin="8,20,8,0"
+                           Visibility="Collapsed" />
 
-        </Grid>
+            </StackPanel>
+        </ScrollViewer>
 
     </Grid>
 

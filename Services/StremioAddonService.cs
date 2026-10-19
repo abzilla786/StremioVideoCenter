@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Runtime.Serialization;
@@ -7,6 +8,7 @@ using System.Runtime.Serialization.Json;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using StremioVideoCenter.Models;
 
@@ -32,13 +34,14 @@ namespace StremioVideoCenter.Services
         // GET MANIFEST
         // =========================================================
 
-        public async Task<StremioAddonManifest> GetManifestAsync()
+        public async Task<StremioAddonManifest> GetManifestAsync(
+            CancellationToken cancellationToken = default(CancellationToken))
         {
             string url =
                 _addonUrl + "/manifest.json";
 
             string json =
-                await DownloadStringAsync(url);
+                await DownloadStringAsync(url, ManifestTimeoutMs, cancellationToken);
 
             StremioAddonManifest manifest =
                 Deserialize<StremioAddonManifest>(json);
@@ -60,16 +63,11 @@ namespace StremioVideoCenter.Services
         // GET STREAMS
         // =========================================================
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the AddonSvc# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagAddonSvcSeq;
-
         public async Task<List<StremioStream>> GetStreamsAsync(
             string type,
-            string id)
+            string id,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
-            int diagSeq = Interlocked.Increment(ref _diagAddonSvcSeq);
 
             if (string.IsNullOrWhiteSpace(type))
             {
@@ -89,44 +87,141 @@ namespace StremioVideoCenter.Services
                 Uri.EscapeDataString(id) +
                 ".json";
 
-            DateTime diagCallStart = DateTime.UtcNow;
-
             // SECURITY: never log the full addon URL. Per
             // StremioAddonRegistry's own remarks, a Real-Debrid-
             // configured addon's manifest/base URL can carry the user's
             // RD key embedded in the URL path itself (a common Stremio
             // addon convention) - only the host is safe to write to a
             // plaintext log file.
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] AddonSvc#{0} time={1:HH:mm:ss.fff} awaiting DownloadStringAsync host={2} type={3} id={4}",
-                    diagSeq,
-                    diagCallStart,
-                    RedactUrlHostForLogging(url),
-                    type,
-                    id));
 
             string json =
-                await DownloadStringAsync(url);
+                await DownloadStringAsync(url, StreamTimeoutMs, cancellationToken);
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] AddonSvc#{0} time={1:HH:mm:ss.fff} DownloadStringAsync returned elapsedMs={2} responseLength={3}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    (DateTime.UtcNow - diagCallStart).TotalMilliseconds,
-                    json != null ? json.Length : 0));
+            return ParseStreams(json);
+        }
 
-            StremioStreamResponse response =
-                Deserialize<StremioStreamResponse>(json);
+        // Slice 22: parses the "streams" array one entry at a time. The
+        // previous whole-document DataContractJsonSerializer pass failed the
+        // ENTIRE response when a single entry had one field of an
+        // unexpected type (for example a string "fileIdx"), which discarded
+        // every other usable stream from that addon. Here a malformed entry
+        // is skipped on its own and counted; the rest are kept. A response
+        // that is not JSON at all, or not an object, still throws/returns
+        // empty exactly as before, so the registry's per-addon handling is
+        // unchanged. Field names and meanings come from the same
+        // [DataContract] model as before (Newtonsoft honours it).
+        internal static List<StremioStream> ParseStreams(string json)
+        {
+            List<StremioStream> result = new List<StremioStream>();
 
-            if (response == null ||
-                response.Streams == null)
+            if (string.IsNullOrWhiteSpace(json))
             {
-                return new List<StremioStream>();
+                return result;
             }
 
-            return response.Streams;
+            JObject root = JToken.Parse(json) as JObject;
+
+            if (root == null)
+            {
+                return result;
+            }
+
+            JArray entries = root["streams"] as JArray;
+
+            if (entries == null)
+            {
+                return result;
+            }
+
+            int skipped = 0;
+
+            foreach (JToken entry in entries)
+            {
+                if (entry == null || entry.Type != JTokenType.Object)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    StremioStream stream = entry.ToObject<StremioStream>();
+
+                    if (stream == null)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    result.Add(stream);
+                }
+                catch (Exception)
+                {
+                    // Any conversion failure for this one entry (wrong
+                    // field type, out-of-range number): skipped and
+                    // counted below, never silently ignored.
+                    skipped++;
+                }
+            }
+
+            if (skipped > 0)
+            {
+                // Count only: no entry content, name or URL is logged.
+                StremioVideoCenterLogger.Info(
+                    "An addon response contained " + skipped +
+                    " stream entr" + (skipped == 1 ? "y" : "ies") +
+                    " that could not be read; the remaining entries were kept.");
+            }
+
+            return result;
+        }
+
+        // =========================================================
+        // GET GENERIC RESOURCE (Slice 20 Stage 1B)
+        // =========================================================
+        //
+        // Fetches the raw JSON for any non-stream resource
+        // (<base>/<resource>/<type>/<id>.json - e.g. "subtitles"). Only the
+        // request is built and bounded here; the response is returned
+        // unparsed so each provider's own schema is handled by its own
+        // parser. GetStreamsAsync above is deliberately not routed
+        // through this method.
+        public Task<string> GetResourceJsonAsync(
+            string resource,
+            string type,
+            string id,
+            int timeoutMs,
+            CancellationToken cancellationToken = default(CancellationToken))
+        {
+            if (string.IsNullOrWhiteSpace(resource) ||
+                string.IsNullOrWhiteSpace(type) ||
+                string.IsNullOrWhiteSpace(id))
+            {
+                throw new ArgumentException("Resource, type and id are required.");
+            }
+
+            // The resource name becomes a path segment, so only the
+            // protocol's own simple names (letters, digits, underscore)
+            // are accepted.
+            foreach (char c in resource)
+            {
+                if (!(char.IsLetterOrDigit(c) || c == '_'))
+                {
+                    throw new ArgumentException("Invalid resource name.", nameof(resource));
+                }
+            }
+
+            string url =
+                _addonUrl +
+                "/" +
+                resource +
+                "/" +
+                Uri.EscapeDataString(type) +
+                "/" +
+                Uri.EscapeDataString(id) +
+                ".json";
+
+            return DownloadStringAsync(url, timeoutMs, cancellationToken);
         }
 
         // =========================================================
@@ -176,47 +271,71 @@ namespace StremioVideoCenter.Services
         }
 
         // =========================================================
-        // DIAGNOSTIC URL REDACTION (Part 2, controller-A-delay
-        // investigation)
+        // LOG-SAFE URL REDACTION
         // =========================================================
         //
-        // Host-only, for the AddonSvc# diagnostic log lines above. Never
+        // Host-only, for log lines. Never
         // used for anything other than logging - the real _addonUrl and
         // the constructed request url are always used unredacted for the
         // actual HTTP call.
-        private static string RedactUrlHostForLogging(string url)
+        // Returns ONLY the host name (e.g. "torrentio.strem.fun") - never
+        // the scheme, port, user info, path or query, which is where an
+        // addon's configuration and any embedded key live. Anything that is
+        // not an http(s) URL with a host yields "(unparseable)". Also used
+        // by StremioAddonRegistry for its addon diagnostics.
+        // Name used in diagnostics for an addon: its friendly name, or - when
+        // that name is itself an http(s) URL (an addon added by URL and never
+        // renamed) - only the host name. Never the scheme, path or query,
+        // where an addon's configuration and any embedded key live.
+        internal static string SafeLogName(string friendlyName)
         {
-            try
+            if (string.IsNullOrWhiteSpace(friendlyName))
             {
-                var uri = new Uri(url);
-                return uri.Scheme + "://" + uri.Host;
+                return "(unnamed)";
             }
-            catch
+
+            if (friendlyName.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                friendlyName.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
-                return "(unparseable)";
+                return RedactUrlHostForLogging(friendlyName);
             }
+
+            return friendlyName;
+        }
+
+        internal static string RedactUrlHostForLogging(string url)
+        {
+            Uri uri;
+
+            if (Uri.TryCreate(url, UriKind.Absolute, out uri) &&
+                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
+                !string.IsNullOrEmpty(uri.Host))
+            {
+                return uri.Host;
+            }
+
+            return "(unparseable)";
         }
 
         // =========================================================
         // HTTP DOWNLOAD
         // =========================================================
 
-        private async Task<string> DownloadStringAsync(
-            string url)
+        //
+        // Slice 20 Stage 1A: every request is bounded and cancellable via
+        // BoundedHttp instead of WebClient's ~100s default. Stream addons
+        // (scrapers, debrid-backed providers) can legitimately be slow, so
+        // their bound is the longer of the two; manifests are small static
+        // documents.
+        private const int ManifestTimeoutMs = 15000;
+        private const int StreamTimeoutMs = 45000;
+
+        private Task<string> DownloadStringAsync(
+            string url,
+            int timeoutMs,
+            CancellationToken cancellationToken)
         {
-            return await Task.Run(() =>
-            {
-                ServicePointManager.SecurityProtocol =
-                    SecurityProtocolType.Tls12;
-
-                using (var client = new WebClient())
-                {
-                    client.Headers[HttpRequestHeader.UserAgent] =
-                        "StremioVideoCenter/1.0";
-
-                    return client.DownloadString(url);
-                }
-            });
+            return BoundedHttp.DownloadStringAsync(url, timeoutMs, cancellationToken);
         }
 
         // =========================================================

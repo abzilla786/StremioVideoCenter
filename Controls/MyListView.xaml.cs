@@ -71,6 +71,9 @@ namespace StremioVideoCenterControls
         {
             InitializeComponent();
 
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(PageScrollViewer, DragScrollAxis.Vertical);
+
             // Catches the bubbling MediaCard.SelectedEvent raised by the
             // raw MediaCards inside ResultsItemsControl - same convention
             // CatalogueBrowseView/AnimeBrowseView already use for their

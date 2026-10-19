@@ -8,16 +8,19 @@ namespace StremioVideoCenter.Services
     //      /     \
     //   Movie    TV / Anime
     //     |         |
-    //   Source    Episode Selector
-    //   Selector      |
+    //   Movie     Episode Selector
+    //   Details       |
     //     |        Source Selector
-    //   Player        |
-    //               Player
+    //   Source        |
+    //   Selector    Player
+    //     |
+    //   Player
     public enum NavScreen
     {
         ProfileSelector,
         Home,
         EpisodeSelector,
+        MovieDetails,
         SourceSelector,
         Player
     }
@@ -55,9 +58,19 @@ namespace StremioVideoCenter.Services
                     return new BackResult(NavScreen.SourceSelector, false);
 
                 case NavScreen.SourceSelector:
+                    // A movie's Source Selector sits on top of its Movie
+                    // Details page (Slice 19B); an episode's on top of the
+                    // Episode Selector.
                     return new BackResult(
-                        isEpisodeContent ? NavScreen.EpisodeSelector : NavScreen.Home,
+                        isEpisodeContent ? NavScreen.EpisodeSelector : NavScreen.MovieDetails,
                         false);
+
+                case NavScreen.MovieDetails:
+                    // Movie Details is a modal overlay over whichever screen
+                    // opened it (Home, Search, My List, History...). Back
+                    // simply uncovers that screen, so the target is "wherever
+                    // the user came from" - Home is the hierarchy's parent.
+                    return new BackResult(NavScreen.Home, false);
 
                 case NavScreen.EpisodeSelector:
                     return new BackResult(NavScreen.Home, false);

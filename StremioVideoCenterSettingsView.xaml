@@ -30,7 +30,7 @@
             <!-- ========================================================= -->
 
             <TextBlock
-                Text="Stremio Video Center"
+                Text="Zino's Media Center"
                 FontWeight="Bold"
                 FontSize="16"
                 Margin="0,0,0,20"/>
@@ -40,15 +40,6 @@
             <!-- REAL-DEBRID SETTINGS                                       -->
             <!-- ========================================================= -->
             <!--
-                OMDb's settings section was removed in the Cinemeta-First
-                Addon Settings Architecture slice - it was confirmed dead
-                beyond this panel's own test button (never read by
-                CatalogueService/HeroRecommendationService/Home). OmdbApiKey
-                and OmdbService.cs themselves are left completely intact in
-                the backend per project rule (do not delete working code
-                that isn't proven safe to remove) - only the user-facing
-                controls are gone.
-
                 This Real-Debrid section is KEPT, not removed, even though
                 Torrentio/Comet manifest URLs can carry their own baked-in
                 RD keys. Re-audited in a later correction pass, specifically
@@ -185,7 +176,7 @@
                 Margin="0,20,0,8"/>
 
             <TextBlock
-                Text="Cinemeta, AnimeFLV, OpenSubtitles, OpenSubtitles v3 and Local Files are installed automatically as Zino's core addons - see the Installed Addon Instances list below. Torrentio and Comet are recommended stream providers configured entirely on their own page - Zino never reproduces that page. Open it, configure your preferences there, then paste the manifest URL it gives you back here. Re-pasting a new URL replaces the previous configuration; it never creates a duplicate entry."
+                Text="Cinemeta, OpenSubtitles v3 and Local Files are installed automatically as Zino's core addons - see the Installed Addon Instances list below. Torrentio, Comet and AnimeSub+ are recommended providers configured entirely on their own page - Zino never reproduces that page. Open it, configure your preferences there, then paste the manifest URL it gives you back here. Re-pasting a new URL replaces the previous configuration; it never creates a duplicate entry."
                 Opacity="0.65"
                 FontSize="11"
                 TextWrapping="Wrap"
@@ -307,6 +298,64 @@
                 FontSize="11"
                 TextWrapping="Wrap"/>
 
+            <!-- AnimeSub+ (same Recommended pattern as Torrentio/Comet) -->
+            <TextBlock
+                Text="AnimeSub+"
+                FontWeight="SemiBold"
+                Margin="0,0,0,4"/>
+
+            <TextBlock
+                Text="Anime stream discovery, with subtitle options where your configuration and its providers offer them. Configured on its own page; not every title will have sources or external subtitles."
+                Opacity="0.65"
+                FontSize="11"
+                TextWrapping="Wrap"
+                Margin="0,0,0,4"/>
+
+            <TextBlock
+                x:Name="AnimeSubCurrentStatus"
+                Text="Not configured."
+                Opacity="0.6"
+                FontSize="11"
+                Margin="0,0,0,6"/>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                <Button
+                    x:Name="AnimeSubConfigureButton"
+                    Content="Configure &amp; Install..."
+                    Width="190"
+                    Height="28"
+                    HorizontalAlignment="Left"
+                    Click="AnimeSubConfigure_Click"/>
+                <Button
+                    x:Name="AnimeSubRemoveButton"
+                    Content="Remove"
+                    Width="90"
+                    Height="28"
+                    Margin="6,0,0,0"
+                    Visibility="Collapsed"
+                    Click="AnimeSubRemove_Click"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                <TextBox
+                    x:Name="AnimeSubManifestUrlBox"
+                    Width="380"
+                    Height="26"/>
+                <Button
+                    x:Name="AnimeSubInstallButton"
+                    Content="Install"
+                    Width="90"
+                    Height="26"
+                    Margin="6,0,0,0"
+                    Click="AnimeSubInstall_Click"/>
+            </StackPanel>
+
+            <TextBlock
+                x:Name="AnimeSubInstallStatus"
+                Margin="0,4,0,16"
+                FontSize="11"
+                TextWrapping="Wrap"/>
+
             <!-- Custom -->
             <TextBlock
                 Text="Other Addons"
@@ -343,13 +392,15 @@
             <!-- Installed instances -->
             <TextBlock
                 Text="Installed Addon Instances"
+                Foreground="#F2F2F2"
                 FontWeight="SemiBold"
                 Margin="0,4,0,4"/>
 
             <TextBlock
                 x:Name="NoAddonInstancesText"
                 Text="No addons installed yet."
-                Opacity="0.5"
+                Foreground="#D0D0D0"
+                Opacity="0.85"
                 FontSize="11"
                 Margin="0,0,0,8"/>
 
@@ -368,11 +419,13 @@
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
                                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                     <TextBlock
                                         Text="{Binding FriendlyName}"
+                                        Foreground="#F2F2F2"
                                         FontWeight="SemiBold"
                                         FontSize="12"/>
                                     <!--
@@ -386,20 +439,45 @@
                                     -->
                                     <TextBlock
                                         Text="{Binding Category}"
+                                        Foreground="#D0D0D0"
                                         FontSize="10"
-                                        Opacity="0.6"
+                                        Opacity="0.9"
+                                        TextWrapping="Wrap"/>
+                                    <!--
+                                        Slice 20 Stage 1B: ready / configuration
+                                        required, from the manifest's own
+                                        behaviorHints. Display text only - no
+                                        URL or configuration is ever shown.
+                                    -->
+                                    <TextBlock
+                                        Text="{Binding ConfigurationStatusText, Mode=OneWay}"
+                                        Foreground="#D0D0D0"
+                                        FontSize="10"
+                                        Opacity="0.9"
                                         TextWrapping="Wrap"/>
                                 </StackPanel>
 
                                 <CheckBox
                                     Grid.Column="1"
                                     Content="Enabled"
+                                    Foreground="#F2F2F2"
                                     IsChecked="{Binding Enabled, Mode=TwoWay}"
                                     VerticalAlignment="Center"
                                     Margin="8,0,8,0"/>
 
                                 <Button
                                     Grid.Column="2"
+                                    Content="Refresh"
+                                    Width="70"
+                                    Height="24"
+                                    Margin="0,0,6,0"
+                                    VerticalAlignment="Center"
+                                    ToolTip="Re-read this addon's manifest (capabilities and configuration status)"
+                                    Tag="{Binding}"
+                                    Click="RefreshAddonManifest_Click"/>
+
+                                <Button
+                                    Grid.Column="3"
                                     Content="Remove"
                                     Width="70"
                                     Height="24"
@@ -411,6 +489,14 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
+
+            <!-- Result of the last manifest Refresh (Slice 20 Stage 1B). -->
+            <TextBlock
+                x:Name="AddonRefreshStatus"
+                Foreground="#D0D0D0"
+                Margin="0,0,0,8"
+                FontSize="11"
+                TextWrapping="Wrap"/>
 
             <!--
                 The internal diagnostic sections that used to appear here

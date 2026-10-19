@@ -7,25 +7,39 @@ using System.Linq;
 namespace StremioVideoCenter.Services
 {
     // =============================================================
-    // LOCAL LIBRARY SERVICE (Slice 15 - architecture foundation)
+    // LOCAL LIBRARY SERVICE
     // =============================================================
     //
-    // Owns the "Library Locations" concept of the Local Media
-    // architecture - add/remove/list the folders the user has designated
-    // as local media sources. This is deliberately the ONLY class that
-    // touches StremioVideoCenterSettings.LibraryLocations, mirroring how
-    // AddonInstances is only ever mutated through
-    // StremioVideoCenterSettings.InstallOrReplaceAddonInstance/direct
-    // list access from the Settings view model - a single, well-defined
-    // owner for this persisted state.
+    // Owns the "Library Locations" concept of the Local Files feature -
+    // add / remove / list the folders the user has designated as local
+    // media sources. This is the ONLY class that touches
+    // StremioVideoCenterSettings.LibraryLocations, mirroring how
+    // AddonInstances is only ever mutated through the Settings view
+    // model - a single, well-defined owner for this persisted state.
+    // Locations are global (not profile-owned).
     //
     // Deliberately thin: no scanning, no identification, no metadata
-    // matching happens here - see LocalMediaScanService/
-    // LocalMediaIdentificationService for those distinct concerns. This
-    // class's only job is "which folders does the user want scanned,"
-    // which is exactly what a caller (LocalMediaView today; a future
-    // Local Media slice's browsing UI later) needs to drive the rest of
-    // the pipeline.
+    // matching happens here. It mutates the in-memory settings list only;
+    // the caller (LocalLibraryManager) persists with the plugin's existing
+    // settings save mechanism after a successful change.
+    //
+    // PATH NORMALISATION
+    // ------------------
+    // Paths are compared case-insensitively (Windows) after being made
+    // absolute and stripped of trailing separators, so "D:\Movies",
+    // "d:\movies\" and "D:/Movies" are one location. UNC paths
+    // ("\\NAS\Movies") are valid and kept as UNC. A location nested inside
+    // another (or containing another) is refused as an overlap: the same
+    // file would otherwise be indexed twice.
+    public enum AddLocationResult
+    {
+        Added = 0,
+        Duplicate = 1,
+        Overlaps = 2,
+        Invalid = 3,
+        NotAccessible = 4
+    }
+
     public class LocalLibraryService
     {
         private readonly StremioVideoCenterSettings _settings;
@@ -51,48 +65,147 @@ namespace StremioVideoCenter.Services
 
         public IReadOnlyList<LibraryLocation> GetLocations()
         {
-            return _settings.LibraryLocations.ToList();
+            return _settings.LibraryLocations.Where(l => l != null && !string.IsNullOrWhiteSpace(l.Path)).ToList();
+        }
+
+        // =========================================================
+        // NORMALISE
+        // =========================================================
+        //
+        // Returns the normalised absolute path, or null when the text is
+        // not a usable absolute path. Does not touch the filesystem.
+        public static string NormalisePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return null;
+            }
+
+            string trimmed = path.Trim().Trim('"');
+
+            if (trimmed.Length == 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                if (!Path.IsPathRooted(trimmed))
+                {
+                    return null;
+                }
+
+                string full = Path.GetFullPath(trimmed);
+
+                return LocalMediaScanService.TrimTrailingSeparators(full);
+            }
+            catch (Exception)
+            {
+                // ArgumentException / NotSupportedException / PathTooLong:
+                // not a usable path.
+                return null;
+            }
+        }
+
+        public static bool PathsEqual(string a, string b)
+        {
+            return string.Equals(
+                LocalMediaScanService.TrimTrailingSeparators(a),
+                LocalMediaScanService.TrimTrailingSeparators(b),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        // True when child equals parent or lies below it.
+        public static bool IsSameOrBelow(string child, string parent)
+        {
+            string c = LocalMediaScanService.TrimTrailingSeparators(child);
+            string p = LocalMediaScanService.TrimTrailingSeparators(parent);
+
+            if (string.IsNullOrEmpty(c) || string.IsNullOrEmpty(p))
+            {
+                return false;
+            }
+
+            if (string.Equals(c, p, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string prefix = p.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                ? p
+                : p + Path.DirectorySeparatorChar;
+
+            return c.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
         }
 
         // =========================================================
         // ADD
         // =========================================================
         //
-        // Returns false without adding when the path is empty, already
-        // present (case-insensitive), or does not currently exist as a
-        // real directory - callers should surface that honestly rather
-        // than silently adding an unusable location.
-        public bool AddLocation(string path)
+        // Reports exactly why a location was not added so the caller can
+        // say so honestly rather than silently doing nothing.
+        public AddLocationResult TryAddLocation(string path)
         {
-            if (string.IsNullOrWhiteSpace(path))
+            string normalised = NormalisePath(path);
+
+            if (normalised == null)
             {
-                return false;
+                return AddLocationResult.Invalid;
             }
 
-            string normalized = path.Trim();
-
-            bool alreadyPresent = _settings.LibraryLocations.Any(location =>
-                location != null &&
-                string.Equals(location.Path, normalized, StringComparison.OrdinalIgnoreCase));
-
-            if (alreadyPresent)
+            foreach (LibraryLocation existing in GetLocations())
             {
-                return false;
+                if (PathsEqual(existing.Path, normalised))
+                {
+                    return AddLocationResult.Duplicate;
+                }
+
+                string existingNormalised = NormalisePath(existing.Path) ?? existing.Path;
+
+                if (IsSameOrBelow(normalised, existingNormalised) ||
+                    IsSameOrBelow(existingNormalised, normalised))
+                {
+                    return AddLocationResult.Overlaps;
+                }
             }
 
-            if (!Directory.Exists(normalized))
+            try
             {
-                return false;
+                if (!Directory.Exists(normalised))
+                {
+                    return AddLocationResult.NotAccessible;
+                }
+            }
+            catch (Exception)
+            {
+                return AddLocationResult.NotAccessible;
+            }
+
+            string displayName;
+
+            try
+            {
+                displayName = new DirectoryInfo(normalised).Name;
+            }
+            catch (Exception)
+            {
+                displayName = normalised;
             }
 
             _settings.LibraryLocations.Add(new LibraryLocation
             {
-                Path = normalized,
-                DisplayName = new DirectoryInfo(normalized).Name,
+                Path = normalised,
+                DisplayName = displayName,
                 AddedUtc = DateTime.UtcNow
             });
 
-            return true;
+            return AddLocationResult.Added;
+        }
+
+        // Existing contract (true only when a location was added).
+        public bool AddLocation(string path)
+        {
+            return TryAddLocation(path) == AddLocationResult.Added;
         }
 
         // =========================================================
@@ -107,10 +220,51 @@ namespace StremioVideoCenter.Services
             }
 
             int removed = _settings.LibraryLocations.RemoveAll(location =>
-                location != null &&
-                string.Equals(location.Path, path, StringComparison.OrdinalIgnoreCase));
+                location != null && PathsEqual(location.Path, path));
 
             return removed > 0;
+        }
+
+        // =========================================================
+        // FOLDER STATE
+        // =========================================================
+        //
+        // Checks each location on the calling thread. Directory.Exists on
+        // a disconnected network share can block for a long time, so the
+        // caller (LocalLibraryManager) runs this on a background thread.
+        public List<LocalFolderStatus> GetFolderStatuses(Func<string, int> itemCountFor)
+        {
+            var statuses = new List<LocalFolderStatus>();
+
+            foreach (LibraryLocation location in GetLocations())
+            {
+                LocalFolderState state;
+
+                try
+                {
+                    state = Directory.Exists(location.Path)
+                        ? LocalFolderState.Accessible
+                        : LocalFolderState.Missing;
+                }
+                catch (Exception)
+                {
+                    state = LocalFolderState.Unavailable;
+                }
+
+                string displayName = string.IsNullOrWhiteSpace(location.DisplayName)
+                    ? location.Path
+                    : location.DisplayName;
+
+                statuses.Add(new LocalFolderStatus
+                {
+                    Path = location.Path,
+                    DisplayName = displayName,
+                    State = state,
+                    ItemCount = itemCountFor != null ? itemCountFor(location.Path) : 0
+                });
+            }
+
+            return statuses;
         }
     }
 }

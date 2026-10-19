@@ -1,6 +1,7 @@
 using StremioVideoCenter.Models;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Threading;
 
@@ -76,14 +77,60 @@ namespace StremioVideoCenter.Services
             _maxRealDebridAttempts = maxRealDebridAttempts;
         }
 
-        // TEMPORARY DIAGNOSTIC (Part 2, controller-A-delay investigation)
-        // - sequence counter for the Aggr# log lines below. Purely
-        // observational - no behaviour here is changed.
-        private static int _diagAggrSeq;
-
+        // Logs one concise summary line per request (outcome, timing and
+        // counts by broad kind only - nothing from a stream, URL or addon
+        // address is logged). The aggregation body lives in
+        // AggregateCoreAsync; results, exceptions and cancellation pass
+        // through this wrapper unchanged.
         public async Task<PlaybackSourceSet> AggregateAsync(ContentRequest request)
         {
-            int diagSeq = Interlocked.Increment(ref _diagAggrSeq);
+            AggregationSummary summary = new AggregationSummary();
+
+            Stopwatch total = Stopwatch.StartNew();
+            string outcome = "completed";
+
+            try
+            {
+                return await AggregateCoreAsync(request, summary);
+            }
+            catch (OperationCanceledException)
+            {
+                outcome = "cancelled";
+                throw;
+            }
+            catch (Exception ex)
+            {
+                outcome = "failed(" + ex.GetType().Name + ")";
+                throw;
+            }
+            finally
+            {
+                total.Stop();
+
+                StremioVideoCenterLogger.Info(string.Format(
+                    "Source aggregation outcome={0} totalMs={1} discoveryMs={2} " +
+                    "streams={3} direct={4} torrentOnly={5} unsupported={6} " +
+                    "rdAttempted={7} rdSucceeded={8} rdFailed={9} " +
+                    "sourcesReturned={10} unresolvedReturned={11}",
+                    outcome,
+                    total.ElapsedMilliseconds,
+                    summary.DiscoveryMs,
+                    summary.Streams,
+                    summary.Direct,
+                    summary.TorrentOnly,
+                    summary.Unsupported,
+                    summary.RdAttempted,
+                    summary.RdSucceeded,
+                    summary.RdFailed,
+                    summary.SourcesReturned,
+                    summary.UnresolvedReturned));
+            }
+        }
+
+        private async Task<PlaybackSourceSet> AggregateCoreAsync(
+            ContentRequest request,
+            AggregationSummary summary)
+        {
 
             if (request == null)
             {
@@ -92,20 +139,41 @@ namespace StremioVideoCenter.Services
 
             PlaybackSourceSet result = new PlaybackSourceSet();
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} awaiting _discovery.ResolveStreamsAsync (fan-out across all registered addons)",
-                    diagSeq,
-                    DateTime.UtcNow));
+
+            Stopwatch discoveryWatch = Stopwatch.StartNew();
 
             List<StremioStream> streams = await _discovery.ResolveStreamsAsync(request);
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _discovery.ResolveStreamsAsync returned {2} stream(s)",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    streams != null ? streams.Count : 0));
+            discoveryWatch.Stop();
+            summary.DiscoveryMs = discoveryWatch.ElapsedMilliseconds;
+
+            if (streams != null)
+            {
+                // Counts by broad kind only (same classification the loop
+                // below uses). Nothing from a stream is logged.
+                summary.Streams = streams.Count;
+
+                foreach (StremioStream counted in streams)
+                {
+                    if (counted == null)
+                    {
+                        continue;
+                    }
+
+                    if (StreamResolverService.IsPlayableDirectUrl(counted.Url))
+                    {
+                        summary.Direct++;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(counted.InfoHash))
+                    {
+                        summary.TorrentOnly++;
+                    }
+                    else
+                    {
+                        summary.Unsupported++;
+                    }
+                }
+            }
 
             if (streams == null || streams.Count == 0)
             {
@@ -126,7 +194,11 @@ namespace StremioVideoCenter.Services
                     continue;
                 }
 
-                bool hasDirectUrl = !string.IsNullOrWhiteSpace(stream.Url);
+                // Slice 22: a direct URL counts only when it is a well-formed
+                // http(s) address (same rule the resolver applies). A stream
+                // whose url is unusable but which has an infoHash is treated
+                // as a torrent stream, including the budget and dedup below.
+                bool hasDirectUrl = StreamResolverService.IsPlayableDirectUrl(stream.Url);
                 bool hasInfoHash = !string.IsNullOrWhiteSpace(stream.InfoHash);
 
                 // ExternalUrl-only (or genuinely empty) streams are
@@ -140,7 +212,8 @@ namespace StremioVideoCenter.Services
                     result.Unresolved.Add(new UnresolvedSource
                     {
                         Stream = stream,
-                        Reason = "No direct URL or torrent source - external-only streams are not supported for in-app playback."
+                        Reason = StreamResolverService.DescribeUnsupported(stream),
+                        Cause = UnresolvedCause.Unsupported
                     });
 
                     continue;
@@ -190,7 +263,8 @@ namespace StremioVideoCenter.Services
                             Stream = stream,
                             Reason = "Real-Debrid resolution limit reached (" +
                                 _maxRealDebridAttempts +
-                                " per request) - not attempted, retained for future selection."
+                                " per request) - not attempted, retained for future selection.",
+                            Cause = UnresolvedCause.NotAttempted
                         });
 
                         continue;
@@ -205,11 +279,11 @@ namespace StremioVideoCenter.Services
 
                 PlaybackSource source;
 
-                string diagStreamIdentity =
+                string streamIdentity =
                     !string.IsNullOrWhiteSpace(stream.Url)
                         ? "Url"
                         : (!string.IsNullOrWhiteSpace(stream.InfoHash)
-                            ? "InfoHash=" + stream.InfoHash + " fileIdx=" +
+                            ? "Torrent fileIdx=" +
                               (stream.FileIdx.HasValue ? stream.FileIdx.Value.ToString() : "null")
                             : "(neither)");
 
@@ -219,45 +293,59 @@ namespace StremioVideoCenter.Services
                 // carry the user's RD key embedded in it, and callers
                 // must always fall back to a generic label instead of
                 // the URL.
-                StremioVideoCenterLogger.Info(
-                    string.Format(
-                        "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} awaiting _resolver.ResolveStreamAsync stream=[{2}] addon={3}",
-                        diagSeq,
-                        DateTime.UtcNow,
-                        diagStreamIdentity,
-                        !string.IsNullOrWhiteSpace(stream.SourceAddonName)
-                            ? stream.SourceAddonName
-                            : "(unnamed addon)"));
+
+                // A torrent-only stream is the one that reaches Real-Debrid.
+                bool isRdAttempt = !hasDirectUrl && hasInfoHash;
+
+                if (isRdAttempt)
+                {
+                    summary.RdAttempted++;
+                }
 
                 try
                 {
                     source = await _resolver.ResolveStreamAsync(stream);
 
-                    StremioVideoCenterLogger.Info(
-                        string.Format(
-                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync returned stream=[{2}] kind={3}",
-                            diagSeq,
-                            DateTime.UtcNow,
-                            diagStreamIdentity,
-                            source != null ? source.Kind.ToString() : "(null)"));
+                    if (isRdAttempt)
+                    {
+                        summary.RdSucceeded++;
+                    }
                 }
                 catch (Exception ex)
                 {
+                    if (isRdAttempt)
+                    {
+                        summary.RdFailed++;
+                    }
+
                     StremioVideoCenterLogger.Info(
                         string.Format(
-                            "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} _resolver.ResolveStreamAsync threw stream=[{2}] ex={3}",
-                            diagSeq,
-                            DateTime.UtcNow,
-                            diagStreamIdentity,
-                            ex.Message));
+                            "Stream resolution failed stream=[{0}] debridReason={1} ex={2}",
+                            streamIdentity,
+                            ex is RealDebridException
+                                ? ((RealDebridException)ex).Reason.ToString()
+                                : "(n/a)",
+                            UserFacingErrors.ForLog(ex)));
 
                     // One stream failing (Real-Debrid not configured, a
                     // specific torrent failing to resolve, a timeout, etc.)
                     // never fails the whole batch - recorded and skipped.
+                    // Slice 20 Stage 2: the typed Real-Debrid reason (set
+                    // only where the evidence established it) is kept so
+                    // the caller can explain WHY nothing resolved. Reason
+                    // stays the log-safe text and is never displayed.
+                    RealDebridException debridFailure = ex as RealDebridException;
+
                     result.Unresolved.Add(new UnresolvedSource
                     {
                         Stream = stream,
-                        Reason = ex.Message
+                        Reason = UserFacingErrors.ForLog(ex),
+                        Cause = ex is NotSupportedException
+                            ? UnresolvedCause.Unsupported
+                            : UnresolvedCause.ResolutionFailed,
+                        DebridReason = debridFailure != null
+                            ? (RealDebridFailureReason?)debridFailure.Reason
+                            : null
                     });
 
                     continue;
@@ -268,7 +356,8 @@ namespace StremioVideoCenter.Services
                     result.Unresolved.Add(new UnresolvedSource
                     {
                         Stream = stream,
-                        Reason = "Resolved to an empty playback URL."
+                        Reason = "Resolved to an empty playback URL.",
+                        Cause = UnresolvedCause.ResolutionFailed
                     });
 
                     continue;
@@ -299,15 +388,25 @@ namespace StremioVideoCenter.Services
                 result.Sources.Add(source);
             }
 
-            StremioVideoCenterLogger.Info(
-                string.Format(
-                    "[CTRL-DIAG] Aggr#{0} time={1:HH:mm:ss.fff} end sources={2} unresolved={3}",
-                    diagSeq,
-                    DateTime.UtcNow,
-                    result.Sources.Count,
-                    result.Unresolved.Count));
+            summary.SourcesReturned = result.Sources.Count;
+            summary.UnresolvedReturned = result.Unresolved.Count;
 
             return result;
+        }
+
+        // Mutable counters for one AggregateAsync call (summary log only).
+        private sealed class AggregationSummary
+        {
+            public long DiscoveryMs;
+            public int Streams;
+            public int Direct;
+            public int TorrentOnly;
+            public int Unsupported;
+            public int RdAttempted;
+            public int RdSucceeded;
+            public int RdFailed;
+            public int SourcesReturned;
+            public int UnresolvedReturned;
         }
     }
 
@@ -345,6 +444,26 @@ namespace StremioVideoCenter.Services
     {
         public StremioStream Stream { get; set; }
 
+        // Log-safe diagnostic text. Not for display.
         public string Reason { get; set; }
+
+        // Slice 20 Stage 2: why this stream is unresolved, as a category
+        // (internal; user wording is UserFacingErrors').
+        public UnresolvedCause Cause { get; set; }
+
+        // Set only when resolution threw a classified Real-Debrid failure.
+        public RealDebridFailureReason? DebridReason { get; set; }
+    }
+
+    public enum UnresolvedCause
+    {
+        // Resolution was attempted and failed (or produced nothing).
+        ResolutionFailed,
+
+        // Not resolvable in-app by design (e.g. external-only stream).
+        Unsupported,
+
+        // Skipped because the Real-Debrid attempt budget was used up.
+        NotAttempted
     }
 }

@@ -1,4 +1,6 @@
+using StremioVideoCenter.Services;
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Interop;
@@ -153,6 +155,25 @@ namespace StremioVideoCenterControls.Player
                 }, IntPtr.Zero);
         }
 
+        // Slice 22 (white-flash test): hides the native host window - and the
+        // mpv window inside it - at once. Called by the owner immediately
+        // before the player is disposed: mpv's own window is destroyed as
+        // soon as it quits, and while the UI thread then waits for mpv to
+        // exit WPF cannot repaint, so the otherwise uncovered native host
+        // window shows through. Hidden, the (black) WPF layer behind it
+        // shows instead. Safe with no handle, an already-destroyed window,
+        // or repeated calls; it changes no state and the window is destroyed
+        // as before by DestroyWindowCore.
+        public void HideNativeWindow()
+        {
+            IntPtr handle = _handle;
+
+            if (handle == IntPtr.Zero || !NativeMethods.IsWindow(handle))
+                return;
+
+            NativeMethods.ShowWindow(handle, NativeMethods.SW_HIDE);
+        }
+
         protected override void DestroyWindowCore(HandleRef hwnd)
         {
             if (hwnd.Handle != IntPtr.Zero)
@@ -172,6 +193,7 @@ namespace StremioVideoCenterControls.Player
             public const int GWL_STYLE = -16;
             public const long WS_POPUP = unchecked((long)0x80000000);
             public const int SW_SHOW = 5;
+            public const int SW_HIDE = 0;
 
             [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
             public static extern IntPtr CreateWindowEx(int exStyle, string className, string windowName,
@@ -181,6 +203,10 @@ namespace StremioVideoCenterControls.Player
             [DllImport("user32.dll", SetLastError = true)]
             [return: MarshalAs(UnmanagedType.Bool)]
             public static extern bool DestroyWindow(IntPtr handle);
+
+            [DllImport("user32.dll")]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            public static extern bool IsWindow(IntPtr handle);
 
             [DllImport("user32.dll", SetLastError = true)]
             [return: MarshalAs(UnmanagedType.Bool)]

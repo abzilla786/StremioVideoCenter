@@ -37,6 +37,13 @@ namespace StremioVideoCenter.Models
         [DataMember(Name = "externalUrl")]
         public string ExternalUrl { get; set; }
 
+        // Standard Stremio protocol source field for a Usenet NZB file.
+        // Captured ONLY so such a stream can be reported accurately as
+        // unsupported (Zino has no Usenet resolver) instead of as an
+        // unspecified "no source". It is never played or resolved.
+        [DataMember(Name = "nzbUrl")]
+        public string NzbUrl { get; set; }
+
         // Standard Stremio protocol field, previously not captured at all -
         // DataContractJsonSerializer silently ignores unknown JSON
         // properties, so any addon that sent this was having it discarded
@@ -98,6 +105,21 @@ namespace StremioVideoCenter.Models
 
         [DataMember(Name = "notWebReady")]
         public bool? NotWebReady { get; set; }
+
+        // Standard Stremio protocol hint: HTTP headers the addon says are
+        // required to fetch the stream's "url". Only the "request" half is
+        // used (the "response" half describes what a web player should
+        // expect and has no meaning for mpv). Applied by
+        // StreamResolverService after sanitising; never logged.
+        [DataMember(Name = "proxyHeaders")]
+        public StremioProxyHeaders ProxyHeaders { get; set; }
+    }
+
+    [DataContract]
+    public class StremioProxyHeaders
+    {
+        [DataMember(Name = "request")]
+        public Dictionary<string, string> Request { get; set; }
     }
 
     // =============================================================

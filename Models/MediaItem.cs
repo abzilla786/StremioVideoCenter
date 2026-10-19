@@ -94,6 +94,17 @@ namespace StremioVideoCenter.Models
         public string ResumeCanonicalKey { get; set; }
 
         // =========================================================
+        // LOCAL FILES
+        // =========================================================
+        //
+        // Set only for a MediaItem that was built from a Local Files
+        // library item (LocalLibraryManager.BuildMediaItem): the library
+        // item's path-free id. Its presence is the "play this local file"
+        // intent marker for PlaySelectedMediaAsync; null for everything
+        // else, so no existing flow changes. Never a filesystem path.
+        public string LocalKey { get; set; }
+
+        // =========================================================
         // HERO MEDIA
         // =========================================================
 
@@ -158,22 +169,14 @@ namespace StremioVideoCenter.Models
 
             try
             {
+                // Slice 20 Stage 1A: bounded (20s) instead of waiting on
+                // WebClient's ~100s default. A timeout falls into the same
+                // catch as any other download failure below.
                 byte[] imageData =
-                    await Task.Run(() =>
-                    {
-                        ServicePointManager.SecurityProtocol =
-                            SecurityProtocolType.Tls12;
-
-                        using (var client = new WebClient())
-                        {
-                            client.Headers[
-                                HttpRequestHeader.UserAgent] =
-                                "StremioVideoCenter/1.0";
-
-                            return client.DownloadData(
-                                PosterPath);
-                        }
-                    });
+                    await global::StremioVideoCenter.Services.BoundedHttp.DownloadDataAsync(
+                        PosterPath,
+                        20000,
+                        System.Threading.CancellationToken.None);
 
                 using (var stream =
                     new MemoryStream(imageData))

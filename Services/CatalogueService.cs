@@ -18,10 +18,9 @@ namespace StremioVideoCenter.Services
     // Movies, TV and (as of Slice 17) Anime. Not Home-specific - Home's
     // six rows AND the dedicated Movies/TV pages (Featured/Popular/New
     // Releases, with genre/year filtering and skip-based pagination)
-    // both call this same class. AnimeFlvCatalogueService remains the
-    // separate, parallel client for AnimeFLV's own genre/search
-    // catalogs, kept out of this class per "keep systems modular, don't
-    // tightly couple unrelated systems."
+    // both call this same class. Kitsu-sourced anime browsing lives in
+    // its own separate client (KitsuService), kept out of this class per
+    // "keep systems modular, don't tightly couple unrelated systems."
     //
     // =============================================================
     // SLICE 17 ANIME CHANGE (Kitsu locked in as Zino's permanent anime
@@ -487,7 +486,8 @@ namespace StremioVideoCenter.Services
         // =========================================================
         //
         // One Cinemeta catalog request mapped to MediaItems and cached for
-        // CacheTtl. An empty Cinemeta result is an honest empty row.
+        // CacheTtl when it returned items. An empty Cinemeta result is an
+        // honest empty row, but is not cached (see SetCached).
         private async Task<List<MediaItem>> GetCatalogueRowAsync(
             string cacheKey,
             string cinemetaType,
@@ -526,8 +526,18 @@ namespace StremioVideoCenter.Services
             return null;
         }
 
+        // Only a successful, non-empty result is cached. The Cinemeta and
+        // Kitsu clients are fail-soft (a timeout or error comes back as an
+        // empty list), so caching an empty list would hide a row for the
+        // whole CacheTtl after one transient failure. An empty result is
+        // still returned to the caller - it just is not remembered.
         private static void SetCached(string cacheKey, List<MediaItem> items)
         {
+            if (items == null || items.Count == 0)
+            {
+                return;
+            }
+
             _cache[cacheKey] = new CacheEntry
             {
                 FetchedAtUtc = DateTime.UtcNow,

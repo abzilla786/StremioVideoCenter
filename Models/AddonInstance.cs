@@ -40,6 +40,9 @@ namespace StremioVideoCenter.Models
         private bool isCore = false;
         private string installPolicy = AddonInstallPolicy.AllowMultiple;
         private List<string> roles = new List<string>();
+        private List<AddonResourceDeclaration> resources = new List<AddonResourceDeclaration>();
+        private bool configurable = false;
+        private bool configurationRequired = false;
 
         // Display name shown in the Settings UI. Falls back to the
         // manifest's own "name" field (copied in on import) when the
@@ -133,6 +136,71 @@ namespace StremioVideoCenter.Models
         }
 
         // =========================================================
+        // PER-RESOURCE DECLARATIONS (Slice 20 Stage 1B)
+        // =========================================================
+        //
+        // ResourceNames above is the flattened list of resource names
+        // and is kept exactly as it was (stream discovery reads it).
+        // This list additionally keeps, per resource, the manifest's own
+        // "types" and "idPrefixes" for that resource when it declared
+        // them (the object form of a "resources" entry). Empty for an
+        // instance saved before this slice or never refreshed: callers
+        // treat that as "no per-resource restriction known" and fall
+        // back to the manifest-level Types/IdPrefixes above (see
+        // AddonResourceCompatibility).
+        public List<AddonResourceDeclaration> Resources
+        {
+            get => resources;
+            set => SetValue(ref resources, value);
+        }
+
+        // Manifest behaviorHints.configurable / configurationRequired,
+        // captured on install and on manifest refresh. False means "not
+        // declared or not known" - never an assertion that the addon is
+        // ready. See ConfigurationStatusText.
+        public bool Configurable
+        {
+            get => configurable;
+            set => SetValue(ref configurable, value);
+        }
+
+        public bool ConfigurationRequired
+        {
+            get => configurationRequired;
+            set => SetValue(ref configurationRequired, value);
+        }
+
+        // Display-only summary for the addon settings list. Computed,
+        // never persisted. Contains no URL or configuration data.
+        [DontSerialize]
+        public string ConfigurationStatusText
+        {
+            get
+            {
+                if (configurationRequired)
+                {
+                    return "Configuration required";
+                }
+
+                // Built-in registration (Local Files): no address and no
+                // resources by design, so "use Refresh" would mislead.
+                if (string.IsNullOrWhiteSpace(manifestUrl) &&
+                    roles != null &&
+                    roles.Contains(AddonRole.LocalMedia))
+                {
+                    return "Built in - uses your local media library";
+                }
+
+                if (resourceNames == null || resourceNames.Count == 0)
+                {
+                    return "Manifest details not loaded - use Refresh";
+                }
+
+                return configurable ? "Ready (configurable)" : "Ready";
+            }
+        }
+
+        // =========================================================
         // PROVIDER KEY / INSTALL POLICY / CORE FLAG
         // =========================================================
         //
@@ -155,7 +223,7 @@ namespace StremioVideoCenter.Models
         }
 
         // True only for the fixed set of zero-config addons seeded by
-        // CoreAddonSeedingService on first run (Cinemeta, AnimeFLV,
+        // CoreAddonSeedingService on first run (Cinemeta,
         // OpenSubtitles v3, Local Files). Drives the "CORE / DEFAULT"
         // grouping in Settings - never set by the user-facing installers.
         public bool IsCore
@@ -182,7 +250,7 @@ namespace StremioVideoCenter.Models
         // Role Correction) - replaces the earlier single Role(string)
         // field (and its AddonRole.AnimeScopedStream value, now removed
         // entirely - see AddonRole's own remarks below for why). An
-        // addon can hold more than one role at once (e.g. AnimeFLV is
+        // addon can hold more than one role at once (e.g. Cinemeta is
         // both Metadata and Catalogue, but never StreamProvider) - a
         // single string could not express that, so this is a list.
         //
@@ -202,6 +270,108 @@ namespace StremioVideoCenter.Models
         {
             get => roles;
             set => SetValue(ref roles, value);
+        }
+    }
+
+    // =============================================================
+    // ADDON RESOURCE DECLARATION (Slice 20 Stage 1B)
+    // =============================================================
+    //
+    // One entry of a manifest's "resources" array, as stored on an
+    // AddonInstance: the resource name plus the types/idPrefixes that
+    // entry declared for itself. Types/IdPrefixes are null/empty when
+    // the manifest listed the resource as a bare string (or omitted
+    // them), meaning "inherit the manifest-level values".
+    public class AddonResourceDeclaration
+    {
+        public string Name { get; set; }
+
+        public List<string> Types { get; set; }
+
+        public List<string> IdPrefixes { get; set; }
+    }
+
+    // =============================================================
+    // ADDON RESOURCE COMPATIBILITY (Slice 20 Stage 1B)
+    // =============================================================
+    //
+    // Answers "may this addon be asked for this resource for this type
+    // and content id?" using only what the manifest declared. Per the
+    // Stremio protocol a resource's own types/idPrefixes override the
+    // manifest-level ones. A restriction that is missing or empty is
+    // UNKNOWN, not "nothing allowed": it never excludes the addon.
+    // Used by the generic resource query (AddonResourceQuery) and, for
+    // the id prefix only, by stream discovery
+    // (StremioAddonRegistry.GetAllStreamsAsync).
+    public static class AddonResourceCompatibility
+    {
+        // True when the instance's known resource list names the
+        // resource. An unknown (empty) resource list is "not declared"
+        // here - callers that want the unknown-capability fallback must
+        // check AddonCapabilities.HasKnownCapabilities themselves.
+        public static bool Declares(AddonInstance instance, string resource)
+        {
+            if (instance == null ||
+                instance.ResourceNames == null ||
+                string.IsNullOrWhiteSpace(resource))
+            {
+                return false;
+            }
+
+            return instance.ResourceNames.Exists(name =>
+                string.Equals(name, resource, System.StringComparison.OrdinalIgnoreCase));
+        }
+
+        public static bool AllowsContent(
+            AddonInstance instance,
+            string resource,
+            string type,
+            string id)
+        {
+            if (instance == null)
+            {
+                return false;
+            }
+
+            AddonResourceDeclaration declaration = null;
+
+            if (instance.Resources != null)
+            {
+                declaration = instance.Resources.Find(entry =>
+                    entry != null &&
+                    string.Equals(entry.Name, resource, System.StringComparison.OrdinalIgnoreCase));
+            }
+
+            List<string> types =
+                declaration != null && declaration.Types != null && declaration.Types.Count > 0
+                    ? declaration.Types
+                    : instance.Types;
+
+            List<string> prefixes =
+                declaration != null && declaration.IdPrefixes != null && declaration.IdPrefixes.Count > 0
+                    ? declaration.IdPrefixes
+                    : instance.IdPrefixes;
+
+            if (types != null &&
+                types.Count > 0 &&
+                !string.IsNullOrWhiteSpace(type) &&
+                !types.Exists(candidate =>
+                    string.Equals(candidate, type, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            if (prefixes != null &&
+                prefixes.Count > 0 &&
+                !string.IsNullOrWhiteSpace(id) &&
+                !prefixes.Exists(prefix =>
+                    !string.IsNullOrEmpty(prefix) &&
+                    id.StartsWith(prefix, System.StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            return true;
         }
     }
 
@@ -230,11 +400,10 @@ namespace StremioVideoCenter.Models
     // Role Correction) - supersedes the earlier Workstream B design,
     // which introduced a single, provider-shaped AddonRole.
     // AnimeScopedStream value (content-type-conditional stream
-    // eligibility for AnimeFLV specifically). That design is REMOVED
-    // entirely per this slice's explicit correction: AnimeFLV must
-    // never be queried for playable stream URLs, for ANY content type
-    // (Movie, TV, Anime alike) - not "only outside Anime requests".
-    // There is deliberately no provider-named role of any kind here -
+    // eligibility for one specific provider). That design is REMOVED
+    // entirely per this slice's explicit correction: a metadata/
+    // catalogue-only addon must never be queried for playable stream
+    // URLs, for ANY content type (Movie, TV, Anime alike). There is deliberately no provider-named role of any kind here -
     // only generic capability/usage categories that any addon, present
     // or future, can carry:
     //
@@ -257,7 +426,7 @@ namespace StremioVideoCenter.Models
     //                      local filesystem rather than a remote addon
     //                      backend.
     //
-    // An addon can carry more than one of these at once (e.g. AnimeFLV
+    // An addon can carry more than one of these at once (e.g. Cinemeta
     // = Metadata + Catalogue, never StreamProvider) - see
     // AddonInstance.Roles. Narrows WHEN an addon's already-declared
     // "stream" resource capability (AddonCapabilities.Streams below)
@@ -268,8 +437,9 @@ namespace StremioVideoCenter.Models
     // to - never instead of - the pre-existing ResourceNames-based skip
     // in GetAllStreamsAsync: that check answers "can this addon serve
     // streams at all" (e.g. Cinemeta cannot); this model answers "does
-    // Zino intend to use this addon for streams at all" (e.g. AnimeFLV
-    // can, per its manifest, but Zino deliberately never asks it to).
+    // Zino intend to use this addon for streams at all" (e.g. an addon
+    // whose manifest declares "stream" but which is assigned only
+    // Metadata/Catalogue is never asked for streams).
     //
     // Free-form string constants, matching this project's existing
     // Category/InstallPolicy convention (see their own remarks above),
@@ -300,13 +470,12 @@ namespace StremioVideoCenter.Models
         // this is a pure relabeling, not a second source of truth.
         // Applied uniformly regardless of provider name - there is no
         // per-addon branch here. This is deliberately NOT used for the
-        // five core addons (CoreAddonSeedingService assigns their
-        // Roles explicitly) because at least one of them - AnimeFLV -
-        // needs its assigned Roles to intentionally differ from what
-        // this generic inference would produce from its manifest (its
-        // manifest genuinely declares "stream", but Zino must never
-        // treat it as a StreamProvider) - exactly the distinction the
-        // class remarks above describe.
+        // core addons (CoreAddonSeedingService assigns their Roles
+        // explicitly) because an addon's assigned Roles may intentionally
+        // differ from what this generic inference would produce from its
+        // manifest (a manifest can declare "stream" while Zino must not
+        // treat the addon as a StreamProvider) - exactly the distinction
+        // the class remarks above describe.
         public static List<string> InferFromResourceNames(List<string> resourceNames)
         {
             var inferred = new List<string>();

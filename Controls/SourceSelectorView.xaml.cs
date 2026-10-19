@@ -1,5 +1,6 @@
 using Playnite.SDK.Events;
 using StremioVideoCenter.Models;
+using StremioVideoCenter.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -53,6 +54,30 @@ namespace StremioVideoCenterControls
     {
         private readonly List<Button> _sourceButtons = new List<Button>();
 
+        // Slice 19B provider filter. _allSortedSources is the complete,
+        // quality-ordered list handed to Populate (never mutated);
+        // filtering only rebuilds the visible buttons from it, in the same
+        // relative order, with no discovery or network call.
+        private List<NormalizedPlaybackSource> _allSortedSources = new List<NormalizedPlaybackSource>();
+        private List<SourceProviderGroup> _providerGroups = new List<SourceProviderGroup>();
+        private readonly List<Button> _providerChips = new List<Button>();
+        private string _selectedProviderKey; // null = All Sources
+
+        private sealed class ProviderChipTag
+        {
+            public string Key; // null = All Sources
+        }
+
+        // The provider filter currently applied: null for All Sources,
+        // otherwise the internal provider key (never displayed or logged -
+        // see SourceProviderGroup.Key). The caller reads it when the
+        // selector closes so the choice can be restored on return from
+        // playback.
+        public string SelectedProviderKey
+        {
+            get { return _selectedProviderKey; }
+        }
+
         // Slice 17B: the MediaItem currently on display, kept only so the
         // header's My List button can be re-focused/re-styled after a
         // toggle. This control never reads MyListService or a profile
@@ -71,6 +96,9 @@ namespace StremioVideoCenterControls
         public SourceSelectorView()
         {
             InitializeComponent();
+
+            // Mouse click-and-drag scrolling (Slice 20 Stage 3).
+            DragScroll.Attach(SourceListScrollViewer, DragScrollAxis.Vertical);
         }
 
         // =========================================================
@@ -90,39 +118,197 @@ namespace StremioVideoCenterControls
         // metadata source; it only reads properties already present on
         // the MediaItem it's given.
 
-        public void Populate(List<NormalizedPlaybackSource> sources, MediaItem mediaItem = null)
+        // preferredProviderKey (Slice 19B, optional): the provider filter to
+        // restore, e.g. when the user returns to the selector from playback.
+        // Applied only if that provider still has sources in this list;
+        // otherwise the selector safely falls back to All Sources.
+        public void Populate(
+            List<NormalizedPlaybackSource> sources,
+            MediaItem mediaItem = null,
+            string preferredProviderKey = null)
         {
             _currentMediaItem = mediaItem;
 
             PopulateHeader(mediaItem);
 
-            SourceListPanel.Children.Clear();
-            _sourceButtons.Clear();
-
             List<NormalizedPlaybackSource> orderedSources = SortByDescendingQuality(sources);
 
-            if (orderedSources != null)
-            {
-                foreach (NormalizedPlaybackSource source in orderedSources)
-                {
-                    if (source == null)
-                    {
-                        continue;
-                    }
+            _allSortedSources = orderedSources != null
+                ? orderedSources.Where(source => source != null).ToList()
+                : new List<NormalizedPlaybackSource>();
 
-                    Button button = BuildSourceButton(source);
-                    SourceListPanel.Children.Add(button);
-                    _sourceButtons.Add(button);
+            _providerGroups = SourceProviderGrouping.BuildGroups(sources);
+
+            _selectedProviderKey = _providerGroups.Count >= 2
+                ? SourceProviderGrouping.ResolveRestoredKey(_providerGroups, preferredProviderKey)
+                : null;
+
+            BuildProviderChips();
+
+            RenderSources(focusFirst: true);
+        }
+
+        // =========================================================
+        // PROVIDER FILTER (Slice 19B)
+        // =========================================================
+
+        private void BuildProviderChips()
+        {
+            ProviderFilterPanel.Children.Clear();
+            _providerChips.Clear();
+
+            // A filter is only meaningful when two or more providers
+            // supplied sources; with one (or none) it is hidden entirely.
+            if (_providerGroups.Count < 2)
+            {
+                ProviderFilterPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            AddProviderChip("All Sources (" + _allSortedSources.Count + ")", null);
+
+            foreach (SourceProviderGroup group in _providerGroups)
+            {
+                AddProviderChip(group.Label + " (" + group.Count + ")", group.Key);
+            }
+
+            ProviderFilterPanel.Visibility = Visibility.Visible;
+
+            ApplyProviderChipVisuals();
+        }
+
+        private void AddProviderChip(string text, string key)
+        {
+            Button chip = new Button
+            {
+                Style = (Style)Resources["ProviderChipButtonStyle"],
+                Content = text,
+                Tag = new ProviderChipTag { Key = key }
+            };
+
+            chip.Click += ProviderChip_Click;
+
+            ProviderFilterPanel.Children.Add(chip);
+            _providerChips.Add(chip);
+        }
+
+        private void ProviderChip_Click(object sender, RoutedEventArgs e)
+        {
+            Button chip = sender as Button;
+            ProviderChipTag tag = chip != null ? chip.Tag as ProviderChipTag : null;
+
+            if (tag == null)
+            {
+                return;
+            }
+
+            SelectProvider(tag.Key);
+        }
+
+        private void SelectProvider(string key)
+        {
+            if (string.Equals(key, _selectedProviderKey, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _selectedProviderKey = key;
+
+            ApplyProviderChipVisuals();
+
+            // Focus stays on the chip the user just activated.
+            RenderSources(focusFirst: false);
+        }
+
+        private void ApplyProviderChipVisuals()
+        {
+            foreach (Button chip in _providerChips)
+            {
+                ProviderChipTag tag = chip.Tag as ProviderChipTag;
+                bool isSelected = tag != null &&
+                    string.Equals(tag.Key, _selectedProviderKey, StringComparison.OrdinalIgnoreCase);
+
+                if (isSelected)
+                {
+                    chip.Background = new SolidColorBrush(Color.FromArgb(0xCC, 0xE9, 0x1E, 0x63));
+                    chip.BorderBrush = new SolidColorBrush(Color.FromRgb(0xE9, 0x1E, 0x63));
+                    chip.Foreground = Brushes.White;
+                }
+                else
+                {
+                    // Back to the style's own colours.
+                    chip.ClearValue(Control.BackgroundProperty);
+                    chip.ClearValue(Control.BorderBrushProperty);
+                    chip.ClearValue(Control.ForegroundProperty);
+                }
+            }
+        }
+
+        private Button GetSelectedProviderChip()
+        {
+            foreach (Button chip in _providerChips)
+            {
+                ProviderChipTag tag = chip.Tag as ProviderChipTag;
+
+                if (tag != null &&
+                    string.Equals(tag.Key, _selectedProviderKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    return chip;
                 }
             }
 
-            if (_sourceButtons.Count == 0)
+            return _providerChips.Count > 0 ? _providerChips[0] : null;
+        }
+
+        private bool IsProviderChipFocused()
+        {
+            return _providerChips.Contains(Keyboard.FocusedElement as Button);
+        }
+
+        private bool ProviderChipsAreVisible()
+        {
+            return ProviderFilterPanel.Visibility == Visibility.Visible && _providerChips.Count > 0;
+        }
+
+        // Rebuilds the visible source buttons from _allSortedSources for the
+        // current filter. Order within the visible list is the existing
+        // quality order; labels, badges and Real-Debrid/direct handling all
+        // come from the unchanged BuildSourceButton.
+        private void RenderSources(bool focusFirst)
+        {
+            SourceListPanel.Children.Clear();
+            _sourceButtons.Clear();
+
+            List<NormalizedPlaybackSource> visibleSources =
+                SourceProviderGrouping.Filter(_allSortedSources, _selectedProviderKey);
+
+            foreach (NormalizedPlaybackSource source in visibleSources)
             {
+                Button button = BuildSourceButton(source);
+                SourceListPanel.Children.Add(button);
+                _sourceButtons.Add(button);
+            }
+
+            if (_allSortedSources.Count == 0)
+            {
+                EmptyStateText.Text = "No playable sources found.";
+                ShowEmptyState();
+            }
+            else if (_sourceButtons.Count == 0)
+            {
+                // Defensive: chips are only built for providers that have
+                // sources, so a selected provider should never be empty.
+                SourceProviderGroup selectedGroup = _providerGroups.FirstOrDefault(
+                    g => string.Equals(g.Key, _selectedProviderKey, StringComparison.OrdinalIgnoreCase));
+
+                EmptyStateText.Text = "No sources from " +
+                    (selectedGroup != null ? selectedGroup.Label : "this provider") + ".";
                 ShowEmptyState();
             }
             else
             {
-                ShowSourceList();
+                ShowSourceList(focusFirst);
+                SourceListScrollViewer.ScrollToTop();
             }
         }
 
@@ -378,6 +564,19 @@ namespace StremioVideoCenterControls
             }
         }
 
+        // Slice 20 Stage 2: a short explanation shown under the empty-state
+        // line when there are no sources to list (e.g. why nothing could be
+        // prepared). Plain, pre-sanitised text from UserFacingErrors only.
+        // It is part of the empty state itself, so it can never outlive the
+        // selector or overlap another notice, and it takes no focus.
+        public void SetEmptyStateDetail(string detail)
+        {
+            bool has = !string.IsNullOrWhiteSpace(detail);
+
+            EmptyStateDetailText.Text = has ? detail : string.Empty;
+            EmptyStateDetailText.Visibility = has ? Visibility.Visible : Visibility.Collapsed;
+        }
+
         private void ShowEmptyState()
         {
             SourceListScrollViewer.Visibility = Visibility.Collapsed;
@@ -391,13 +590,24 @@ namespace StremioVideoCenterControls
                 DispatcherPriority.Input);
         }
 
-        private void ShowSourceList()
+        private void ShowSourceList(bool focusFirst)
         {
             EmptyStatePanel.Visibility = Visibility.Collapsed;
             SourceListScrollViewer.Visibility = Visibility.Visible;
 
+            if (!focusFirst)
+            {
+                return;
+            }
+
             Dispatcher.BeginInvoke(
-                new Action(() => FocusElement(_sourceButtons[0])),
+                new Action(() =>
+                {
+                    if (_sourceButtons.Count > 0)
+                    {
+                        FocusElement(_sourceButtons[0]);
+                    }
+                }),
                 DispatcherPriority.Input);
         }
 
@@ -437,12 +647,15 @@ namespace StremioVideoCenterControls
             titleRow.Children.Add(primaryText);
 
             bool isRealDebrid = source.Kind == PlaybackSourceKind.RealDebrid;
+            bool isLocal = source.Kind == PlaybackSourceKind.Local;
 
             Border kindBadge = new Border
             {
                 Background = new SolidColorBrush(isRealDebrid
                     ? Color.FromArgb(0xAA, 0x8E, 0x24, 0xAA)
-                    : Color.FromArgb(0xAA, 0x2E, 0x7D, 0x32)),
+                    : (isLocal
+                        ? Color.FromArgb(0xAA, 0x0D, 0x6E, 0xA8)
+                        : Color.FromArgb(0xAA, 0x2E, 0x7D, 0x32))),
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(9, 3, 9, 3),
                 Margin = new Thickness(10, 0, 0, 0),
@@ -451,7 +664,7 @@ namespace StremioVideoCenterControls
 
             kindBadge.Child = new TextBlock
             {
-                Text = isRealDebrid ? "REAL-DEBRID" : "DIRECT",
+                Text = isRealDebrid ? "REAL-DEBRID" : (isLocal ? "LOCAL" : "DIRECT"),
                 Foreground = Brushes.White,
                 FontSize = 10,
                 FontWeight = FontWeights.Bold
@@ -774,6 +987,22 @@ namespace StremioVideoCenterControls
         // one of the header buttons is actually focused.
         private bool MoveHeaderFocus(int direction)
         {
+            // Slice 19B: Left/Right moves between the provider chips while
+            // one has focus (and never leaves the row).
+            int chipIndex = _providerChips.IndexOf(Keyboard.FocusedElement as Button);
+
+            if (chipIndex >= 0)
+            {
+                int nextChip = chipIndex + direction;
+
+                if (nextChip >= 0 && nextChip < _providerChips.Count)
+                {
+                    FocusElement(_providerChips[nextChip]);
+                }
+
+                return true;
+            }
+
             if (MyListButton.IsKeyboardFocused && direction > 0)
             {
                 FocusElement(CloseButton);
@@ -807,6 +1036,32 @@ namespace StremioVideoCenterControls
 
         private void MoveFocus(int direction)
         {
+            // Slice 19B: when the provider chips are shown they sit between
+            // the header buttons and the source list in the vertical chain.
+            if (ProviderChipsAreVisible())
+            {
+                if (IsProviderChipFocused())
+                {
+                    if (direction < 0)
+                    {
+                        FocusElement(CloseButton);
+                    }
+                    else if (_sourceButtons.Count > 0)
+                    {
+                        FocusElement(_sourceButtons[0]);
+                    }
+
+                    return;
+                }
+
+                if (direction > 0 &&
+                    (CloseButton.IsKeyboardFocused || MyListButton.IsKeyboardFocused))
+                {
+                    FocusElement(GetSelectedProviderChip());
+                    return;
+                }
+            }
+
             if (CloseButton.IsKeyboardFocused)
             {
                 if (direction > 0 && _sourceButtons.Count > 0)
@@ -839,8 +1094,9 @@ namespace StremioVideoCenterControls
                 {
                     // Up from the topmost source reaches the
                     // always-visible Close control instead of wrapping
-                    // to the bottom of the list.
-                    FocusElement(CloseButton);
+                    // to the bottom of the list. (Slice 19B: when the
+                    // provider chips are shown they are the stop between.)
+                    FocusElement(ProviderChipsAreVisible() ? GetSelectedProviderChip() : CloseButton);
                     return;
                 }
 

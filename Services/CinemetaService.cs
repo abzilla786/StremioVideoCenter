@@ -5,6 +5,7 @@ using System.Net;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenter.Services
@@ -37,6 +38,10 @@ namespace StremioVideoCenter.Services
     public class CinemetaService
     {
         private const string BaseUrl = "https://v3-cinemeta.strem.io";
+
+        // Slice 20 Stage 1A: every Cinemeta request is bounded. Kitsu uses
+        // the same 20s figure.
+        private const int RequestTimeoutMs = 20000;
 
         // =========================================================
         // GET MANIFEST
@@ -90,6 +95,56 @@ namespace StremioVideoCenter.Services
                 return new List<CinemetaCatalogItem>();
             }
 
+            try
+            {
+                return await GetCatalogOrThrowAsync(type, catalogId, extraSegment);
+            }
+            catch
+            {
+                // Unreachable/malformed - honest empty result, same
+                // policy as CatalogueService's own per-title try/catch.
+                return new List<CinemetaCatalogItem>();
+            }
+        }
+
+        // =========================================================
+        // SEARCH CATALOG (Slice 19A - failure is NOT an empty result)
+        // =========================================================
+        //
+        // Same request GetCatalogAsync("<type>", "top", "search=<query>")
+        // would make, but a network/HTTP/parse failure is thrown to the
+        // caller instead of being converted into an empty list, so Search
+        // can tell "the provider answered with no matches" apart from "the
+        // request failed". A successful response with no matches returns
+        // an empty list. Used only by SearchView; every other caller keeps
+        // the fail-soft GetCatalogAsync above.
+        public Task<List<CinemetaCatalogItem>> SearchCatalogAsync(string type, string query)
+        {
+            if (string.IsNullOrWhiteSpace(type))
+            {
+                throw new ArgumentException("A catalog type is required.", nameof(type));
+            }
+
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                throw new ArgumentException("A search query is required.", nameof(query));
+            }
+
+            return GetCatalogOrThrowAsync(
+                type,
+                "top",
+                "search=" + Uri.EscapeDataString(query.Trim()));
+        }
+
+        // Shared by GetCatalogAsync (which swallows) and SearchCatalogAsync
+        // (which does not). Throws on a transport failure, or when the
+        // response body is empty/unparseable. A well-formed response with
+        // no "metas" entries is a legitimate empty result.
+        private async Task<List<CinemetaCatalogItem>> GetCatalogOrThrowAsync(
+            string type,
+            string catalogId,
+            string extraSegment)
+        {
             string url =
                 BaseUrl +
                 "/catalog/" +
@@ -101,21 +156,17 @@ namespace StremioVideoCenter.Services
                     : "/" + extraSegment) +
                 ".json";
 
-            try
-            {
-                string json = await DownloadStringAsync(url);
+            string json = await DownloadStringAsync(url);
 
-                CinemetaCatalogResponse response =
-                    Deserialize<CinemetaCatalogResponse>(json);
+            CinemetaCatalogResponse response =
+                Deserialize<CinemetaCatalogResponse>(json);
 
-                return response?.Metas ?? new List<CinemetaCatalogItem>();
-            }
-            catch
+            if (response == null)
             {
-                // Unreachable/malformed - honest empty result, same
-                // policy as CatalogueService's own per-title try/catch.
-                return new List<CinemetaCatalogItem>();
+                throw new InvalidDataException("Cinemeta returned an empty catalog response.");
             }
+
+            return response.Metas ?? new List<CinemetaCatalogItem>();
         }
 
         // =========================================================
@@ -126,14 +177,163 @@ namespace StremioVideoCenter.Services
         // null (never throws) if the title isn't found or the addon is
         // unreachable - callers must treat null as "no Cinemeta data for
         // this id," never as an error to surface.
-        public async Task<CinemetaMeta> GetMetaAsync(string type, string imdbId)
+        //
+        // Slice 20 Stage 1A: concurrent calls for the same type + id share
+        // ONE in-flight request (the hero row, episode list and details
+        // can all ask for the same title at once). Nothing is cached -
+        // the entry is removed as soon as the request finishes, so a
+        // failure is never remembered and the next call fetches again.
+        // The shared request is bounded by RequestTimeoutMs; a caller's
+        // own cancellationToken only stops that caller from waiting, it
+        // never cancels the request other callers are sharing.
+        //
+        // Lifecycle: the first caller registers a TaskCompletionSource
+        // under the key (inside the lock) and then runs the fetch. When the
+        // fetch ends, the entry is removed (inside the lock) BEFORE the
+        // result is published, so the dictionary only ever holds requests
+        // that are genuinely still running - a finished or failed request
+        // is never handed out as a stale in-flight entry.
+        private static readonly object _inFlightLock = new object();
+
+        private static readonly Dictionary<string, Task<CinemetaMeta>> _inFlightMeta =
+            new Dictionary<string, Task<CinemetaMeta>>();
+
+        public Task<CinemetaMeta> GetMetaAsync(
+            string type,
+            string imdbId,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
             if (string.IsNullOrWhiteSpace(type) ||
                 string.IsNullOrWhiteSpace(imdbId))
             {
-                return null;
+                return Task.FromResult<CinemetaMeta>(null);
             }
 
+            // A caller that is already cancelled never starts or joins a
+            // request.
+            if (cancellationToken.IsCancellationRequested)
+            {
+                TaskCompletionSource<CinemetaMeta> cancelled =
+                    new TaskCompletionSource<CinemetaMeta>();
+
+                cancelled.TrySetCanceled(cancellationToken);
+
+                return cancelled.Task;
+            }
+
+            string key = type + "|" + imdbId;
+
+            Task<CinemetaMeta> shared;
+            TaskCompletionSource<CinemetaMeta> owned = null;
+
+            lock (_inFlightLock)
+            {
+                if (!_inFlightMeta.TryGetValue(key, out shared))
+                {
+                    owned = new TaskCompletionSource<CinemetaMeta>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+
+                    shared = owned.Task;
+
+                    _inFlightMeta[key] = shared;
+                }
+            }
+
+            if (owned != null)
+            {
+                // Started outside the lock. RunSharedFetchAsync never
+                // throws and always removes the entry, so it cannot be
+                // left registered.
+                Task ignored = RunSharedFetchAsync(key, owned, type, imdbId);
+            }
+
+            if (!cancellationToken.CanBeCanceled)
+            {
+                return shared;
+            }
+
+            return WaitForSharedAsync(shared, cancellationToken);
+        }
+
+        // Runs the one real request for a key. Fail-soft like the old
+        // GetMetaAsync: any failure publishes null. The in-flight entry is
+        // removed, under the lock, before the result is published.
+        private async Task RunSharedFetchAsync(
+            string key,
+            TaskCompletionSource<CinemetaMeta> source,
+            string type,
+            string imdbId)
+        {
+            CinemetaMeta meta = null;
+
+            try
+            {
+                meta = await FetchMetaAsync(type, imdbId).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // FetchMetaAsync already returns null on failure; this only
+                // guards the shared entry against an unexpected exception.
+                meta = null;
+            }
+            finally
+            {
+                lock (_inFlightLock)
+                {
+                    Task<CinemetaMeta> current;
+
+                    if (_inFlightMeta.TryGetValue(key, out current) &&
+                        ReferenceEquals(current, source.Task))
+                    {
+                        _inFlightMeta.Remove(key);
+                    }
+                }
+            }
+
+            source.TrySetResult(meta);
+        }
+
+        // Lets one caller stop waiting without touching the shared
+        // request. The cancellation registration is disposed as soon as
+        // the wait ends, whichever way it ends.
+        private static Task<CinemetaMeta> WaitForSharedAsync(
+            Task<CinemetaMeta> shared,
+            CancellationToken cancellationToken)
+        {
+            TaskCompletionSource<CinemetaMeta> waiter =
+                new TaskCompletionSource<CinemetaMeta>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+
+            CancellationTokenRegistration registration =
+                cancellationToken.Register(() => waiter.TrySetCanceled(cancellationToken));
+
+            waiter.Task.ContinueWith(
+                finished => registration.Dispose(),
+                TaskScheduler.Default);
+
+            shared.ContinueWith(
+                finished =>
+                {
+                    if (finished.IsFaulted)
+                    {
+                        waiter.TrySetException(finished.Exception.InnerExceptions);
+                    }
+                    else if (finished.IsCanceled)
+                    {
+                        waiter.TrySetCanceled();
+                    }
+                    else
+                    {
+                        waiter.TrySetResult(finished.Result);
+                    }
+                },
+                TaskScheduler.Default);
+
+            return waiter.Task;
+        }
+
+        private async Task<CinemetaMeta> FetchMetaAsync(string type, string imdbId)
+        {
             string url =
                 BaseUrl +
                 "/meta/" +
@@ -161,27 +361,14 @@ namespace StremioVideoCenter.Services
         // HTTP DOWNLOAD
         // =========================================================
         //
-        // Same pattern as StremioAddonService.DownloadStringAsync -
-        // WebClient over TLS 1.2, deliberately not shared/refactored
-        // into a common base class per this project's convention of not
-        // introducing shared infrastructure for a same-slice need
-        // (mirrors CatalogueService's own BuildImageUrl duplication
-        // rationale).
-        private async Task<string> DownloadStringAsync(string url)
+        // Slice 20 Stage 1A: still a WebClient over TLS 1.2 with the same
+        // User-Agent, but now bounded by RequestTimeoutMs through
+        // BoundedHttp (the one shared helper for the timeout/abort
+        // behaviour, so it is identical across Cinemeta, AnimeFLV and the
+        // stream-addon client) instead of WebClient's ~100s default.
+        private Task<string> DownloadStringAsync(string url)
         {
-            return await Task.Run(() =>
-            {
-                ServicePointManager.SecurityProtocol =
-                    SecurityProtocolType.Tls12;
-
-                using (var client = new WebClient())
-                {
-                    client.Headers[HttpRequestHeader.UserAgent] =
-                        "StremioVideoCenter/1.0";
-
-                    return client.DownloadString(url);
-                }
-            });
+            return BoundedHttp.DownloadStringAsync(url, RequestTimeoutMs, CancellationToken.None);
         }
 
         // =========================================================

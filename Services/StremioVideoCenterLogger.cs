@@ -26,8 +26,17 @@ namespace StremioVideoCenter.Services
     {
         private const string LogFileName = "StremioVideoCenter.log";
 
+        // Slice 20 Stage 1A: size-based rotation. When the active log would
+        // grow past MaxLogBytes it is moved to "<name>.1" (replacing any
+        // earlier backup) and a fresh log is started, so the total on disk
+        // stays around twice this size instead of growing without limit.
+        // The rotated file is redacted in the background so content
+        // written before redaction existed is not kept.
+        private const long MaxLogBytes = 5L * 1024 * 1024;
+
         private static readonly object _writeLock = new object();
         private static string _logFilePath;
+        private static long _currentBytes;
 
         public static void Initialize(string pluginUserDataPath)
         {
@@ -40,7 +49,17 @@ namespace StremioVideoCenter.Services
 
                 Directory.CreateDirectory(pluginUserDataPath);
 
-                _logFilePath = Path.Combine(pluginUserDataPath, LogFileName);
+                string logFilePath = Path.Combine(pluginUserDataPath, LogFileName);
+
+                lock (_writeLock)
+                {
+                    _logFilePath = logFilePath;
+                    _currentBytes = File.Exists(logFilePath)
+                        ? new FileInfo(logFilePath).Length
+                        : 0;
+
+                    RotateIfNeeded(0);
+                }
             }
             catch
             {
@@ -89,28 +108,81 @@ namespace StremioVideoCenter.Services
                 return;
             }
 
+            // Slice 20 Stage 1A: nothing written here may contain a URL
+            // (addon URLs can embed a Real-Debrid key) or a full local
+            // path (user name / folder layout). This also covers the
+            // exception text, whose message and stack trace can contain
+            // both.
             string line = string.Format(
                 "[{0:yyyy-MM-dd HH:mm:ss.fff}] [{1}] [thread {2}] {3}",
                 DateTime.Now,
                 level,
                 Thread.CurrentThread.ManagedThreadId,
-                message);
+                UserFacingErrors.StripUrls(message));
 
             if (ex != null)
             {
-                line += Environment.NewLine + ex;
+                line += Environment.NewLine + UserFacingErrors.StripUrls(ex.ToString());
             }
+
+            line += Environment.NewLine;
 
             lock (_writeLock)
             {
                 try
                 {
-                    File.AppendAllText(logFilePath, line + Environment.NewLine, new UTF8Encoding(false));
+                    UTF8Encoding encoding = new UTF8Encoding(false);
+
+                    RotateIfNeeded(encoding.GetByteCount(line));
+
+                    File.AppendAllText(logFilePath, line, encoding);
+
+                    _currentBytes += encoding.GetByteCount(line);
                 }
                 catch
                 {
                     // Logging must never crash the application.
                 }
+            }
+        }
+
+        // Must be called with _writeLock held (or before logging starts).
+        // Best-effort: if the file cannot be moved (e.g. another process
+        // has it open) logging simply carries on appending.
+        private static void RotateIfNeeded(int incomingBytes)
+        {
+            string logFilePath = _logFilePath;
+
+            if (logFilePath == null ||
+                _currentBytes == 0 ||
+                _currentBytes + incomingBytes <= MaxLogBytes)
+            {
+                return;
+            }
+
+            try
+            {
+                string backupPath = logFilePath + ".1";
+
+                if (File.Exists(backupPath))
+                {
+                    File.Delete(backupPath);
+                }
+
+                File.Move(logFilePath, backupPath);
+
+                _currentBytes = 0;
+
+                ThreadPool.QueueUserWorkItem(
+                    state => LogFileRedactor.RedactInPlace((string)state, false),
+                    backupPath);
+            }
+            catch
+            {
+                // Rotation failed. Restart the count rather than retrying the
+                // move on every write; it is attempted again after another
+                // MaxLogBytes of output.
+                _currentBytes = 0;
             }
         }
     }

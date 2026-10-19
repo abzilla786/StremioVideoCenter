@@ -35,6 +35,7 @@ namespace StremioVideoCenterControls
             BorderThickness = new Thickness(1);
             CornerRadius = new CornerRadius(6);
             Padding = new Thickness(20, 10, 20, 10);
+            MaxWidth = 900;
 
             _text = new TextBlock
             {
@@ -59,6 +60,15 @@ namespace StremioVideoCenterControls
 
         public void Show(string message)
         {
+            Show(message, DisplaySeconds);
+        }
+
+        // Slice 20 Stage 2: a longer-lived variant for playback error
+        // notices, which are longer sentences than the confirmations above.
+        // Same single slot: it replaces whatever is showing and restarts
+        // the timer, so notices can never stack or overlap.
+        public void Show(string message, double seconds)
+        {
             if (string.IsNullOrWhiteSpace(message))
             {
                 return;
@@ -68,6 +78,7 @@ namespace StremioVideoCenterControls
             Visibility = Visibility.Visible;
 
             _timer.Stop();
+            _timer.Interval = TimeSpan.FromSeconds(seconds > 0 ? seconds : DisplaySeconds);
             _timer.Start();
         }
 

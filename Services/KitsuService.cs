@@ -22,7 +22,7 @@ namespace StremioVideoCenter.Services
     // slice's architectural goal. Mirrors CinemetaService's own pattern
     // exactly (WebClient + TLS1.2 + DataContractJsonSerializer,
     // never-throws/fail-soft contract) - a separate, parallel client,
-    // not an extension of CinemetaService or AnimeFlvCatalogueService,
+    // not an extension of CinemetaService,
     // because Kitsu is architecturally its own metadata/catalogue addon
     // with its own (JSON:API, not Stremio-protocol) shape.
     //
@@ -123,6 +123,28 @@ namespace StremioVideoCenter.Services
                 "&page%5Boffset%5D=" + Math.Max(0, offset);
 
             return await GetCollectionAsync(url);
+        }
+
+        // Slice 19A: same request as SearchAnimeAsync, but a transport/HTTP/
+        // parse failure (including the request deadline) is thrown instead of
+        // being converted into an empty list, so Search can distinguish "Kitsu
+        // answered with no matches" from "the request failed". Used only by
+        // SearchView; SearchAnimeAsync above keeps its fail-soft contract.
+        public async Task<List<KitsuAnimeResource>> SearchAnimeOrThrowAsync(string query, int offset = 0, int limit = MaxPageLimit)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                throw new ArgumentException("A search query is required.", nameof(query));
+            }
+
+            string url =
+                BaseUrl +
+                "/anime?filter%5Btext%5D=" + Uri.EscapeDataString(query) +
+                "&include=categories" +
+                "&page%5Blimit%5D=" + ClampLimit(limit) +
+                "&page%5Boffset%5D=" + Math.Max(0, offset);
+
+            return await GetCollectionOrThrowAsync(url);
         }
 
         // =========================================================
@@ -299,7 +321,8 @@ namespace StremioVideoCenter.Services
                 return new KitsuBrowseResult
                 {
                     Items = new List<KitsuAnimeResource>(),
-                    TotalCount = 0
+                    TotalCount = 0,
+                    Failed = true
                 };
             }
         }
@@ -395,28 +418,41 @@ namespace StremioVideoCenter.Services
         {
             try
             {
-                string json = await DownloadStringAsync(url);
-
-                // Slice 17C fix: Search/Popular now request include=categories
-                // (same as BrowseAnimeAsync), so every item they return -
-                // Home's Popular row, Hero, Search - carries its categories
-                // (and therefore genres) when it is added to My List/History.
-                KitsuAnimeCollectionResponse response = Deserialize<KitsuAnimeCollectionResponse>(json);
-
-                List<KitsuAnimeResource> items =
-                    response?.Data ?? new List<KitsuAnimeResource>();
-
-                ResolveCategories(items, response?.Included);
-
-                return items;
+                return await GetCollectionOrThrowAsync(url);
             }
             catch
             {
                 // Unreachable/malformed - honest empty result, same
-                // fail-soft policy as CinemetaService/
-                // AnimeFlvCatalogueService.
+                // fail-soft policy as CinemetaService.
                 return new List<KitsuAnimeResource>();
             }
+        }
+
+        // Slice 19A: the request/parse body of GetCollectionAsync, without its
+        // catch, so SearchAnimeOrThrowAsync can surface failures. A
+        // well-formed response with no "data" entries is a legitimate empty
+        // result; an empty/unparseable body is a failure.
+        private async Task<List<KitsuAnimeResource>> GetCollectionOrThrowAsync(string url)
+        {
+            string json = await DownloadStringAsync(url);
+
+            // Slice 17C fix: Search/Popular now request include=categories
+            // (same as BrowseAnimeAsync), so every item they return -
+            // Home's Popular row, Hero, Search - carries its categories
+            // (and therefore genres) when it is added to My List/History.
+            KitsuAnimeCollectionResponse response = Deserialize<KitsuAnimeCollectionResponse>(json);
+
+            if (response == null)
+            {
+                throw new InvalidDataException("Kitsu returned an empty collection response.");
+            }
+
+            List<KitsuAnimeResource> items =
+                response.Data ?? new List<KitsuAnimeResource>();
+
+            ResolveCategories(items, response.Included);
+
+            return items;
         }
 
         // =========================================================
@@ -546,7 +582,7 @@ namespace StremioVideoCenter.Services
         // way: it keeps requesting successive offsets and stops as soon
         // as a page returns fewer than MaxPageLimit episodes (the same
         // "short page = no more results" convention already used by
-        // AnimeFlvCatalogueService/CatalogueService's own pagination),
+        // CatalogueService's own pagination),
         // so it degrades to a single request if the server does not
         // actually paginate includes and simply returns every episode
         // on page one. Bounded at MaxEpisodePages to avoid an unbounded
@@ -565,7 +601,7 @@ namespace StremioVideoCenter.Services
                 return allEpisodes;
             }
 
-            // Slice 15 Phase 1 fix: live [KITSU-DIAG] evidence (One Piece,
+            // Slice 15 Phase 1 fix: live request logging (One Piece,
             // kitsuId=12) proved the uncertainty called out below - this
             // singular /anime/{id}?include=episodes endpoint does NOT
             // paginate the sideloaded "included" episodes via
@@ -681,8 +717,7 @@ namespace StremioVideoCenter.Services
         // HTTP DOWNLOAD
         // =========================================================
         //
-        // Same WebClient/TLS1.2 pattern as CinemetaService/
-        // AnimeFlvCatalogueService, with the JSON:API Accept header
+        // Same WebClient/TLS1.2 pattern as CinemetaService, with the JSON:API Accept header
         // Kitsu's own documentation specifies (application/vnd.api+json)
         // in addition to this project's standard User-Agent.
         //
@@ -697,7 +732,7 @@ namespace StremioVideoCenter.Services
         // an HttpWebRequest.Timeout - see next remark) the call can
         // block forever rather than failing, which then makes
         // EpisodeBrowserView.ShowEpisodeBrowserAsync's await never
-        // return. CinemetaService/AnimeFlvCatalogueService share this
+        // return. CinemetaService shares this
         // same plain-WebClient pattern and were NOT touched here - this
         // fix is scoped to KitsuService only, the one place this slice
         // actually reproduced the hang, per this project's "minimal,
@@ -767,26 +802,8 @@ namespace StremioVideoCenter.Services
             }
         }
 
-        // Slice 15 Phase 1 fix: targeted, temporary diagnostic logging
-        // (not broad/noisy - one begin line and one end line per actual
-        // HTTP attempt) added to find the real cause of a 5-6 minute
-        // delay that survived the RequestTimeoutMs/Task.WhenAny fix
-        // above. Uses the project's existing StremioVideoCenterLogger
-        // (same file every other diagnostic already writes to).
-        private static int _diagRequestSeq;
-
         private async Task<string> DownloadStringAsync(string url)
         {
-            int diagSeq = System.Threading.Interlocked.Increment(ref _diagRequestSeq);
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-            StremioVideoCenterLogger.Info(string.Format(
-                "[KITSU-DIAG] Req#{0} begin url={1} activeConnections(kitsu.io)={2}/{3}",
-                diagSeq,
-                url,
-                ServicePointManager.FindServicePoint(new Uri(url)).CurrentConnections,
-                ServicePointManager.FindServicePoint(new Uri(url)).ConnectionLimit));
-
             Task<string> downloadTask = Task.Run(() =>
             {
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
@@ -815,10 +832,8 @@ namespace StremioVideoCenter.Services
                 // method's own class-level remarks above for why this
                 // is an accepted trade-off, verified against this
                 // slice's own reproduction of the hang).
-                StremioVideoCenterLogger.Info(string.Format(
-                    "[KITSU-DIAG] Req#{0} end reason=DeadlineElapsed elapsedMs={1}",
-                    diagSeq,
-                    stopwatch.ElapsedMilliseconds));
+                StremioVideoCenterLogger.Warn(
+                    "Kitsu request timed out after " + RequestTimeoutMs + "ms.");
 
                 throw new TimeoutException(
                     "Kitsu request timed out after " + RequestTimeoutMs + "ms: " + url);
@@ -829,23 +844,12 @@ namespace StremioVideoCenter.Services
             // (WebException etc.) rather than a generic one.
             try
             {
-                string result = await downloadTask;
-
-                StremioVideoCenterLogger.Info(string.Format(
-                    "[KITSU-DIAG] Req#{0} end reason=Success elapsedMs={1} bytes={2}",
-                    diagSeq,
-                    stopwatch.ElapsedMilliseconds,
-                    result != null ? result.Length : 0));
-
-                return result;
+                return await downloadTask;
             }
             catch (Exception ex)
             {
-                StremioVideoCenterLogger.Info(string.Format(
-                    "[KITSU-DIAG] Req#{0} end reason=Faulted elapsedMs={1} error={2}",
-                    diagSeq,
-                    stopwatch.ElapsedMilliseconds,
-                    ex.GetType().Name + ": " + ex.Message));
+                StremioVideoCenterLogger.Warn(
+                    "Kitsu request failed: " + UserFacingErrors.ForLog(ex));
 
                 throw;
             }
@@ -1085,7 +1089,7 @@ namespace StremioVideoCenter.Services
 
     // One image's set of pre-generated sizes - every field optional/
     // nullable, matching every other catalogue-item model in this
-    // project (CinemetaCatalogItem/AnimeFlvCatalogItem). Kitsu's own
+    // project (CinemetaCatalogItem). Kitsu's own
     // response also includes a "meta.dimensions" object alongside these
     // URLs - deliberately not mapped here (an extra JSON field not
     // declared as a [DataMember] is silently ignored by
@@ -1239,5 +1243,10 @@ namespace StremioVideoCenter.Services
     {
         public List<KitsuAnimeResource> Items { get; set; }
         public int TotalCount { get; set; }
+
+        // Slice 21 (F9): true when the request failed (unreachable or
+        // malformed), as opposed to genuinely returning no matches, so the
+        // UI can tell the two apart. Items is still an empty list.
+        public bool Failed { get; set; }
     }
 }

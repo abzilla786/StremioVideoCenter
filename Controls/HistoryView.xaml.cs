@@ -7,6 +7,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace StremioVideoCenterControls
 {
@@ -21,8 +23,10 @@ namespace StremioVideoCenterControls
     // display MediaItems and calls Initialize below), matching the
     // existing convention of keeping data-access out of the view layer.
     //
-    // Reuses the exact same MediaSection/MediaCard rendering path Home
-    // already uses - no new card UI, no new grid. Selecting an entry
+    // Slice 21: renders as a vertically scrolling WrapPanel grid of
+    // MediaCards (same pattern as MyListView/CatalogueBrowseView/
+    // AnimeBrowseView), with the existing vertical DragScroll attached.
+    // Reuses the same MediaCard - no new card UI. Selecting an entry
     // raises MediaSelected exactly like every other overlay
     // (EpisodeBrowserView/CatalogueBrowseView/LocalMediaView), so it
     // flows through StremioVideoCenterView's existing
@@ -43,11 +47,29 @@ namespace StremioVideoCenterControls
         public event EventHandler Closed;
         public event EventHandler<MediaItemSelectedEventArgs> MediaSelected;
 
+        // Same card-width column math as MyListView/CatalogueBrowseView
+        // (190 card + 2 x 8 margin).
+        private const double ResultsCardWidth = 206;
+
+        private const int FocusRetryLimit = 20;
+
+        private List<MediaItem> _items = new List<MediaItem>();
+
         public HistoryView()
         {
             InitializeComponent();
 
-            HistorySection.MediaSelected += HistorySection_MediaSelected;
+            // Vertical-only drag scrolling on the grid, following the
+            // established grid-page pattern (see MyListView). DragScroll
+            // only captures the mouse once the 8px drag threshold is
+            // crossed and swallows the button release afterwards, so a
+            // plain click still reaches MediaCard normally while a drag
+            // does not raise MediaCard.SelectedEvent.
+            DragScroll.Attach(PageScrollViewer, DragScrollAxis.Vertical);
+
+            // MediaCard raises a bubbling SelectedEvent (click / Enter /
+            // Space); same convention as the other grid pages.
+            AddHandler(MediaCard.SelectedEvent, new RoutedEventHandler(ResultCard_Selected));
 
             Loaded += HistoryView_Loaded;
         }
@@ -63,22 +85,22 @@ namespace StremioVideoCenterControls
         // computing them.
         public void Initialize(IEnumerable<MediaItem> historyItems)
         {
-            // Slice 16C fix: determine the empty state from the
+            // Slice 16C fix (kept): determine the empty state from the
             // historyItems argument directly rather than reading back
-            // HistorySection.HasItems immediately after assigning
-            // HistorySection.Items - at this point HistoryView has not
-            // yet been attached to the visual tree (see
+            // the control's item count - at this point HistoryView has
+            // not yet been attached to the visual tree (see
             // StremioVideoCenterView.ShowHistoryAsync, which calls
-            // Initialize before HistoryHost.Children.Add), and
-            // HasItems (MediaItemsControl.Items.Count) was found to not
-            // reliably reflect the just-set Items binding yet at that
-            // point, causing History to always show its empty state
-            // even when non-empty entries were passed in.
-            bool hasItems = historyItems != null && historyItems.Any();
+            // Initialize before HistoryHost.Children.Add), so the
+            // just-set binding is not reliably reflected yet.
+            _items = historyItems != null
+                ? historyItems.ToList()
+                : new List<MediaItem>();
 
-            HistorySection.Items = historyItems;
+            bool hasItems = _items.Count > 0;
 
-            HistorySection.Visibility = hasItems ? Visibility.Visible : Visibility.Collapsed;
+            ResultsItemsControl.ItemsSource = _items;
+
+            ResultsItemsControl.Visibility = hasItems ? Visibility.Visible : Visibility.Collapsed;
             EmptyStateText.Visibility = hasItems ? Visibility.Collapsed : Visibility.Visible;
         }
 
@@ -92,23 +114,24 @@ namespace StremioVideoCenterControls
             Dispatcher.BeginInvoke(
                 new Action(() =>
                 {
-                    if (HistorySection.HasItems)
+                    if (_items.Count > 0)
                     {
-                        HistorySection.FocusFirstCard();
+                        PageScrollViewer.ScrollToVerticalOffset(0);
+                        FocusResultCard(0, 0);
                     }
                     else
                     {
                         CloseButton.Focus();
                     }
                 }),
-                System.Windows.Threading.DispatcherPriority.ContextIdle);
+                DispatcherPriority.ContextIdle);
         }
 
         private void HistoryView_Loaded(object sender, RoutedEventArgs e)
         {
-            if (HistorySection.HasItems)
+            if (_items.Count > 0)
             {
-                HistorySection.FocusFirstCard();
+                FocusResultCard(0, 0);
             }
             else
             {
@@ -116,9 +139,25 @@ namespace StremioVideoCenterControls
             }
         }
 
-        private void HistorySection_MediaSelected(object sender, MediaItemSelectedEventArgs e)
+        private void ResultCard_Selected(object sender, RoutedEventArgs e)
         {
-            MediaSelected?.Invoke(this, e);
+            MediaCard card = e.OriginalSource as MediaCard;
+
+            if (card == null)
+            {
+                return;
+            }
+
+            MediaItem mediaItem = card.DataContext as MediaItem;
+
+            if (mediaItem == null)
+            {
+                return;
+            }
+
+            MediaSelected?.Invoke(this, new MediaItemSelectedEventArgs(mediaItem));
+
+            e.Handled = true;
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -177,17 +216,185 @@ namespace StremioVideoCenterControls
 
             if (button == ControllerInput.DPadLeft)
             {
-                HistorySection.MoveHorizontal(-1);
+                MoveResultsGrid(-1, 0);
                 return true;
             }
 
             if (button == ControllerInput.DPadRight)
             {
-                HistorySection.MoveHorizontal(1);
+                MoveResultsGrid(1, 0);
+                return true;
+            }
+
+            if (button == ControllerInput.DPadUp)
+            {
+                int current = GetFocusedResultIndex();
+
+                // Up from the first row moves to Back; from Back, nothing.
+                if (current >= 0 && current < GetResultsColumnsPerRow())
+                {
+                    CloseButton.Focus();
+                    PageScrollViewer.ScrollToVerticalOffset(0);
+                }
+                else if (current >= 0)
+                {
+                    MoveResultsGrid(0, -1);
+                }
+
+                return true;
+            }
+
+            if (button == ControllerInput.DPadDown)
+            {
+                if (GetFocusedResultIndex() < 0)
+                {
+                    // From Back (or nothing focused): into the first card.
+                    if (_items.Count > 0)
+                    {
+                        FocusResultCard(0, 0);
+                    }
+                }
+                else
+                {
+                    MoveResultsGrid(0, 1);
+                }
+
                 return true;
             }
 
             return false;
+        }
+
+        // =========================================================
+        // GRID FOCUS MOVEMENT
+        // =========================================================
+        //
+        // Same shape as MyListView's GetResultsColumnsPerRow/
+        // MoveResultsGrid/GetFocusedResultIndex/FocusResultCard: a plain
+        // WrapPanel of fixed-width MediaCards, so it needs index math
+        // plus ItemContainerGenerator-based container lookup.
+
+        private int GetResultsColumnsPerRow()
+        {
+            double width = ResultsItemsControl.ActualWidth;
+
+            if (width <= 0)
+            {
+                return 1;
+            }
+
+            return Math.Max(1, (int)(width / ResultsCardWidth));
+        }
+
+        private void MoveResultsGrid(int deltaColumns, int deltaRows)
+        {
+            int count = _items.Count;
+
+            if (count == 0)
+            {
+                return;
+            }
+
+            int current = GetFocusedResultIndex();
+
+            if (current < 0)
+            {
+                FocusResultCard(0, 0);
+                return;
+            }
+
+            int target = current + deltaColumns + (deltaRows * GetResultsColumnsPerRow());
+
+            target = Math.Max(0, Math.Min(target, count - 1));
+
+            FocusResultCard(target, 0);
+        }
+
+        private int GetFocusedResultIndex()
+        {
+            for (int i = 0; i < ResultsItemsControl.Items.Count; i++)
+            {
+                ContentPresenter presenter =
+                    ResultsItemsControl.ItemContainerGenerator.ContainerFromIndex(i) as ContentPresenter;
+
+                if (presenter == null)
+                {
+                    continue;
+                }
+
+                MediaCard card = FindVisualChild<MediaCard>(presenter);
+
+                if (card != null && card.IsKeyboardFocusWithin)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private void FocusResultCard(int index, int attempt)
+        {
+            if (index < 0 || index >= ResultsItemsControl.Items.Count)
+            {
+                return;
+            }
+
+            ContentPresenter presenter =
+                ResultsItemsControl.ItemContainerGenerator.ContainerFromIndex(index) as ContentPresenter;
+
+            if (presenter == null)
+            {
+                // Container not generated yet (layout pending); retry a
+                // bounded number of times rather than looping forever.
+                if (attempt < FocusRetryLimit)
+                {
+                    Dispatcher.BeginInvoke(
+                        new Action(() => FocusResultCard(index, attempt + 1)),
+                        DispatcherPriority.Loaded);
+                }
+
+                return;
+            }
+
+            MediaCard card = FindVisualChild<MediaCard>(presenter);
+
+            if (card == null)
+            {
+                return;
+            }
+
+            card.Focus();
+            card.BringIntoView();
+        }
+
+        private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null)
+            {
+                return null;
+            }
+
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                DependencyObject child = VisualTreeHelper.GetChild(parent, i);
+
+                T result = child as T;
+
+                if (result != null)
+                {
+                    return result;
+                }
+
+                result = FindVisualChild<T>(child);
+
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+
+            return null;
         }
     }
 }

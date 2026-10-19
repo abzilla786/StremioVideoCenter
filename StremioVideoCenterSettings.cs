@@ -1,11 +1,123 @@
 using Playnite.SDK;
 using Playnite.SDK.Data;
 using StremioVideoCenter.Models;
+using StremioVideoCenter.Services;
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 namespace StremioVideoCenter
 {
+    // =========================================================
+    // SLICE 22 - UNREADABLE CONFIGURATION PROTECTION
+    // =========================================================
+    //
+    // Playnite's LoadPluginSettings returns null when it cannot produce
+    // settings, which this plugin treats as "first launch" and replaces with
+    // defaults - and the schema clean-up that then runs saves those defaults
+    // straight over config.json. If the real file was merely unreadable (a
+    // malformed edit, a OneDrive sync lock) that silently destroyed the
+    // user's addons, profiles, watch state and keys. This helper is used
+    // only when a load returns nothing although config.json exists: it
+    // keeps a byte-for-byte copy beside it BEFORE anything can overwrite
+    // it. It never modifies, moves or deletes config.json or any earlier
+    // backup, and never reuses a backup name.
+    internal enum UnreadableConfigOutcome
+    {
+        // No config.json (or an empty one): a genuine first launch.
+        NothingToPreserve,
+
+        // A copy of the unreadable file exists (new, or an identical one
+        // kept earlier).
+        Preserved,
+
+        // The file exists but could not be copied (locked, no access).
+        // The caller must not let anything overwrite it this session.
+        NotPreserved
+    }
+
+    internal static class SettingsLoadGuard
+    {
+        private const string BackupPrefix = "config.unreadable-";
+        private const int MaxBackupsCompared = 20;
+
+        internal static UnreadableConfigOutcome PreserveUnreadableConfig(string configPath)
+        {
+            try
+            {
+                FileInfo info = new FileInfo(configPath);
+
+                if (!info.Exists || info.Length == 0)
+                {
+                    return UnreadableConfigOutcome.NothingToPreserve;
+                }
+
+                string directory = info.DirectoryName;
+                byte[] original = File.ReadAllBytes(configPath);
+
+                string[] existing =
+                    Directory.GetFiles(directory, BackupPrefix + "*.json");
+
+                for (int i = 0; i < existing.Length && i < MaxBackupsCompared; i++)
+                {
+                    FileInfo candidate = new FileInfo(existing[i]);
+
+                    if (candidate.Length != original.Length)
+                    {
+                        continue;
+                    }
+
+                    byte[] other = File.ReadAllBytes(existing[i]);
+                    bool same = true;
+
+                    for (int b = 0; b < original.Length; b++)
+                    {
+                        if (original[b] != other[b])
+                        {
+                            same = false;
+                            break;
+                        }
+                    }
+
+                    if (same)
+                    {
+                        return UnreadableConfigOutcome.Preserved;
+                    }
+                }
+
+                string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+                string target = Path.Combine(directory, BackupPrefix + stamp + ".json");
+                int suffix = 1;
+
+                while (File.Exists(target))
+                {
+                    target = Path.Combine(directory, BackupPrefix + stamp + "-" + suffix + ".json");
+                    suffix++;
+                }
+
+                using (FileStream stream = new FileStream(target, FileMode.CreateNew, FileAccess.Write))
+                {
+                    stream.Write(original, 0, original.Length);
+                }
+
+                if (new FileInfo(target).Length != original.Length)
+                {
+                    return UnreadableConfigOutcome.NotPreserved;
+                }
+
+                return UnreadableConfigOutcome.Preserved;
+            }
+            catch (Exception ex)
+            {
+                // Type name only: the message can carry the config path.
+                StremioVideoCenterLogger.Warn(
+                    "The unreadable settings file could not be copied: " + ex.GetType().Name);
+
+                return UnreadableConfigOutcome.NotPreserved;
+            }
+        }
+    }
+
     // =========================================================
     // STORED PLUGIN SETTINGS
     // =========================================================
@@ -16,9 +128,8 @@ namespace StremioVideoCenter
     public class StremioVideoCenterSettings : ObservableObject
     {
         private int settingsSchemaVersion;
-        private string omdbApiKey = string.Empty;
         private string realDebridApiKey = string.Empty;
-        private string stremioAddonUrls = "http://127.0.0.1:7000";
+        private string stremioAddonUrls = string.Empty;
         private List<AddonInstance> addonInstances = new List<AddonInstance>();
         private List<string> seededCoreAddonProviderKeys = new List<string>();
         private List<LibraryLocation> libraryLocations = new List<LibraryLocation>();
@@ -41,22 +152,17 @@ namespace StremioVideoCenter
         // which rewrites config.json (via the normal SavePluginSettings
         // path) without the obsolete field.
 
-        public const int CurrentSettingsSchemaVersion = 1;
+        // Version 2 = Slice 20 removal of the obsolete 7000 legacy entry
+        // (see RemoveObsoleteLoopbackAddons below). Version 3 = Slice 20
+        // correction: Local Files becomes a built-in registration with no
+        // address (see NormaliseLocalFilesRegistration below).
+
+        public const int CurrentSettingsSchemaVersion = 3;
 
         public int SettingsSchemaVersion
         {
             get => settingsSchemaVersion;
             set => SetValue(ref settingsSchemaVersion, value);
-        }
-
-        // =========================================================
-        // OMDB API CREDENTIAL
-        // =========================================================
-
-        public string OmdbApiKey
-        {
-            get => omdbApiKey;
-            set => SetValue(ref omdbApiKey, value);
         }
 
         // =========================================================
@@ -263,9 +369,258 @@ namespace StremioVideoCenter
                         existing.ProviderKey,
                         newInstance.ProviderKey,
                         StringComparison.OrdinalIgnoreCase));
+
+                // An instance of the SAME addon (same manifest id) that was
+                // installed earlier through "Other Addons" has no
+                // ProviderKey, so the match above misses it and a second
+                // copy would be queried. Replace it too. Instances that
+                // carry any ProviderKey (including the core addons) are
+                // never touched by this.
+                if (!string.IsNullOrWhiteSpace(newInstance.AddonId))
+                {
+                    // Before they are dropped: carry over the Enabled state
+                    // (only that - everything else comes from the freshly
+                    // fetched manifest) and remove each replaced instance's
+                    // own URL from the legacy StremioAddonUrls, so
+                    // SyncLegacyAddonUrls cannot re-create it as a second
+                    // "Legacy" copy. Other lines are untouched.
+                    bool carriedEnabled = false;
+
+                    foreach (AddonInstance replaced in AddonInstances.FindAll(existing =>
+                        existing != null &&
+                        string.IsNullOrWhiteSpace(existing.ProviderKey) &&
+                        string.Equals(
+                            existing.AddonId,
+                            newInstance.AddonId,
+                            StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (!carriedEnabled)
+                        {
+                            newInstance.Enabled = replaced.Enabled;
+                            carriedEnabled = true;
+                        }
+
+                        RemoveLegacyUrl(replaced.ManifestUrl);
+                    }
+
+                    AddonInstances.RemoveAll(existing =>
+                        existing != null &&
+                        string.IsNullOrWhiteSpace(existing.ProviderKey) &&
+                        string.Equals(
+                            existing.AddonId,
+                            newInstance.AddonId,
+                            StringComparison.OrdinalIgnoreCase));
+                }
             }
 
             AddonInstances.Add(newInstance);
+        }
+
+        // =========================================================
+        // REMOVE A LEGACY URL WHEN ITS ADDON IS REMOVED
+        // =========================================================
+        //
+        // SyncLegacyAddonUrls re-adds every StremioAddonUrls line that has
+        // no matching AddonInstance, so removing only the instance made a
+        // legacy addon come back on the next load/Save. Removing the
+        // matching saved line (case-insensitive, trimmed) with the
+        // instance keeps the removal. Lines that do not match are kept
+        // exactly as they were. Returns true if a line was removed.
+        public bool RemoveLegacyUrl(string manifestUrl)
+        {
+            if (string.IsNullOrWhiteSpace(manifestUrl) ||
+                string.IsNullOrWhiteSpace(StremioAddonUrls))
+            {
+                return false;
+            }
+
+            string target = manifestUrl.Trim();
+            string[] lines = StremioAddonUrls.Split(
+                new[] { '\r', '\n' },
+                StringSplitOptions.RemoveEmptyEntries);
+
+            var kept = new List<string>();
+            bool removed = false;
+
+            foreach (string line in lines)
+            {
+                if (string.Equals(line.Trim(), target, StringComparison.OrdinalIgnoreCase))
+                {
+                    removed = true;
+                    continue;
+                }
+
+                kept.Add(line);
+            }
+
+            if (removed)
+            {
+                StremioAddonUrls = string.Join("\n", kept);
+            }
+
+            return removed;
+        }
+
+        // =========================================================
+        // ONE-TIME REMOVAL OF OBSOLETE LOOPBACK ADDON ENTRIES
+        // =========================================================
+        //
+        // Slice 20. Targeted, version-gated (SettingsSchemaVersion < 2)
+        // removal of http://127.0.0.1:7000, the old default legacy URL:
+        // its "Legacy" AddonInstance and its StremioAddonUrls line,
+        // matched by exact loopback host + port only. Every other
+        // instance and URL - including other localhost addons - is left
+        // alone. Must run BEFORE SyncLegacyAddonUrls. (The obsolete
+        // 11470 Local Files endpoint is handled separately by
+        // NormaliseLocalFilesRegistration.) Returns true if anything
+        // changed.
+        public bool RemoveObsoleteLoopbackAddons()
+        {
+            bool changed = false;
+
+            if (AddonInstances != null)
+            {
+                int before = AddonInstances.Count;
+
+                AddonInstances.RemoveAll(instance =>
+                    instance != null &&
+                    IsLoopbackEndpoint(instance.ManifestUrl, 7000) &&
+                    string.Equals(instance.Category, "Legacy", StringComparison.OrdinalIgnoreCase));
+
+                changed = AddonInstances.Count != before;
+            }
+
+            if (!string.IsNullOrWhiteSpace(StremioAddonUrls))
+            {
+                string[] lines = StremioAddonUrls.Split(
+                    new[] { '\r', '\n' },
+                    StringSplitOptions.RemoveEmptyEntries);
+
+                var kept = new List<string>();
+
+                foreach (string line in lines)
+                {
+                    if (IsLoopbackEndpoint(line, 7000))
+                    {
+                        changed = true;
+                        continue;
+                    }
+
+                    kept.Add(line);
+                }
+
+                if (kept.Count != lines.Length)
+                {
+                    StremioAddonUrls = string.Join("\n", kept);
+                }
+            }
+
+            return changed;
+        }
+
+        // =========================================================
+        // LOCAL FILES: BUILT-IN REGISTRATION (version 3)
+        // =========================================================
+        //
+        // Slice 20 correction. Local Files is a built-in registration
+        // with no addon address (CoreAddonSeedingService.
+        // CreateLocalFilesDefinition); the obsolete http://127.0.0.1:11470
+        // endpoint must not come back. Version-gated
+        // (SettingsSchemaVersion < 3), so it runs once:
+        //   - an existing "localfiles" instance still pointing at 11470
+        //     is replaced in place by the built-in definition (keeping
+        //     its Enabled choice and its position in the list);
+        //   - an existing "localfiles" instance with any other address
+        //     is left alone;
+        //   - no "localfiles" instance, but "localfiles" was seeded
+        //     before (the 11470 entry was removed by the earlier version 2
+        //     migration or by the user): the built-in definition is added;
+        //   - never seeded (fresh install): nothing here - normal core
+        //     seeding adds it;
+        //   - any OTHER instance at the 11470 endpoint is removed.
+        // Must run BEFORE CoreAddonSeedingService.SeedIfNeeded.
+        // Returns true if anything changed.
+        public bool NormaliseLocalFilesRegistration()
+        {
+            if (AddonInstances == null)
+            {
+                AddonInstances = new List<AddonInstance>();
+            }
+
+            bool changed = false;
+
+            int removed = AddonInstances.RemoveAll(instance =>
+                instance != null &&
+                !IsLocalFilesInstance(instance) &&
+                IsLoopbackEndpoint(instance.ManifestUrl, 11470));
+
+            if (removed > 0)
+            {
+                changed = true;
+            }
+
+            int index = AddonInstances.FindIndex(IsLocalFilesInstance);
+
+            if (index >= 0)
+            {
+                AddonInstance existing = AddonInstances[index];
+
+                if (IsLoopbackEndpoint(existing.ManifestUrl, 11470))
+                {
+                    AddonInstance builtIn = CoreAddonSeedingService.CreateLocalFilesDefinition();
+                    builtIn.Enabled = existing.Enabled;
+                    AddonInstances[index] = builtIn;
+                    changed = true;
+                }
+            }
+            else if (SeededCoreAddonProviderKeys != null &&
+                     SeededCoreAddonProviderKeys.Exists(key =>
+                        string.Equals(key, "localfiles", StringComparison.OrdinalIgnoreCase)))
+            {
+                AddonInstances.Add(CoreAddonSeedingService.CreateLocalFilesDefinition());
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static bool IsLocalFilesInstance(AddonInstance instance)
+        {
+            return instance != null &&
+                   string.Equals(instance.ProviderKey, "localfiles", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // True only for http://127.0.0.1:<port> (or localhost), with no
+        // path other than "/" or "/manifest.json" or the seeded
+        // "/local-addon", and no query string.
+        private static bool IsLoopbackEndpoint(string url, int port)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return false;
+            }
+
+            Uri uri;
+
+            if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out uri) ||
+                !string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase) ||
+                uri.Port != port ||
+                !string.IsNullOrEmpty(uri.Query))
+            {
+                return false;
+            }
+
+            if (!string.Equals(uri.Host, "127.0.0.1", StringComparison.Ordinal) &&
+                !string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string path = uri.AbsolutePath.TrimEnd('/');
+
+            return path.Length == 0 ||
+                   string.Equals(path, "/manifest.json", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(path, "/local-addon", StringComparison.OrdinalIgnoreCase);
         }
 
         // =========================================================
@@ -363,8 +718,20 @@ namespace StremioVideoCenter
             this.plugin = plugin;
 
             // Load previously saved settings.
-            var savedSettings =
-                plugin.LoadPluginSettings<StremioVideoCenterSettings>();
+            StremioVideoCenterSettings savedSettings = null;
+
+            try
+            {
+                savedSettings =
+                    plugin.LoadPluginSettings<StremioVideoCenterSettings>();
+            }
+            catch (Exception ex)
+            {
+                // Treated exactly like a null result below; the file is
+                // preserved before anything can overwrite it.
+                StremioVideoCenterLogger.Warn(
+                    "Loading the saved settings failed: " + UserFacingErrors.ForLog(ex));
+            }
 
             if (savedSettings != null)
             {
@@ -372,8 +739,30 @@ namespace StremioVideoCenter
             }
             else
             {
-                // First launch - create default settings.
+                // First launch (no config.json) - create default settings.
+                // Slice 22: if config.json DOES exist but could not be
+                // loaded, keep a copy of it first (see SettingsLoadGuard);
+                // if it cannot be copied, nothing may overwrite it this
+                // session.
                 Settings = new StremioVideoCenterSettings();
+
+                UnreadableConfigOutcome outcome =
+                    SettingsLoadGuard.PreserveUnreadableConfig(
+                        plugin.GetSettingsFilePath());
+
+                if (outcome != UnreadableConfigOutcome.NothingToPreserve)
+                {
+                    bool blocked = outcome == UnreadableConfigOutcome.NotPreserved;
+
+                    plugin.SettingsPersistenceBlocked = blocked;
+
+                    StremioVideoCenterLogger.Warn(
+                        blocked
+                            ? "Saved settings could not be read or preserved; saving is disabled for this session."
+                            : "Saved settings could not be read; a copy was kept and defaults are in use.");
+
+                    plugin.NotifySettingsUnreadable(blocked);
+                }
             }
 
             // One-directional, additive, idempotent migration - any
@@ -381,6 +770,23 @@ namespace StremioVideoCenter
             // AddonInstance is added as one. Runs on every load so
             // settings saved by an older build still pick up their
             // instance the first time this Settings view is opened.
+            // Slice 20: one-time removal of the stale 7000/11470 loopback
+            // entries. Version-gated and run BEFORE the sync below so the
+            // sync cannot re-create the 7000 instance from its URL line.
+            if (Settings.SettingsSchemaVersion < 2)
+            {
+                Settings.RemoveObsoleteLoopbackAddons();
+            }
+
+            // Slice 20 correction: Local Files becomes a built-in
+            // registration with no address (replaces the obsolete 11470
+            // entry; restores the entry the version 2 migration removed).
+            // Runs before core seeding below.
+            if (Settings.SettingsSchemaVersion < 3)
+            {
+                Settings.NormaliseLocalFilesRegistration();
+            }
+
             Settings.SyncLegacyAddonUrls();
 
             // One-time clean-up of settings saved by builds that still had
@@ -394,20 +800,20 @@ namespace StremioVideoCenter
 
                 try
                 {
-                    plugin.SavePluginSettings(Settings);
+                    plugin.SaveSettings(Settings);
                 }
                 catch (Exception ex)
                 {
                     Playnite.SDK.LogManager.GetLogger().Warn(
-                        ex,
-                        "Settings clean-up save failed; will retry on next launch.");
+                        "Settings clean-up save failed; will retry on next launch. " +
+                        UserFacingErrors.ForLog(ex));
                 }
             }
 
             // Fresh-install / core-addon seeding. Runs here (the plugin
             // constructor's ISettings load, not just when the Settings
             // UI happens to be opened) so a fresh install actually has
-            // Cinemeta/AnimeFLV/OpenSubtitles v3/Local Files registered
+            // Cinemeta/OpenSubtitles v3/Local Files registered
             // the first time the user opens Video Center, not only after
             // they visit Settings. Idempotent - see
             // CoreAddonSeedingService and Settings.
@@ -423,7 +829,7 @@ namespace StremioVideoCenter
 
                 if (seeded)
                 {
-                    plugin.SavePluginSettings(Settings);
+                    plugin.SaveSettings(Settings);
                 }
             }
             catch (Exception ex)
@@ -434,8 +840,8 @@ namespace StremioVideoCenter
                 // list after each addon's own construction succeeds),
                 // and the next launch will simply retry.
                 Playnite.SDK.LogManager.GetLogger().Warn(
-                    ex,
-                    "Core addon seeding failed; will retry on next launch.");
+                    "Core addon seeding failed; will retry on next launch. " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
 
@@ -472,8 +878,10 @@ namespace StremioVideoCenter
             Settings.SyncLegacyAddonUrls();
 
             // Save the current settings using Playnite's
-            // standard plugin settings system.
-            plugin.SavePluginSettings(Settings);
+            // standard plugin settings system (through the plugin's guarded
+            // save, which refuses to write while an unreadable config.json
+            // could not be preserved - see SettingsLoadGuard).
+            plugin.SaveSettings(Settings);
         }
 
         // =========================================================
@@ -487,7 +895,7 @@ namespace StremioVideoCenter
             // API credentials are optional at this stage.
             //
             // This allows the plugin to open even before the
-            // user has configured OMDb.
+            // user has configured a Real-Debrid key or any addon.
             return true;
         }
     }

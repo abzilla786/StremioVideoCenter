@@ -40,8 +40,14 @@ namespace StremioVideoCenterControls
             PreviewLostKeyboardFocus +=
                 MediaCard_PreviewLostKeyboardFocus;
 
+            PreviewMouseLeftButtonDown +=
+                MediaCard_PreviewMouseLeftButtonDown;
+
             PreviewMouseLeftButtonUp +=
                 MediaCard_PreviewMouseLeftButtonUp;
+
+            MouseLeave +=
+                MediaCard_MouseLeave;
 
             PreviewKeyDown +=
                 MediaCard_PreviewKeyDown;
@@ -98,13 +104,55 @@ namespace StremioVideoCenterControls
             }
         }
 
+        // Slice 21 (F5): a click selects only when the press began on this
+        // card and the pointer has not travelled far since. Previously any
+        // mouse-up over the card selected it, so releasing a short drag or
+        // scroll gesture over a card (even one that began elsewhere)
+        // activated that card unintentionally. DragScroll's own capture
+        // already stops longer drags; this covers the rest.
+        private const double ClickMoveTolerance = 8.0;
+
+        private bool _pressedOnCard;
+        private Point _pressPoint;
+
+        private void MediaCard_PreviewMouseLeftButtonDown(
+            object sender,
+            MouseButtonEventArgs e)
+        {
+            _pressedOnCard = true;
+            _pressPoint = e.GetPosition(this);
+        }
+
+        private void MediaCard_MouseLeave(
+            object sender,
+            MouseEventArgs e)
+        {
+            _pressedOnCard = false;
+        }
+
         private void MediaCard_PreviewMouseLeftButtonUp(
             object sender,
             MouseButtonEventArgs e)
         {
-            Focus();
+            bool isClick = _pressedOnCard;
 
-            RaiseSelected();
+            if (isClick)
+            {
+                Point release = e.GetPosition(this);
+
+                isClick =
+                    Math.Abs(release.X - _pressPoint.X) <= ClickMoveTolerance &&
+                    Math.Abs(release.Y - _pressPoint.Y) <= ClickMoveTolerance;
+            }
+
+            _pressedOnCard = false;
+
+            if (isClick)
+            {
+                Focus();
+
+                RaiseSelected();
+            }
 
             e.Handled = true;
         }

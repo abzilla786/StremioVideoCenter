@@ -319,8 +319,8 @@ namespace StremioVideoCenter.Services
                 // regardless, mirroring WatchStateService/
                 // WatchHistoryService.TryPersist exactly.
                 Playnite.SDK.LogManager.GetLogger().Warn(
-                    ex,
-                    "MyListService: failed to persist My List settings.");
+                    "MyListService: failed to persist My List settings. " +
+                    UserFacingErrors.ForLog(ex));
             }
         }
     }

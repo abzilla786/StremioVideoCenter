@@ -393,8 +393,19 @@
                                Text="No catalogue results are available right now."
                                Foreground="#AAAAAA"
                                FontSize="14"
+                               TextWrapping="Wrap"
                                Visibility="Collapsed"
                                Margin="8,20,8,0" />
+                    <!-- Slice 21 (F8): shown only when the default rows
+                         all came back empty (a failed load); re-runs the
+                         same default-view load. -->
+                    <Button x:Name="DefaultRetryButton"
+                            Content="Try Again"
+                            Style="{StaticResource LoadMoreButtonStyle}"
+                            Click="DefaultRetryButton_Click"
+                            HorizontalAlignment="Left"
+                            Margin="8,12,8,0"
+                            Visibility="Collapsed" />
                 </StackPanel>
             </ScrollViewer>
 
@@ -422,9 +433,10 @@
                     </ItemsControl>
 
                     <TextBlock x:Name="FilteredEmptyText"
-                               Text="No results for this filter."
+                               Text="No results for this filter. If this looks wrong, check your connection and choose the filter again."
                                Foreground="#AAAAAA"
                                FontSize="14"
+                               TextWrapping="Wrap"
                                Visibility="Collapsed"
                                Margin="8,20,8,0" />
 

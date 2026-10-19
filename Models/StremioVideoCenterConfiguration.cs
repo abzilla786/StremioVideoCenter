@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace StremioVideoCenter.Models
@@ -9,8 +10,6 @@ namespace StremioVideoCenter.Models
     // exposes - not a general configuration framework.
     public class StremioVideoCenterConfiguration
     {
-        public string OmdbApiKey { get; set; }
-
         public string RealDebridApiKey { get; set; }
 
         // Raw newline-delimited addon URLs, same shape as the underlying
@@ -35,6 +34,12 @@ namespace StremioVideoCenter.Models
         // locations is not wired into the View this slice - see
         // LocalMediaView/LocalLibraryService remarks.
         public List<LibraryLocation> LibraryLocations { get; set; }
+
+        // Local Files: the plugin-owned library manager (folders, scan,
+        // index, matching, local playback sources). One instance per
+        // plugin, handed over fully constructed like the services below.
+        // Null when Local Files cannot be provided (e.g. no settings).
+        public Services.LocalLibraryManager LocalLibrary { get; set; }
 
         // Slice 16A (Profile Foundation): unlike every value above (which
         // are read-only snapshots the View only ever displays), profile
@@ -68,5 +73,20 @@ namespace StremioVideoCenter.Models
         // remarks) - it is plumbed through here now so the foundation is
         // in place for Slice 17B rather than left unreachable.
         public Services.MyListService MyListService { get; set; }
+
+        // Slice 20 Stage 1B (settings freshness): optional live readers for
+        // the three values above that the View used to keep only as a
+        // snapshot taken when it was created. The View reads these each
+        // time it builds the addon registry or Real-Debrid service, so a
+        // Real-Debrid key or addon change saved in Settings applies to the
+        // very next playback attempt, and settings edits that were
+        // cancelled stop applying. When a provider is null (any caller
+        // that does not set it) the View falls back to the snapshot value
+        // above, exactly as before.
+        public Func<string> RealDebridApiKeyProvider { get; set; }
+
+        public Func<string> StremioAddonUrlsProvider { get; set; }
+
+        public Func<List<AddonInstance>> AddonInstancesProvider { get; set; }
     }
 }

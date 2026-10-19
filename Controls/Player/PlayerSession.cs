@@ -3,12 +3,28 @@ using StremioVideoCenter.Models;
 using StremioVideoCenter.Services;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO.Pipes;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace StremioVideoCenterControls.Player
 {
+    // What became of an attempt to add an external subtitle to mpv.
+    public enum ExternalSubtitleOutcome
+    {
+        // mpv has the track and reports it as the selected subtitle.
+        Activated,
+        // mpv refused it, it never appeared in the track list, or it could
+        // not be selected.
+        Failed,
+        // The playback changed (new file / player closed) meanwhile; the
+        // result no longer applies to what is on screen.
+        Superseded,
+        // Another external subtitle is already being added.
+        Busy
+    }
+
     // Coordinates one mpv playback session: process + IPC + native host
     // lifecycle, and keeps PlaybackState in sync via mpv property observation
     // and events. Exposes only high-level playback intents to the UI layer
@@ -31,6 +47,13 @@ namespace StremioVideoCenterControls.Player
         private bool _disposed;
         private bool _started;
 
+        // External (addon) subtitles added to the CURRENT file: external key
+        // (a one-way hash, never the URL) -> mpv subtitle track id. Emptied
+        // whenever a new file loads, because track ids belong to the file.
+        private readonly Dictionary<string, int> _loadedExternalSubtitles =
+            new Dictionary<string, int>(StringComparer.Ordinal);
+        private int _externalSubtitleBusy;
+
         // Independent guard against PlayerSession.StartAsync being entered
         // concurrently, on top of (not instead of) MpvPlayer's own startup
         // gate - RecoverAndRetryPlayAsync calls StartAsync directly and
@@ -42,6 +65,11 @@ namespace StremioVideoCenterControls.Player
         // Guards PollPositionAsync against overlapping calls (a slow mpv
         // reply must not let ticks pile up). 0 = free, 1 = poll running.
         private int _pollInProgress;
+
+        // Slice 22: true while mpv's http-header-fields holds headers set
+        // for an earlier stream, so the next stream (which may have none)
+        // clears them rather than inheriting another addon's headers.
+        private bool _requestHeadersApplied;
 
         // Bumped for every new loadfile. Poll results that started under an
         // older generation are discarded so they cannot write stale state.
@@ -205,11 +233,12 @@ namespace StremioVideoCenterControls.Player
 
             try
             {
+                await ApplyRequestHeadersAsync(context).ConfigureAwait(true);
                 await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
             }
             catch (MpvCommandException)
             {
-                await RecoverAndRetryPlayAsync(url).ConfigureAwait(true);
+                await RecoverAndRetryPlayAsync(context).ConfigureAwait(true);
                 return;
             }
 
@@ -234,6 +263,53 @@ namespace StremioVideoCenterControls.Player
                 return;
 
             await _host.WaitForAndAttachMpvWindowAsync(process.ProcessId, 3000).ConfigureAwait(true);
+        }
+
+        // Slice 22: applies the request headers an addon declared for this
+        // stream (behaviorHints.proxyHeaders.request, sanitised by
+        // StreamResolverService) as mpv's http-header-fields, which mpv
+        // sends with the stream request. Sets nothing when the stream has no
+        // headers and none were set earlier. Headers are never logged. If
+        // headers are required and mpv refuses them the failure propagates
+        // (playing without them would just be rejected by the server); a
+        // failure while merely clearing old headers is best-effort.
+        private async Task ApplyRequestHeadersAsync(PlaybackContext context)
+        {
+            Dictionary<string, string> headers = null;
+
+            if (context != null && context.Source != null && context.Source.Source != null)
+                headers = context.Source.Source.Headers;
+
+            bool hasHeaders = headers != null && headers.Count > 0;
+
+            if (!hasHeaders && !_requestHeadersApplied)
+                return;
+
+            JArray fields = new JArray();
+
+            if (hasHeaders)
+            {
+                foreach (KeyValuePair<string, string> pair in headers)
+                    fields.Add(pair.Key + ": " + pair.Value);
+            }
+
+            if (hasHeaders)
+            {
+                await _ipc.SetPropertyAsync("http-header-fields", fields).ConfigureAwait(true);
+                _requestHeadersApplied = true;
+                return;
+            }
+
+            try
+            {
+                await _ipc.SetPropertyAsync("http-header-fields", fields).ConfigureAwait(true);
+                _requestHeadersApplied = false;
+            }
+            catch (MpvCommandException)
+            {
+                // Best-effort clear; the next stream with headers sets them
+                // again, and one without will retry the clear.
+            }
         }
 
         // Clears everything that describes the previous file BEFORE loadfile
@@ -265,18 +341,24 @@ namespace StremioVideoCenterControls.Player
             // while the new file loads (see PlaybackTracks).
             PlaybackTracks.Reset(State);
 
+            lock (_loadedExternalSubtitles)
+                _loadedExternalSubtitles.Clear();
+
             RaiseStateChanged();
         }
 
         // If mpv died between sessions (crash, killed externally, IPC faulted),
         // rebuild the process once and retry the play command. This never
         // touches --wid/renderer launch configuration.
-        private async Task RecoverAndRetryPlayAsync(string url)
+        private async Task RecoverAndRetryPlayAsync(PlaybackContext context)
         {
+            string url = context.PlaybackUrl;
             IntPtr hostHandle = _host.WindowHandle;
             TeardownMpvOnly();
+            _requestHeadersApplied = false;
             await StartAsync(hostHandle).ConfigureAwait(true);
             ResetPlaybackState();
+            await ApplyRequestHeadersAsync(context).ConfigureAwait(true);
             await _ipc.RunCommandAsync("loadfile", url, "replace").ConfigureAwait(true);
 
             MpvProcessService process = _process;
@@ -379,6 +461,187 @@ namespace StremioVideoCenterControls.Player
             await _ipc.SetPropertyAsync("sid", PlaybackTracks.SubtitleSelectionValue(subtitleTrackId)).ConfigureAwait(true);
             await RefreshTrackStateAsync().ConfigureAwait(true);
             return true;
+        }
+
+        // External subtitles added to the current file (external key ->
+        // track id). A copy; safe to hold.
+        public IDictionary<string, int> LoadedExternalSubtitles
+        {
+            get
+            {
+                lock (_loadedExternalSubtitles)
+                    return new Dictionary<string, int>(_loadedExternalSubtitles, StringComparer.Ordinal);
+            }
+        }
+
+        // Adds an addon-provided subtitle to the RUNNING file and selects
+        // it. Uses mpv's "sub-add <url> select <title> <lang>": mpv fetches
+        // the subtitle itself, so nothing is written to disk by Zino and no
+        // temp file exists to clean up. Playback is not reloaded or
+        // restarted; position, audio track, volume, speed and pause state
+        // are not touched.
+        //
+        // The result is judged from mpv's own track list afterwards (a new
+        // subtitle track must have appeared and sid must equal it), not from
+        // the command having returned. The url is only ever passed to mpv:
+        // it is not logged and not placed in any exception. Selecting a
+        // subtitle that was already added this playback re-selects its
+        // track instead of adding it a second time.
+        public async Task<ExternalSubtitleOutcome> ActivateExternalSubtitleAsync(
+            string externalKey,
+            string url,
+            string title,
+            string languageCode)
+        {
+            if (string.IsNullOrEmpty(externalKey) || string.IsNullOrEmpty(url) || !IsRunning)
+                return ExternalSubtitleOutcome.Failed;
+
+            if (Interlocked.CompareExchange(ref _externalSubtitleBusy, 1, 0) != 0)
+                return ExternalSubtitleOutcome.Busy;
+
+            try
+            {
+                int generation = _playGeneration;
+
+                // Up to date track list first, so "which track is new" is
+                // judged against what mpv has right now.
+                await RefreshTrackStateAsync().ConfigureAwait(true);
+                if (generation != _playGeneration) return ExternalSubtitleOutcome.Superseded;
+
+                int existingId;
+                bool known;
+                lock (_loadedExternalSubtitles)
+                    known = _loadedExternalSubtitles.TryGetValue(externalKey, out existingId);
+
+                if (known && PlaybackTracks.HasSubtitleTrack(State, existingId))
+                {
+                    await SelectSubtitleTrackAsync(existingId).ConfigureAwait(true);
+                    if (generation != _playGeneration) return ExternalSubtitleOutcome.Superseded;
+
+                    return State.SelectedSubtitleTrackId == existingId
+                        ? ExternalSubtitleOutcome.Activated
+                        : ExternalSubtitleOutcome.Failed;
+                }
+
+                HashSet<int> before = new HashSet<int>(State.SubtitleTracks.Select(t => t.Id));
+
+                // What the user has now. A subtitle that fails to load must
+                // leave this exactly as it was, so the new one is added
+                // WITHOUT selecting it and only selected once it is known to
+                // be a real track.
+                int? previousSelection = State.SelectedSubtitleTrackId;
+
+                MpvIpcClient ipc = LiveIpc();
+                if (ipc == null) return ExternalSubtitleOutcome.Failed;
+
+                try
+                {
+                    // Generous timeout: mpv may fetch the file from the
+                    // network before the command returns.
+                    await ipc.RunCommandWithTimeoutAsync(
+                        20000,
+                        "sub-add",
+                        url,
+                        "auto",
+                        SafeSubtitleTitle(title),
+                        SafeLanguageTag(languageCode)).ConfigureAwait(true);
+                }
+                catch (MpvCommandException)
+                {
+                    // Message carries only the command name and mpv's error
+                    // string - never the url. The caller shows fixed wording.
+                    return generation != _playGeneration
+                        ? ExternalSubtitleOutcome.Superseded
+                        : ExternalSubtitleOutcome.Failed;
+                }
+
+                if (generation != _playGeneration) return ExternalSubtitleOutcome.Superseded;
+
+                await RefreshTrackStateAsync().ConfigureAwait(true);
+                if (generation != _playGeneration) return ExternalSubtitleOutcome.Superseded;
+
+                MpvTrackInfo added = State.SubtitleTracks.FirstOrDefault(t => !before.Contains(t.Id));
+                if (added == null)
+                {
+                    await RestoreSubtitleSelectionAsync(generation, previousSelection).ConfigureAwait(true);
+                    return ExternalSubtitleOutcome.Failed;
+                }
+
+                // From here the track exists: remember it so choosing the
+                // same subtitle again re-selects instead of re-adding.
+                lock (_loadedExternalSubtitles)
+                    _loadedExternalSubtitles[externalKey] = added.Id;
+
+                try
+                {
+                    await SelectSubtitleTrackAsync(added.Id).ConfigureAwait(true);
+                }
+                catch (MpvCommandException)
+                {
+                    // Fall through: judged from the read-back below.
+                }
+
+                if (generation != _playGeneration) return ExternalSubtitleOutcome.Superseded;
+
+                if (State.SelectedSubtitleTrackId == added.Id)
+                    return ExternalSubtitleOutcome.Activated;
+
+                await RestoreSubtitleSelectionAsync(generation, previousSelection).ConfigureAwait(true);
+                return generation != _playGeneration
+                    ? ExternalSubtitleOutcome.Superseded
+                    : ExternalSubtitleOutcome.Failed;
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _externalSubtitleBusy, 0);
+            }
+        }
+
+        // Puts the subtitle choice back to what it was before an external
+        // subtitle was attempted (only if it is not already that, and only
+        // for the same playback). Best effort: a refusal is swallowed because
+        // the caller is already reporting the failure.
+        private async Task RestoreSubtitleSelectionAsync(int generation, int? previousSelection)
+        {
+            if (generation != _playGeneration) return;
+            if (State.SelectedSubtitleTrackId == previousSelection) return;
+
+            try
+            {
+                if (previousSelection.HasValue &&
+                    !PlaybackTracks.HasSubtitleTrack(State, previousSelection.Value))
+                    return;
+
+                await SelectSubtitleTrackAsync(previousSelection).ConfigureAwait(true);
+            }
+            catch (MpvCommandException)
+            {
+            }
+        }
+
+        // Title/language are plain display tags handed to mpv. Keep them
+        // short and free of anything that is not text.
+        private static string SafeSubtitleTitle(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return "External";
+
+            string cleaned = new string(title.Where(c => !char.IsControl(c)).ToArray()).Trim();
+            if (cleaned.Length == 0) return "External";
+
+            return cleaned.Length > 40 ? cleaned.Substring(0, 40) : cleaned;
+        }
+
+        private static string SafeLanguageTag(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return "und";
+
+            string cleaned = new string(code.Trim()
+                .Where(c => char.IsLetterOrDigit(c) || c == '-' || c == '_')
+                .ToArray());
+
+            if (cleaned.Length == 0) return "und";
+
+            return cleaned.Length > 16 ? cleaned.Substring(0, 16) : cleaned;
         }
 
         // Relative change of mpv's sub-delay (session-only). The resulting
@@ -898,7 +1161,9 @@ namespace StremioVideoCenterControls.Player
                 {
                     MpvProcessService process = _process;
                     if (process != null)
+                    {
                         process.WaitForExit(500);
+                    }
                 }
                 catch { }
             }

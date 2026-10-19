@@ -64,14 +64,17 @@ namespace StremioVideoCenterControls.Player
 
         // Centre play-state indicator glyph. It reflects actual state only:
         //   not yet established (loading)  -> ellipsis
-        //   playing                        -> play
-        //   paused / ended                 -> pause
+        //   playing                        -> pause bars
+        //   paused / ended                 -> play triangle
+        // (Slice 20 correction: the centre control previously showed the
+        // opposite pairing, which read as reversed during playback. It now
+        // uses the same pairing as the bottom Play/Pause button.)
         public static string CentreGlyph(bool isEstablished, bool isPlaying)
         {
             if (!isEstablished)
                 return "…";
 
-            return isPlaying ? "▶" : "❚❚";
+            return isPlaying ? "❚❚" : "▶";
         }
 
         // Bottom Play/Pause button glyph: the ACTION it will perform

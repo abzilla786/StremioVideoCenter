@@ -36,6 +36,13 @@ namespace StremioVideoCenterControls.Player
         // (e.g. the currently selected track). Defaults to the first element.
         public UIElement InitialElement { get; set; }
 
+        // Optional: a menu with its own two-dimensional layout (the
+        // subtitle page) takes over Up/Down and Left/Right. Return true when
+        // the move was handled; the controller then does nothing further.
+        public Func<int, bool> HandleVertical { get; set; }
+
+        public Func<int, bool> HandleHorizontal { get; set; }
+
         public void Add(UIElement element)
         {
             if (element != null && !_elements.Contains(element))
@@ -172,6 +179,11 @@ namespace StremioVideoCenterControls.Player
             }
 
             FocusGroup group = CurrentGroup(current);
+
+            if (_scopes.Peek() is FocusGroup && group != null && group.HandleHorizontal != null &&
+                group.HandleHorizontal(direction))
+                return;
+
             MoveWithinGroup(group, current, direction);
         }
 
@@ -185,6 +197,11 @@ namespace StremioVideoCenterControls.Player
                 // A menu scope is a flat list; Up/Down moves the list selection
                 // the same way Left/Right would move focus within a row.
                 FocusGroup menuGroup = scope as FocusGroup;
+
+                if (menuGroup != null && menuGroup.HandleVertical != null &&
+                    menuGroup.HandleVertical(direction))
+                    return;
+
                 MoveWithinGroup(menuGroup, Keyboard.FocusedElement as UIElement, direction);
                 return;
             }
