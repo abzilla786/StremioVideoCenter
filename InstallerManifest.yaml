@@ -2,7 +2,7 @@
 
 Packages:
   - Version: 1.0.0
-    RequiredApiVersion: 6.0.0 # Provisional — minimum compatibility still needs verification
+    RequiredApiVersion: 6.15.0
     ReleaseDate: 2026-10-19
     PackageUrl: https://github.com/abzilla786/StremioVideoCenter/releases/download/v1.0.0/StremioVideoCenter_2b114735-64f4-4d7d-9069-9f4036dc85bf_1_0_0.pext
     Changelog:
