@@ -103,7 +103,7 @@ The project includes MPV and other third-party components, which are distributed
 - See [`LICENSE`](LICENSE) for the project's original material, subject to the final release licence confirmation.
 - See [`mpv/LICENSE-mpv.txt`](mpv/LICENSE-mpv.txt) for MPV-related licensing information, if included in the release.
 - See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and the accompanying third-party licence materials for additional notices, when supplied with the release.
-- See [`docs/MPV_REDISTRIBUTION.md`](docs/MPV_REDISTRIBUTION.md) for the current MPV redistribution notes, if present in the repository.
+- See [`mpv/MPV_REDISTRIBUTION.md`](mpv/MPV_REDISTRIBUTION.md) for the current MPV redistribution notes, if present in the repository.
 
 ## Credits
 
