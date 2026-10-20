@@ -58,7 +58,7 @@ These links provide the licence texts; the licence applicable to an individual c
 
 ## 3. Newtonsoft.Json
 
-- **Version:** `13.0.5-beta1`
+- **Version:** `13.0.4`
 - **Licence:** MIT License
 - **Copyright:** Copyright (c) 2007 James Newton-King
 - **Project:** https://github.com/JamesNK/Newtonsoft.Json

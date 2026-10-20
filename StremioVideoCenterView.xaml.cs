@@ -2070,38 +2070,44 @@ namespace StremioVideoCenter
             // specific overlay wins" ordering. Only one of these is ever
             // non-null at a time (each Show*PageAsync method is awaited
             // to completion before another can open).
-            if (_activeMoviesPage != null)
+            //
+            // These pages (and History/My List below) stay open underneath a
+            // player started from them, so - like Movie Details and the Local
+            // Files page above - they must yield to the player: otherwise a
+            // key/button meant for the player is consumed by the page behind
+            // it (the page is never the player's owner while playback is up).
+            if (_activeMoviesPage != null && _stremioPlayer == null)
             {
                 return _activeMoviesPage.HandleControllerInput(button);
             }
 
-            if (_activeTvPage != null)
+            if (_activeTvPage != null && _stremioPlayer == null)
             {
                 return _activeTvPage.HandleControllerInput(button);
             }
 
-            if (_activeAnimePage != null)
+            if (_activeAnimePage != null && _stremioPlayer == null)
             {
                 return _activeAnimePage.HandleControllerInput(button);
             }
 
-            if (_activeSearchPage != null)
+            if (_activeSearchPage != null && _stremioPlayer == null)
             {
                 return _activeSearchPage.HandleControllerInput(button);
             }
 
             // History (Slice 16C) owns input while its overlay is open -
             // same "most specific overlay wins" ordering as the other
-            // dedicated pages above.
-            if (_activeHistoryView != null)
+            // dedicated pages above (and the same player yield).
+            if (_activeHistoryView != null && _stremioPlayer == null)
             {
                 return _activeHistoryView.HandleControllerInput(button);
             }
 
             // My List (Slice 17B) owns input while its overlay is open -
             // same "most specific overlay wins" ordering as History
-            // directly above.
-            if (_activeMyListView != null)
+            // directly above (and the same player yield).
+            if (_activeMyListView != null && _stremioPlayer == null)
             {
                 return _activeMyListView.HandleControllerInput(button);
             }
@@ -4775,6 +4781,10 @@ namespace StremioVideoCenter
                     _activeLocalMediaView.SetPlayerActive(true);
                 }
 
+                // Same hand-off for a Movies/TV/Anime/Search/History/My List
+                // page left open underneath (undone in ClosePlayer).
+                DisablePageUnderPlayer();
+
                 _stremioPlayer =
                     new MpvPlayer();
 
@@ -6064,6 +6074,20 @@ namespace StremioVideoCenter
             PlaybackTestHost.Visibility =
                 Visibility.Collapsed;
 
+            // Every player teardown (normal close, startup failure, load
+            // failure, selector swap) passes through here, so this is the one
+            // place a page disabled for the player is re-enabled - and it runs
+            // whether or not a player instance still existed above.
+            FrameworkElement pageUnderPlayer = _pageDisabledUnderPlayer;
+            IInputElement focusBeforePlayer = _focusBeforePlayerOnPage;
+            _pageDisabledUnderPlayer = null;
+            _focusBeforePlayerOnPage = null;
+
+            if (pageUnderPlayer != null)
+            {
+                pageUnderPlayer.IsEnabled = true;
+            }
+
             // Local Files page underneath: it takes focus back, instead of
             // the Home focus restoration below.
             LocalMediaView localPageUnderPlayer = _activeLocalMediaView;
@@ -6096,9 +6120,103 @@ namespace StremioVideoCenter
             if (restoreHomeFocus)
             {
                 Dispatcher.BeginInvoke(
-                    new Action(() => { FocusFirstAvailableSection(); }),
+                    new Action(() =>
+                    {
+                        // A page that was open under the player gets its own
+                        // focus back when nothing else owns it; otherwise the
+                        // usual target (which already honours Movie Details).
+                        if (!TryRestoreFocusToPageUnderPlayer(pageUnderPlayer, focusBeforePlayer))
+                        {
+                            FocusFirstAvailableSection();
+                        }
+                    }),
                     System.Windows.Threading.DispatcherPriority.Input);
             }
+        }
+
+        // =========================================================
+        // PAGE UNDER THE PLAYER (input / focus hand-off)
+        // =========================================================
+        //
+        // Movies, TV, Anime, Search, History and My List stay open underneath
+        // a player started from them. Left enabled they keep (or take back)
+        // keyboard focus and, before the router yielded to the player, also
+        // consumed the keys/buttons meant for it - so the player could not be
+        // controlled and clicking it did not help. LocalMediaView solves the
+        // same problem with SetPlayerActive(); this is the equivalent for the
+        // other pages. The page is disabled when the player is created and
+        // re-enabled in ClosePlayer, the single teardown point.
+
+        // The page disabled for the current player (null when none).
+        private FrameworkElement _pageDisabledUnderPlayer;
+
+        // The element that held keyboard focus inside that page when the
+        // player was created (null when focus was elsewhere).
+        private IInputElement _focusBeforePlayerOnPage;
+
+        private FrameworkElement GetOpenPageUnderPlayer()
+        {
+            return (FrameworkElement)_activeMoviesPage
+                ?? (FrameworkElement)_activeTvPage
+                ?? (FrameworkElement)_activeAnimePage
+                ?? (FrameworkElement)_activeSearchPage
+                ?? (FrameworkElement)_activeHistoryView
+                ?? _activeMyListView;
+        }
+
+        private void DisablePageUnderPlayer()
+        {
+            FrameworkElement page = GetOpenPageUnderPlayer();
+
+            if (page == null)
+            {
+                return;
+            }
+
+            // Remember focus only when it is genuinely inside the page.
+            IInputElement focused = Keyboard.FocusedElement;
+            Visual focusedVisual = focused as Visual;
+
+            _focusBeforePlayerOnPage =
+                focusedVisual != null && page.IsAncestorOf(focusedVisual)
+                    ? focused
+                    : null;
+
+            _pageDisabledUnderPlayer = page;
+            page.IsEnabled = false;
+        }
+
+        // True when focus was handed back to the element the page had before
+        // the player. False (nothing changed) whenever another overlay owns
+        // focus, a new player is already up, or the element is gone.
+        private bool TryRestoreFocusToPageUnderPlayer(
+            FrameworkElement page,
+            IInputElement previousFocus)
+        {
+            if (page == null ||
+                previousFocus == null ||
+                _stremioPlayer != null ||
+                _activeMovieDetails != null ||
+                _activeEpisodeBrowser != null ||
+                _activeSourceSelector != null)
+            {
+                return false;
+            }
+
+            UIElement previous = previousFocus as UIElement;
+
+            if (previous == null ||
+                !previous.IsVisible ||
+                !previous.IsEnabled ||
+                !previous.Focusable ||
+                !page.IsAncestorOf(previous))
+            {
+                return false;
+            }
+
+            Keyboard.Focus(previous);
+
+            return ReferenceEquals(Keyboard.FocusedElement, previous);
         }
 
         // Shows the Source Selector IN PLACE OF the player with no frame in
