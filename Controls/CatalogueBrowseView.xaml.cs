@@ -471,7 +471,43 @@ namespace StremioVideoCenterControls
                 return;
             }
 
+            // Load More focus fix (mirrors AnimeBrowseView's identical fix):
+            // LoadFilteredPageAsync disables this button while the request
+            // runs, which drops keyboard focus the instant the control the
+            // user just activated becomes disabled - WPF never gives it back
+            // on its own, so every keyboard/controller Load More press would
+            // otherwise lose focus. Capture the intent now, restore it after.
+            bool hadFocus = LoadMoreButton.IsKeyboardFocused;
+            int tokenBefore = _filteredLoadToken;
+
             await LoadFilteredPageAsync(focusFirstResult: false);
+
+            // Only when focus was on Load More, this request was not
+            // superseded by a newer filter selection (token), and the user
+            // has not since moved focus onto a card, the filter bar or the
+            // header row while the page was loading.
+            if (!hadFocus ||
+                _filteredLoadToken != tokenBefore + 1 ||
+                GetFocusedFilteredCardIndex() >= 0 ||
+                IsFilterBarFocused() ||
+                IsHeaderRowFocused())
+            {
+                return;
+            }
+
+            if (LoadMoreButton.Visibility == Visibility.Visible && LoadMoreButton.IsEnabled)
+            {
+                // More pages remain - focus returns to the button where the
+                // user left it.
+                LoadMoreButton.Focus();
+            }
+            else if (_filteredItems.Count > 0)
+            {
+                // That was the last page - Load More just disappeared out
+                // from under the user's focus, so land on the last card
+                // rather than leaving focus lost.
+                FocusFilteredCard(_filteredItems.Count - 1);
+            }
         }
 
         private void FilteredMediaCard_Selected(object sender, RoutedEventArgs e)
@@ -1036,6 +1072,37 @@ namespace StremioVideoCenterControls
 
             if (IsFilteredViewActive())
             {
+                // Load More focus fix: Up from Load More returns to the
+                // results grid's last card; Down is a no-op (Load More is the
+                // last element on the page). Without this, MoveFilteredGrid
+                // found no focused card and jumped to the first one.
+                if (LoadMoreButton.IsKeyboardFocused)
+                {
+                    if (direction < 0 && FilteredItemsControl.Items.Count > 0)
+                    {
+                        FocusFilteredCard(FilteredItemsControl.Items.Count - 1);
+                    }
+
+                    return;
+                }
+
+                // Down out of the grid's last row reaches Load More while it
+                // is shown (previously MoveFilteredGrid clamped in place, so
+                // there was no keyboard/controller path to it at all). While
+                // the next page is loading the button is disabled: Down is
+                // consumed so focus does not wander, and nothing is queued.
+                if (direction > 0 &&
+                    IsFocusedFilteredCardInLastRow() &&
+                    LoadMoreButton.Visibility == Visibility.Visible)
+                {
+                    if (LoadMoreButton.IsEnabled)
+                    {
+                        LoadMoreButton.Focus();
+                    }
+
+                    return;
+                }
+
                 if (direction < 0 && IsFocusedFilteredCardInTopRow())
                 {
                     // Was CloseButton.Focus() - Up from the topmost
@@ -1080,6 +1147,14 @@ namespace StremioVideoCenterControls
             if (IsFilterBarFocused())
             {
                 MoveFilterBarHorizontal(direction);
+                return;
+            }
+
+            // Load More is a single full-width button: Left/Right are a no-op
+            // on it (otherwise the grid would treat "no focused card" as a
+            // reason to jump to the first card).
+            if (LoadMoreButton.IsKeyboardFocused)
+            {
                 return;
             }
 
@@ -1242,6 +1317,25 @@ namespace StremioVideoCenterControls
         {
             int index = GetFocusedFilteredCardIndex();
             return index >= 0 && index < GetFilteredColumnsPerRow();
+        }
+
+        // Load More focus fix: true when the focused card is in the grid's
+        // last visual row - the same index math as the top-row check above,
+        // for the opposite edge (this grid's Down-exit target is Load More).
+        private bool IsFocusedFilteredCardInLastRow()
+        {
+            int index = GetFocusedFilteredCardIndex();
+
+            if (index < 0)
+            {
+                return false;
+            }
+
+            int count = FilteredItemsControl.Items.Count;
+            int columns = GetFilteredColumnsPerRow();
+            int lastRowStart = ((count - 1) / columns) * columns;
+
+            return index >= lastRowStart;
         }
 
         // =========================================================
