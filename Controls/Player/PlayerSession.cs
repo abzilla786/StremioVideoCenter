@@ -452,15 +452,48 @@ namespace StremioVideoCenterControls.Player
         }
 
         // subtitleTrackId == null means "subtitles off" (sid=no).
-        public async Task<bool> SelectSubtitleTrackAsync(int? subtitleTrackId)
+        //
+        // mpv's sub-delay is one global value, not per track: a delay the
+        // user dialled in for one subtitle would otherwise silently stay
+        // applied to the next track they pick. Choosing a different subtitle
+        // track therefore starts that track at no delay (the manual delay
+        // controls then adjust it as usual). Nothing is guessed: the delay is
+        // only ever cleared, never set to an estimated offset. Turning
+        // subtitles off, re-selecting the current track and restoring a
+        // previous choice after a failed attempt (resetDelay: false) leave
+        // the delay alone. The delay is cleared only AFTER mpv accepted the
+        // new track, so a refused selection never costs the user the delay
+        // they had dialled in for the track that is still showing.
+        public async Task<bool> SelectSubtitleTrackAsync(int? subtitleTrackId, bool resetDelay = true)
         {
             if (!IsRunning) return false;
             if (subtitleTrackId.HasValue && !PlaybackTracks.HasSubtitleTrack(State, subtitleTrackId.Value))
                 return false;
 
+            bool changesTrack = subtitleTrackId.HasValue && subtitleTrackId != State.SelectedSubtitleTrackId;
+
             await _ipc.SetPropertyAsync("sid", PlaybackTracks.SubtitleSelectionValue(subtitleTrackId)).ConfigureAwait(true);
+
+            if (resetDelay && changesTrack)
+                await ClearSubtitleDelayAsync().ConfigureAwait(true);
+
             await RefreshTrackStateAsync().ConfigureAwait(true);
             return true;
+        }
+
+        // Sets mpv's sub-delay back to 0. Best effort: the track change that
+        // triggered it has already succeeded, so a refusal here is logged and
+        // the (observed) property keeps whatever mpv actually holds.
+        private async Task ClearSubtitleDelayAsync()
+        {
+            try
+            {
+                await _ipc.SetPropertyAsync("sub-delay", 0.0).ConfigureAwait(true);
+            }
+            catch (MpvCommandException ex)
+            {
+                StremioVideoCenterLogger.Info("Subtitle delay could not be reset: " + ex.Message);
+            }
         }
 
         // External subtitles added to the current file (external key ->
@@ -572,6 +605,13 @@ namespace StremioVideoCenterControls.Player
                 lock (_loadedExternalSubtitles)
                     _loadedExternalSubtitles[externalKey] = added.Id;
 
+                // sub-add's "auto" flag lets mpv select the new track itself
+                // when no subtitle was selected. It is then already the
+                // selected track, so the call below is no change - and a delay
+                // left over from an earlier track would still apply.
+                if (!previousSelection.HasValue && State.SelectedSubtitleTrackId == added.Id)
+                    await ClearSubtitleDelayAsync().ConfigureAwait(true);
+
                 try
                 {
                     await SelectSubtitleTrackAsync(added.Id).ConfigureAwait(true);
@@ -612,7 +652,7 @@ namespace StremioVideoCenterControls.Player
                     !PlaybackTracks.HasSubtitleTrack(State, previousSelection.Value))
                     return;
 
-                await SelectSubtitleTrackAsync(previousSelection).ConfigureAwait(true);
+                await SelectSubtitleTrackAsync(previousSelection, resetDelay: false).ConfigureAwait(true);
             }
             catch (MpvCommandException)
             {

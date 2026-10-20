@@ -67,6 +67,15 @@ namespace StremioVideoCenterControls
         private int _lastCursorX;
         private int _lastCursorY;
 
+        // Cursor position at the last MouseMove that counted as activity (see
+        // IsGenuineMouseMove). Kept apart from the poll's sample above so the
+        // poll's own movement detection (and its diagnostics) is unchanged.
+        private bool _haveMouseEventSample;
+        private int _lastMouseEventX;
+        private int _lastMouseEventY;
+        private int _lastMouseEventStamp;
+        private int _ignoredMouseEvents;
+
         // True while RefreshFromState moves the volume slider to mpv's value,
         // so that programmatic change is not sent back to mpv as a command.
         private bool _applyingVolumeFromState;
@@ -1478,14 +1487,19 @@ namespace StremioVideoCenterControls
 
             PlaybackState state = _session.State;
 
-            if (state.DurationSeconds > 0)
-                SeekSlider.Maximum = state.DurationSeconds;
+            // Routine progress, not a user change: applied so it does not
+            // raise Slider.ValueChanged (see PlayerSlider.ApplyPlaybackUpdate).
+            SeekSlider.ApplyPlaybackUpdate(() =>
+            {
+                if (state.DurationSeconds > 0)
+                    SeekSlider.Maximum = state.DurationSeconds;
+
+                if (!_uiState.IsSeekBarBeingDragged)
+                    SeekSlider.Value = Math.Max(0, Math.Min(SeekSlider.Maximum, state.PositionSeconds));
+            });
 
             if (!_uiState.IsSeekBarBeingDragged)
-            {
-                SeekSlider.Value = Math.Max(0, Math.Min(SeekSlider.Maximum, state.PositionSeconds));
                 CurrentTimeText.Text = FormatTime(state.PositionSeconds);
-            }
 
             DurationText.Text = FormatTime(state.DurationSeconds);
 
@@ -2766,14 +2780,53 @@ namespace StremioVideoCenterControls
 
         private void Player_MouseMove(object sender, MouseEventArgs e)
         {
-            ShowControls();
+            if (IsGenuineMouseMove(e))
+                ShowControls();
         }
 
         // Mouse movement/clicks on the overlay itself (including over the
         // control bar) are activity.
         private void Overlay_MouseMove(object sender, MouseEventArgs e)
         {
-            ShowControls();
+            if (IsGenuineMouseMove(e))
+                ShowControls();
+        }
+
+        // WPF (and Windows) re-send MouseMove at an UNCHANGED position
+        // whenever what sits under a stationary cursor changes - for example
+        // when the overlay's hit-testing flips as it fades in or out. Treating
+        // those as activity restarts the idle timer, or re-shows the controls
+        // that just faded, while the user is only hovering. A MouseMove counts
+        // as activity only if the cursor is somewhere other than where the
+        // last counted one left it. Keyboard, controller and clicks do not go
+        // through here and are unaffected.
+        private bool IsGenuineMouseMove(MouseEventArgs e)
+        {
+            // One physical move reaches both handlers (the overlay's, then the
+            // player's, by bubbling): the second is the same event, not a
+            // duplicate worth counting.
+            if (_haveMouseEventSample && e.Timestamp == _lastMouseEventStamp)
+                return false;
+
+            NativePoint point;
+            if (!GetCursorPos(out point))
+                return true; // cannot tell: behave as before
+
+            bool moved = !_haveMouseEventSample ||
+                         point.X != _lastMouseEventX ||
+                         point.Y != _lastMouseEventY;
+
+            if (!moved)
+            {
+                _ignoredMouseEvents++;
+                return false;
+            }
+
+            _haveMouseEventSample = true;
+            _lastMouseEventX = point.X;
+            _lastMouseEventY = point.Y;
+            _lastMouseEventStamp = e.Timestamp;
+            return true;
         }
 
         private void Overlay_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -2856,6 +2909,8 @@ namespace StremioVideoCenterControls
         private void SetOverlayVisible(bool visible, string trigger = null)
         {
             if (_overlayVisible == visible) return;
+
+            LogFadeTransition(visible, trigger);
 
             _overlayVisible = visible;
 
@@ -2970,6 +3025,8 @@ namespace StremioVideoCenterControls
                 menuOpen,
                 seeking);
 
+            LogFadeInputsIfChanged(state, playbackRunning, paused, menuOpen, seeking, visible);
+
             SetOverlayVisible(visible, "tick");
         }
 
@@ -2980,6 +3037,78 @@ namespace StremioVideoCenterControls
         private void NoteOverlayActivity(string reason)
         {
             _overlayPolicy.NoteActivity(DateTime.UtcNow);
+            _lastActivityReason = reason;
+            _lastActivityUtc = DateTime.UtcNow;
+        }
+
+        // =====================================================================
+        // TEMPORARY [PLAYER-FADE] DIAGNOSTICS (logging only - remove after the
+        // repeated fade-in/out investigation)
+        //
+        // Every show/hide of the controls is logged with the policy inputs and
+        // WHO caused it: ShowControls/RestartHideTimer record their caller
+        // (compiler-supplied method name), the cursor poll records the cursor
+        // position and delta, and any change of the policy inputs (playing/
+        // paused/established/eof/menu/seeking) is logged on its own. Capped at
+        // FadeLogLimit lines. No behaviour is altered.
+        // =====================================================================
+
+        private string _lastActivityReason = "start";
+        private DateTime _lastActivityUtc = DateTime.UtcNow;
+        private string _lastCursorDetail = "none";
+        private string _lastFadeInputs;
+        private int _fadeLogCount;
+        private const int FadeLogLimit = 400;
+
+        private void FadeLog(string text)
+        {
+            if (_fadeLogCount >= FadeLogLimit) return;
+            _fadeLogCount++;
+            StremioVideoCenterLogger.Info("[PLAYER-FADE] " + text);
+        }
+
+        private void LogFadeTransition(bool visible, string trigger)
+        {
+            try
+            {
+                PlaybackState state = _session != null ? _session.State : null;
+
+                NativePoint now;
+                string osCursor = GetCursorPos(out now) ? now.X + "," + now.Y : "?";
+
+                FadeLog(string.Format(
+                    "{0} t={1:HH:mm:ss.fff} trigger={2} lastActivity={3} ageMs={4:0} lastPoll={5} osCursor={6} " +
+                    "established={7} playing={8} eof={9} menu={10} seeking={11} ignoredSameSpotMouseMoves={12}",
+                    visible ? "SHOW" : "HIDE", DateTime.Now, trigger ?? "?",
+                    _lastActivityReason, (DateTime.UtcNow - _lastActivityUtc).TotalMilliseconds,
+                    _lastCursorDetail, osCursor,
+                    state != null && state.IsPlaybackEstablished,
+                    state != null && state.IsPlaying,
+                    state != null && state.ReachedEndOfFile,
+                    _uiState.OpenMenu, _uiState.IsSeekBarBeingDragged,
+                    _ignoredMouseEvents));
+                _ignoredMouseEvents = 0;
+            }
+            catch (Exception ex)
+            {
+                StremioVideoCenterLogger.Info("[PLAYER-FADE] log failed: " + UserFacingErrors.ForLog(ex));
+            }
+        }
+
+        private void LogFadeInputsIfChanged(
+            PlaybackState state, bool running, bool paused, bool menuOpen, bool seeking, bool visible)
+        {
+            string inputs = string.Format(
+                "running={0} paused={1} menu={2} seeking={3} established={4} playing={5} eof={6}",
+                running, paused, menuOpen, seeking,
+                state != null && state.IsPlaybackEstablished,
+                state != null && state.IsPlaying,
+                state != null && state.ReachedEndOfFile);
+
+            if (inputs == _lastFadeInputs) return;
+
+            _lastFadeInputs = inputs;
+            FadeLog(string.Format("INPUTS t={0:HH:mm:ss.fff} {1} policyVisible={2}", DateTime.Now, inputs, visible));
         }
 
         // Samples the OS cursor: WPF never sees mouse movement over the native
@@ -2990,6 +3119,9 @@ namespace StremioVideoCenterControls
             NativePoint point;
             if (!GetCursorPos(out point)) return;
 
+            int deltaX = _haveCursorSample ? point.X - _lastCursorX : 0;
+            int deltaY = _haveCursorSample ? point.Y - _lastCursorY : 0;
+
             bool moved = _haveCursorSample && (point.X != _lastCursorX || point.Y != _lastCursorY);
 
             _haveCursorSample = true;
@@ -2999,6 +3131,13 @@ namespace StremioVideoCenterControls
             if (!moved) return;
 
             bool overPlayer = IsScreenPointOverPlayer(point);
+
+            _lastCursorDetail = string.Format("({0},{1}) d=({2},{3}) overPlayer={4}", point.X, point.Y, deltaX, deltaY, overPlayer);
+
+            // Cursor activity that arrives while the controls are hidden is the
+            // case worth seeing; while visible it would only flood the log.
+            if (!_overlayVisible)
+                FadeLog(string.Format("CURSOR-MOVE-WHILE-HIDDEN t={0:HH:mm:ss.fff} {1}", DateTime.Now, _lastCursorDetail));
 
             if (overPlayer)
                 ShowControls("PollCursorActivity");
