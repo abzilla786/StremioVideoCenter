@@ -1,6 +1,15 @@
-﻿AddonId: 'StremioVideoCenter_2b114735-64f4-4d7d-9069-9f4036dc85bf'
+AddonId: 'StremioVideoCenter_2b114735-64f4-4d7d-9069-9f4036dc85bf'
 
 Packages:
+  - Version: 1.1.0
+    RequiredApiVersion: 6.15.0
+    ReleaseDate: 2026-10-21
+    PackageUrl: https://github.com/abzilla786/StremioVideoCenter/releases/download/v1.1.0/StremioVideoCenter_2b114735-64f4-4d7d-9069-9f4036dc85bf_1_1_0.pext
+    Changelog:
+      - Added navigation sounds for supported selectable items.
+      - Added loading feedback when opening TV and anime episodes.
+      - Improved cancellation and Back navigation during source discovery.
+      - Improved handling of abandoned playback attempts and stalled sources.
   - Version: 1.0.0
     RequiredApiVersion: 6.15.0
     ReleaseDate: 2026-10-19
