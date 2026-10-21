@@ -33,7 +33,9 @@ namespace StremioVideoCenter.Services
             _registry = registry;
         }
 
-        public async Task<List<StremioStream>> ResolveStreamsAsync(ContentRequest request)
+        public async Task<List<StremioStream>> ResolveStreamsAsync(
+            ContentRequest request,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
 
             if (request == null)
@@ -65,7 +67,8 @@ namespace StremioVideoCenter.Services
             // particular request happens to be Anime.
             List<StremioStream> streams = await _registry.GetAllStreamsAsync(
                 request.StremioType,
-                stremioId);
+                stremioId,
+                cancellationToken);
 
 
             return streams ?? new List<StremioStream>();

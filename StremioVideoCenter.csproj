@@ -119,6 +119,7 @@
       <DependentUpon>TrackSelectionMenu.xaml</DependentUpon>
     </Compile>
     <Compile Include="Controls\ToastHost.cs" />
+    <Compile Include="Controls\NavigationSound.cs" />
     <Compile Include="Controls\Player\MpvHost.cs" />
     <Compile Include="Controls\Player\PlayerFocusController.cs" />
     <Compile Include="Controls\Player\PlayerSession.cs" />

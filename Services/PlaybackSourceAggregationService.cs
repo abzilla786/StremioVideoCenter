@@ -82,7 +82,15 @@ namespace StremioVideoCenter.Services
         // address is logged). The aggregation body lives in
         // AggregateCoreAsync; results, exceptions and cancellation pass
         // through this wrapper unchanged.
-        public async Task<PlaybackSourceSet> AggregateAsync(ContentRequest request)
+        //
+        // cancellationToken: the caller's cancellation (the user backing out
+        // of a pending load). It is passed to addon discovery and checked
+        // before each stream is resolved, so no further Real-Debrid attempt
+        // starts once it is cancelled. A resolution already in flight cannot
+        // be aborted (Real-Debrid has no token); its result is discarded.
+        public async Task<PlaybackSourceSet> AggregateAsync(
+            ContentRequest request,
+            CancellationToken cancellationToken = default(CancellationToken))
         {
             AggregationSummary summary = new AggregationSummary();
 
@@ -91,7 +99,7 @@ namespace StremioVideoCenter.Services
 
             try
             {
-                return await AggregateCoreAsync(request, summary);
+                return await AggregateCoreAsync(request, summary, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -129,7 +137,8 @@ namespace StremioVideoCenter.Services
 
         private async Task<PlaybackSourceSet> AggregateCoreAsync(
             ContentRequest request,
-            AggregationSummary summary)
+            AggregationSummary summary,
+            CancellationToken cancellationToken)
         {
 
             if (request == null)
@@ -142,7 +151,7 @@ namespace StremioVideoCenter.Services
 
             Stopwatch discoveryWatch = Stopwatch.StartNew();
 
-            List<StremioStream> streams = await _discovery.ResolveStreamsAsync(request);
+            List<StremioStream> streams = await _discovery.ResolveStreamsAsync(request, cancellationToken);
 
             discoveryWatch.Stop();
             summary.DiscoveryMs = discoveryWatch.ElapsedMilliseconds;
@@ -189,6 +198,10 @@ namespace StremioVideoCenter.Services
 
             foreach (StremioStream stream in streams)
             {
+                // The user backed out: start no further resolution (each
+                // torrent-only stream is a Real-Debrid round-trip).
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (stream == null)
                 {
                     continue;

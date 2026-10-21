@@ -1006,6 +1006,11 @@ namespace StremioVideoCenterControls
             HandleBack();
         }
 
+        // Set by the host once an episode has been picked and its sources are
+        // being loaded. The browser stays mounted (and owns input) for that
+        // time, so Back must cancel the load rather than navigate within it.
+        public bool IsLoadingSelection { get; set; }
+
         public void SetMyListState(bool isInMyList)
         {
             MyListButton.Content = isInMyList ? "\u2713 IN MY LIST" : "+ MY LIST";
@@ -1030,7 +1035,10 @@ namespace StremioVideoCenterControls
         // season panel still cancels the whole browser.
         private void HandleBack()
         {
-            if (IsFocusInEpisodePanel() && _seasonButtons.Count > 0)
+            // While the host is loading the picked episode, Back backs out of
+            // that load straight away (it raises BrowsingCancelled) instead of
+            // first moving focus to the season list.
+            if (!IsLoadingSelection && IsFocusInEpisodePanel() && _seasonButtons.Count > 0)
             {
                 Button activeSeasonButton = FindActiveSeasonButton();
                 FocusElement(activeSeasonButton ?? _seasonButtons[0]);

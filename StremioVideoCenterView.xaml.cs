@@ -393,6 +393,14 @@ namespace StremioVideoCenter
         {
             InitializeComponent();
 
+            // Navigation tick for the controls Playnite's own focus sound
+            // does not cover (cards, chips) - see NavigationSound. One
+            // handler at the view root sees every page and overlay below it.
+            AddHandler(
+                Keyboard.GotKeyboardFocusEvent,
+                new KeyboardFocusChangedEventHandler(StremioVideoCenterView_AnyGotKeyboardFocus),
+                true);
+
             // Mouse click-and-drag scrolling (Slice 20 Stage 3).
             DragScroll.Attach(MainScrollViewer, DragScrollAxis.Vertical);
 
@@ -1609,9 +1617,35 @@ namespace StremioVideoCenter
                 ControllerInputFromDirectionalKey(e.Key);
 
             if (directionalButton.HasValue &&
-                RouteButtonToActiveOverlayOrHome(directionalButton.Value))
+                RouteDirectionalButton(directionalButton.Value))
             {
                 e.Handled = true;
+            }
+        }
+
+        private void StremioVideoCenterView_AnyGotKeyboardFocus(
+            object sender,
+            KeyboardFocusChangedEventArgs e)
+        {
+            NavigationSound.OnKeyboardFocusChanged(e);
+        }
+
+        // A directional press (arrow key or D-pad) routed to the active
+        // screen. The bracket tells NavigationSound that any focus change made
+        // while this runs is the user navigating (and so ticks); focus moved
+        // any other way - opening a page, restoring focus, refreshes - stays
+        // silent. Routing itself is unchanged.
+        private bool RouteDirectionalButton(ControllerInput button)
+        {
+            NavigationSound.BeginUserNavigation();
+
+            try
+            {
+                return RouteButtonToActiveOverlayOrHome(button);
+            }
+            finally
+            {
+                NavigationSound.EndUserNavigation();
             }
         }
 
@@ -1979,7 +2013,9 @@ namespace StremioVideoCenter
                 _pendingControllerEchoAt = DateTime.UtcNow;
             }
 
-            return RouteButtonToActiveOverlayOrHome(button);
+            return directionalKey.HasValue
+                ? RouteDirectionalButton(button)
+                : RouteButtonToActiveOverlayOrHome(button);
         }
 
         // =========================================================
@@ -2163,7 +2199,19 @@ namespace StremioVideoCenter
         {
             // While a selection is still being resolved nothing sensible can be
             // backed out of yet: consume the press (do not close anything).
-            if (_isResolvingMediaSelection || _isReturningToProfileSelection)
+            // A load that has not reached its Source Selector yet - a Continue
+            // Watching / History resume, which has no Episode Selector or Movie
+            // Details of its own to receive Back - is cancelled by it instead
+            // (a no-op when there is no cancellable load, or it is past that
+            // point).
+            if (_isResolvingMediaSelection)
+            {
+                CancelCurrentLoad();
+
+                return true;
+            }
+
+            if (_isReturningToProfileSelection)
             {
                 return true;
             }
@@ -2732,8 +2780,9 @@ namespace StremioVideoCenter
                 _isResolvingMediaSelection = false;
 
                 // No player exists, so nothing will ever report file-loaded:
-                // do not leave the loading toast up.
-                if (_resumeLoadingToastActive && _stremioPlayer == null)
+                // do not leave the loading toast up. (Not while a newer load
+                // is in progress: the toast is then its.)
+                if (_resumeLoadingToastActive && _stremioPlayer == null && _loadAttempt == null)
                 {
                     DismissResumeLoadingToast();
                 }
@@ -2840,6 +2889,24 @@ namespace StremioVideoCenter
 
             // else: an episode was picked - leave the overlay mounted;
             // see this method's remarks above for why.
+            else
+            {
+                // Immediate feedback for the source discovery that follows.
+                // Shown ONLY here - on an actual episode pick (TV and Anime
+                // both come through this method), never for opening the
+                // selector or moving between seasons/episodes. It is
+                // dismissed by the existing lifecycle: when the Source
+                // Selector is shown (ShowSourceSelectorAsync), on file-loaded,
+                // or on any terminal path (ClosePlayer, a playback notice,
+                // the callers' no-player checks).
+                ShowResumeLoadingToast();
+
+                // The browser stays mounted and owns input while the pick
+                // loads, so Back / Esc / B / Close must back out of that
+                // load. Unhooked in TeardownEpisodeBrowserOverlay.
+                browser.IsLoadingSelection = true;
+                browser.BrowsingCancelled += OnEpisodeLoadingBackRequested;
+            }
 
             return result;
         }
@@ -2866,11 +2933,16 @@ namespace StremioVideoCenter
 
             EventHandler onClosed = (sender, args) =>
             {
-                // Ignore Back while sources are being resolved; the
-                // discovery in flight would otherwise open the Source
-                // Selector over a page the user just left.
+                // While sources are being resolved, Back backs out of that
+                // load (cancelling the discovery, so it can never open the
+                // Source Selector over a page the user left) and stays on
+                // Details; a second Back then closes Details. Once the
+                // Source Selector / player is up the load can no longer be
+                // cancelled and Back is ignored here, as before.
                 if (_movieDetailsBusy)
                 {
+                    CancelCurrentLoad();
+
                     return;
                 }
 
@@ -3002,6 +3074,9 @@ namespace StremioVideoCenter
             {
                 return;
             }
+
+            browser.BrowsingCancelled -= OnEpisodeLoadingBackRequested;
+            browser.IsLoadingSelection = false;
 
             EpisodeBrowserHost.Children.Remove(browser);
             EpisodeBrowserHost.Visibility = Visibility.Collapsed;
@@ -3204,6 +3279,162 @@ namespace StremioVideoCenter
 
             _resumeLoadingToastActive = false;
             FeedbackToast?.Hide();
+        }
+
+        // =========================================================
+        // CANCELLABLE LOAD (Back out of a pending source discovery)
+        // =========================================================
+        //
+        // PlaySelectedMediaAsync's discovery phase (local lookup, addon
+        // discovery, Real-Debrid resolution) can take a long time. One
+        // LoadAttempt covers that phase for ONE user-initiated load (TV
+        // episode, Anime episode or a movie's Watch Now), so the user can back
+        // out of it instead of waiting. The attempt moves through three phases
+        // (LoadPhase) and only the first is cancellable:
+        //
+        //   Discovering     - sources are being resolved. Back / Escape / B /
+        //                     Close cancel the attempt (token + stale-result
+        //                     suppression).
+        //   SelectingSource - the Source Selector is up. It owns Back (return
+        //                     to the previous screen), as before.
+        //   Launching       - a source has been chosen (or auto-selected) and
+        //                     playback is being prepared. The token is never
+        //                     consulted again and CancelCurrentLoad refuses.
+        //                     Nothing blocks Back from here on: the player can
+        //                     be closed at any time (see StartPlaybackAsync
+        //                     for how a start the user abandoned is discarded).
+        //
+        // The attempt object is its own identity: a cancelled attempt that is
+        // still unwinding (or whose network call is still finishing) only ever
+        // compares itself to its own token, so it can never open a selector,
+        // start playback, show an error or dismiss the toast of a newer
+        // attempt. In-flight network work that cannot be aborted (a
+        // Real-Debrid resolution already under way) simply has its result
+        // discarded.
+        private enum LoadPhase
+        {
+            Discovering,
+            SelectingSource,
+            Launching
+        }
+
+        private sealed class LoadAttempt
+        {
+            public readonly CancellationTokenSource Cts = new CancellationTokenSource();
+
+            public LoadPhase Phase = LoadPhase.Discovering;
+        }
+
+        private LoadAttempt _loadAttempt;
+
+        private LoadAttempt BeginLoadAttempt()
+        {
+            LoadAttempt previous = _loadAttempt;
+
+            if (previous != null && previous.Phase == LoadPhase.Discovering)
+            {
+                // Superseded: a newer load starts while an older one never
+                // reached its selector. The older one must not complete.
+                previous.Cts.Cancel();
+            }
+
+            LoadAttempt attempt = new LoadAttempt();
+            _loadAttempt = attempt;
+
+            return attempt;
+        }
+
+        private void EndLoadAttempt(LoadAttempt attempt)
+        {
+            if (attempt == null)
+            {
+                return;
+            }
+
+            if (ReferenceEquals(_loadAttempt, attempt))
+            {
+                _loadAttempt = null;
+            }
+
+            attempt.Cts.Dispose();
+        }
+
+        // Moves the attempt forward (never backward). Leaving Discovering is
+        // what ends the cancellable phase: from then on the token is unused.
+        private static void AdvanceLoadAttempt(LoadAttempt attempt, LoadPhase phase)
+        {
+            if (attempt != null && phase > attempt.Phase)
+            {
+                attempt.Phase = phase;
+            }
+        }
+
+        // Backs out of the pending load, if there is one that can still be
+        // cancelled. Returns false (and does nothing) when there is none, or
+        // when it has already left the Discovering phase (Source Selector up,
+        // or a source chosen).
+        private bool CancelCurrentLoad()
+        {
+            LoadAttempt attempt = _loadAttempt;
+
+            if (attempt == null ||
+                attempt.Phase != LoadPhase.Discovering ||
+                attempt.Cts.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            attempt.Cts.Cancel();
+
+            // The loading toast belongs to this attempt.
+            DismissResumeLoadingToast();
+
+            return true;
+        }
+
+        // Back / Escape / B / Close on the Episode Browser while the picked
+        // episode is loading.
+        private void OnEpisodeLoadingBackRequested(object sender, EventArgs e)
+        {
+            CancelCurrentLoad();
+        }
+
+        // A source was chosen in the Source Selector: the discovery attempt
+        // (if this selection came from one) is past the point where it can
+        // be cancelled. Marks the phase only - it blocks no navigation.
+        private void NoteSourceChosen()
+        {
+            AdvanceLoadAttempt(_loadAttempt, LoadPhase.Launching);
+        }
+
+        // Awaits work, but returns control as soon as the token is cancelled
+        // even when the work itself cannot be aborted. The abandoned task is
+        // observed so a late failure is never an unobserved exception.
+        private static async Task<T> AwaitUnlessCancelledAsync<T>(
+            Task<T> work,
+            CancellationToken cancellationToken)
+        {
+            if (!cancellationToken.CanBeCanceled)
+            {
+                return await work;
+            }
+
+            var cancelled = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            using (cancellationToken.Register(() => cancelled.TrySetResult(true)))
+            {
+                if (await Task.WhenAny(work, cancelled.Task) != work)
+                {
+                    work.ContinueWith(
+                        abandoned => { var ignored = abandoned.Exception; },
+                        TaskContinuationOptions.OnlyOnFaulted);
+
+                    throw new OperationCanceledException(cancellationToken);
+                }
+            }
+
+            return await work;
         }
 
         private const int RecommendationDebounceMilliseconds = 400;
@@ -4185,6 +4416,14 @@ namespace StremioVideoCenter
                 }
             }
 
+            // Cancellable discovery phase for a user-initiated load. An
+            // in-player episode change (transition) keeps its running player
+            // and is not cancellable here.
+            LoadAttempt loadAttempt = transition == null ? BeginLoadAttempt() : null;
+            CancellationToken ct = loadAttempt != null
+                ? loadAttempt.Cts.Token
+                : CancellationToken.None;
+
             try
             {
                 // (Built by CreateStreamingServices so source-failure recovery
@@ -4314,6 +4553,8 @@ namespace StremioVideoCenter
 
                 LocalSourceLookup localLookup = await FindLocalSourcesAsync(canonicalKey, mediaItem);
 
+                ct.ThrowIfCancellationRequested();
+
                 NormalizedPlaybackSource preselectedLocal =
                     ChoosePreselectedLocalSource(localLookup, mediaItem, canonicalKey, resumePlan, transition);
 
@@ -4345,10 +4586,11 @@ namespace StremioVideoCenter
                 {
                     try
                     {
-                        set = await aggregator.AggregateAsync(
-                            request);
+                        set = await AwaitUnlessCancelledAsync(
+                            aggregator.AggregateAsync(request, ct),
+                            ct);
                     }
-                    catch (Exception aggregateEx) when (localLookup.Sources.Count > 0)
+                    catch (Exception aggregateEx) when (localLookup.Sources.Count > 0 && !ct.IsCancellationRequested)
                     {
                         // Streaming discovery failed, but the user still has
                         // local copies to choose from.
@@ -4405,6 +4647,10 @@ namespace StremioVideoCenter
                     return;
                 }
 
+                // The user backed out while sources were resolving: do not
+                // open the Source Selector or touch the browser overlay.
+                ct.ThrowIfCancellationRequested();
+
                 // The Source Selector is now actually ready to show -
                 // this is the deliberate hand-off point: the episode
                 // browser overlay (if any) is replaced by the Source
@@ -4438,6 +4684,8 @@ namespace StremioVideoCenter
                     // failure recovery.
                     await ApplyMovieOverviewAsync(mediaItem, movieOverviewTask);
 
+                    ct.ThrowIfCancellationRequested();
+
                     // Slice 20 Stage 2: when the list is empty, say why in the
                     // selector's own empty state (fixed wording only).
                     string emptyExplanation = null;
@@ -4449,11 +4697,25 @@ namespace StremioVideoCenter
                             : UserFacingErrors.ForUnresolvedSources(set.Unresolved);
                     }
 
+                    // Discovery is over (no await since the cancellation check
+                    // above): from here the Source Selector owns Back, and the
+                    // token is never used again. Choosing a source in it starts
+                    // the launch phase (ShowSourceSelectorAsync.onSelected).
+                    AdvanceLoadAttempt(loadAttempt, LoadPhase.SelectingSource);
+
                     selected =
                         await ShowSourceSelectorReplacingPlayerAsync(
                             normalizedSources,
                             mediaItem,
                             emptyExplanation);
+                }
+
+                if (autoSelectedSavedSource)
+                {
+                    // A saved/local source skipped the selector: the launch
+                    // phase starts now (no await since the cancellation check
+                    // above), so the load can no longer be cancelled.
+                    AdvanceLoadAttempt(loadAttempt, LoadPhase.Launching);
                 }
 
                 if (selected == null)
@@ -4494,13 +4756,24 @@ namespace StremioVideoCenter
 
                 if (!autoSelectedSavedSource)
                 {
-                    await StartPlaybackAsync(context);
+                    if (!await StartPlaybackAsync(context))
+                    {
+                        // The user exited the player while it was starting:
+                        // that exit already navigated. Do not loop back to
+                        // the Episode Selector from this stale call.
+                        _sourceSelectionCancelled = false;
+                        return;
+                    }
                 }
                 else
                 {
                     try
                     {
-                        await StartPlaybackAsync(context);
+                        if (!await StartPlaybackAsync(context))
+                        {
+                            _sourceSelectionCancelled = false;
+                            return;
+                        }
                     }
                     catch (Exception startEx) when (!(startEx is PlayerStartupException))
                     {
@@ -4538,12 +4811,32 @@ namespace StremioVideoCenter
                             return;
                         }
 
-                        await StartPlaybackAsync(context.WithSource(alternative));
+                        if (!await StartPlaybackAsync(context.WithSource(alternative)))
+                        {
+                            _sourceSelectionCancelled = false;
+                            return;
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
+                if (ct.IsCancellationRequested)
+                {
+                    // The user backed out of this load (the cancellation, or
+                    // any late failure of the abandoned work). No notice, no
+                    // player, no selector: just return to the previous
+                    // screen - the Episode Selector for an episode, Movie
+                    // Details for a movie (its caller ignores the flag).
+                    StremioVideoCenterLogger.Info("Source loading cancelled by the user.");
+
+                    TeardownEpisodeBrowserOverlay(pendingEpisodeBrowser);
+
+                    _sourceSelectionCancelled = true;
+
+                    return;
+                }
+
                 StremioVideoCenterLogger.Info(
                     string.Format(
                         "Playback start failed ex={0}",
@@ -4563,6 +4856,10 @@ namespace StremioVideoCenter
                     (string.IsNullOrWhiteSpace(mediaItem.Title) ? "playback" : "\u201C" + mediaItem.Title + "\u201D") +
                     ". " +
                     UserFacingErrors.ForPlayback(ex));
+            }
+            finally
+            {
+                EndLoadAttempt(loadAttempt);
             }
         }
 
@@ -4749,7 +5046,11 @@ namespace StremioVideoCenter
         // Creates the player if needed and starts playback of the given
         // (already user-selected) source. Shared by the normal selection
         // path and the post-failure re-selection path.
-        private async Task StartPlaybackAsync(
+        // Returns true when the start completed for a player that is still
+        // the current one; false when the user closed (or replaced) the
+        // player while it was starting and the attempt was therefore
+        // discarded - callers must then do nothing further for this attempt.
+        private async Task<bool> StartPlaybackAsync(
             PlaybackContext context)
         {
             // A previous attempt's error notice must not linger over (or
@@ -4771,6 +5072,22 @@ namespace StremioVideoCenter
             _playbackGeneration++;
             _playbackContext = context;
             _progressRecorder = null;
+
+            // Diagnostic (no URL, no header names or values): which addon's
+            // source is being started, so a source that never loads can be
+            // attributed to its provider from the log.
+            StremioVideoCenterLogger.Info(
+                string.Format(
+                    "Starting playback: addon={0} kind={1} requestHeaders={2}",
+                    context.Source != null
+                        ? StremioAddonService.SafeLogName(context.Source.SourceAddonName)
+                        : "(unknown)",
+                    context.Source != null ? context.Source.Kind.ToString() : "(unknown)",
+                    context.Source != null &&
+                    context.Source.Source != null &&
+                    context.Source.Source.Headers != null
+                        ? context.Source.Source.Headers.Count
+                        : 0));
 
             if (_stremioPlayer == null)
             {
@@ -4843,13 +5160,52 @@ namespace StremioVideoCenter
                 var ignoredNavigation = AttachEpisodeNavigationAsync(context);
             }
 
-            await _stremioPlayer.PlayVideoAsync(context);
+            // This start's identity: ClosePlayer bumps _playbackGeneration and
+            // clears _stremioPlayer, and every newer start bumps the
+            // generation too. So "the user closed the player while it was
+            // starting" and "a newer start replaced this one" are both seen
+            // as a change of either value below.
+            MpvPlayer startingPlayer = _stremioPlayer;
+            int startingGeneration = _playbackGeneration;
+
+            try
+            {
+                await startingPlayer.PlayVideoAsync(context);
+            }
+            catch (Exception ex) when (IsPlaybackStartAbandoned(startingPlayer, startingGeneration))
+            {
+                // The player was torn down underneath the pending start (the
+                // user exited while mpv was still starting / loading). Its
+                // failure is a consequence of the exit, not a playback error:
+                // no notice, no ClosePlayer (which could close a NEWER
+                // player) and no recovery selector.
+                StremioVideoCenterLogger.Info(
+                    "Playback start abandoned: the player was closed while starting. " +
+                    UserFacingErrors.ForLog(ex));
+
+                return false;
+            }
+
+            if (IsPlaybackStartAbandoned(startingPlayer, startingGeneration))
+            {
+                // PlayVideoAsync returned quietly because the player was
+                // disposed meanwhile (it checks for that).
+                return false;
+            }
+
+            return true;
 
             // Slice 18A: Watch State/History are deliberately NOT created
             // here. loadfile succeeding only means mpv accepted the
             // command; the stream may still fail to open. They are
             // established by StremioPlayer_PlaybackEstablished once mpv
             // reports file-loaded.
+        }
+
+        private bool IsPlaybackStartAbandoned(MpvPlayer player, int generation)
+        {
+            return !ReferenceEquals(_stremioPlayer, player) ||
+                _playbackGeneration != generation;
         }
 
         private void StremioPlayer_PlaybackEstablished(
@@ -4944,6 +5300,16 @@ namespace StremioVideoCenter
                     }
 
                     await AddStreamingFallbackAsync(failedContext);
+
+                    // The user may have exited the player while the fallback
+                    // sources were being fetched (their exit already showed
+                    // the selector). This stale recovery must not open a
+                    // second one.
+                    if (sender != _stremioPlayer ||
+                        !ReferenceEquals(_stremioPlayer.CurrentContext, failedContext))
+                    {
+                        return;
+                    }
                 }
 
                 StremioVideoCenterLogger.Info(
@@ -5393,6 +5759,13 @@ namespace StremioVideoCenter
 
             onSelected = (sender, args) =>
             {
+                // A source was chosen: the discovery attempt (if any) can no
+                // longer be cancelled. (Phase marker only.)
+                if (args.Source != null && !completionSource.Task.IsCompleted)
+                {
+                    NoteSourceChosen();
+                }
+
                 completionSource.TrySetResult(args.Source);
             };
 
@@ -5950,20 +6323,34 @@ namespace StremioVideoCenter
         // Back on the Episode Selector itself ends the loop at Home.
         private async Task BrowseAndPlayEpisodesAsync(MediaItem series)
         {
-            while (true)
+            try
             {
-                MediaItem episode = await ShowEpisodeBrowserAsync(series);
-
-                if (episode == null)
+                while (true)
                 {
-                    return;
+                    MediaItem episode = await ShowEpisodeBrowserAsync(series);
+
+                    if (episode == null)
+                    {
+                        return;
+                    }
+
+                    await PlaySelectedMediaAsync(episode);
+
+                    if (!_sourceSelectionCancelled)
+                    {
+                        return;
+                    }
                 }
-
-                await PlaySelectedMediaAsync(episode);
-
-                if (!_sourceSelectionCancelled)
+            }
+            finally
+            {
+                // An episode pick shows the loading toast. If this ends with
+                // no player (nothing will ever report file-loaded), do not
+                // leave it up - the same check HandleMediaSelectedAsync makes.
+                // (Not while a newer load is in progress: the toast is then its.)
+                if (_resumeLoadingToastActive && _stremioPlayer == null && _loadAttempt == null)
                 {
-                    return;
+                    DismissResumeLoadingToast();
                 }
             }
         }
